@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-面向企业内部部署的 coding agent 平台：以 pi 作为默认 Agent 引擎，用 TypeScript 在它之上构建编排层（工单理解与路由）、统一登录与权限审批、子 agent、多用户多会话服务、沙箱，并提供对话、任务、评审三种模式的工作台；评测与微调用 Python。
+ForgePilot——面向企业内部部署的 coding agent 平台：以 pi 作为默认 Agent 引擎，用 TypeScript 在它之上构建编排层（工单理解与路由）、统一登录与权限审批、子 agent、多用户多会话服务、沙箱，并提供对话、任务、评审三种模式的工作台；评测与微调用 Python。
 
 pi：<https://github.com/earendil-works/pi>。以未修改的依赖形式使用，只通过 SDK、RPC 和扩展接入，不修改、不 fork 它的源码。pi 自带的能力不重做，pi 不带的由本项目实现（`docs/specs/decisions/001-reuse-pi-as-harness.md`）。
 
@@ -16,6 +16,7 @@ pi：<https://github.com/earendil-works/pi>。以未修改的依赖形式使用�
 | 工作项、依赖、验收标准、完成状态 | `docs/specs/tasks.md` |
 | 接口与数据约定 | `docs/specs/contracts/` |
 | 架构决策记录 | `docs/specs/decisions/` |
+| 架构可视图 | `docs/architecture/forgepilot-architecture.html` |
 | 当前任务的执行计划 | `docs/plans/` |
 | 实现说明 | `docs/reviews/` |
 | 评测报告 | `docs/evals/` |
