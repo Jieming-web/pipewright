@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-面向企业内部部署的 coding agent 平台：以 pi 作为 Agent Harness，用 Python 在它之上构建权限、子 agent、多用户多会话服务、沙箱、评测、本地部署与微调，并提供对话、任务、评审三种模式的工作台。
+面向企业内部部署的 coding agent 平台：以 pi 作为默认 Agent 引擎，用 TypeScript 在它之上构建编排层（工单理解与路由）、统一登录与权限审批、子 agent、多用户多会话服务、沙箱，并提供对话、任务、评审三种模式的工作台；评测与微调用 Python。
 
-pi：<https://github.com/earendil-works/pi>。以未修改的依赖形式使用，只通过 RPC 和扩展接入，不修改、不 fork 它的源码。pi 自带的能力不重做，pi 不带的由本项目实现（`docs/specs/decisions/001-reuse-pi-as-harness.md`）。
+pi：<https://github.com/earendil-works/pi>。以未修改的依赖形式使用，只通过 SDK、RPC 和扩展接入，不修改、不 fork 它的源码。pi 自带的能力不重做，pi 不带的由本项目实现（`docs/specs/decisions/001-reuse-pi-as-harness.md`）。
 
 本文件是规范索引和硬规则摘要。完整工作流见 `docs/workflow.md`，两者冲突时以 `docs/workflow.md` 为准。
 
