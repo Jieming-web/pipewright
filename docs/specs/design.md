@@ -4,6 +4,8 @@
 
 ## 1. 架构总览
 
+可视版本：`docs/architecture/forgepilot-architecture.html`（用浏览器打开）。架构变化时，以本节文字为准，并同步更新该图。
+
 ```
 ① 工作台（React + TS）        对话模式 ｜ 任务模式 ｜ 评审模式
         ↕  会话 API + SSE（contracts/session-api.md）

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ForgePilot 架构</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* 版式概念：五条自上而下的层带 + 右侧三条横切栏，像一张工程蓝图；每层一种色相，侧栏用暖色表示"把关" */
+:root{
+  --bg:#f5f6f9; --paper:#ffffff; --ink:#18202f; --muted:#5d6678; --line:#d9dde6;
+  --l1:#3b5bdb; --l1-bg:#eef2ff; --l1-bd:#c7d2fe;
+  --l2:#2b8a3e; --l2-bg:#ebf7ee; --l2-bd:#b8e0c2;
+  --l3:#7048e8; --l3-bg:#f3f0ff; --l3-bd:#d0c4fb;
+  --l4:#1971c2; --l4-bg:#e9f3fc; --l4-bd:#b4d4f1;
+  --l5:#495366; --l5-bg:#eff1f5; --l5-bd:#cfd4de;
+  --gate:#c2410c; --gate-bg:#fff4ec; --gate-bd:#fbcfae;
+  --mem:#0c8599; --mem-bg:#e8f7f9; --mem-bd:#ace0e8;
+  --chip:#ffffff;
+  --font-sans:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f141c; --paper:#161d28; --ink:#e7ebf2; --muted:#9aa4b5; --line:#2a3445;
+  --l1:#8ea5ff; --l1-bg:#1a2140; --l1-bd:#30407a;
+  --l2:#6fd08a; --l2-bg:#132a1c; --l2-bd:#25533a;
+  --l3:#b39bff; --l3-bg:#211a3d; --l3-bd:#42357a;
+  --l4:#6cb3f0; --l4-bg:#11243a; --l4-bd:#234a72;
+  --l5:#aeb7c7; --l5-bg:#1b2230; --l5-bd:#344055;
+  --gate:#ff9b62; --gate-bg:#2e1c12; --gate-bd:#6b3a1d;
+  --mem:#5fd0e0; --mem-bg:#0f2a2f; --mem-bd:#1f5660;
+  --chip:#1c2433; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f141c; --paper:#161d28; --ink:#e7ebf2; --muted:#9aa4b5; --line:#2a3445;
+  --l1:#8ea5ff; --l1-bg:#1a2140; --l1-bd:#30407a;
+  --l2:#6fd08a; --l2-bg:#132a1c; --l2-bd:#25533a;
+  --l3:#b39bff; --l3-bg:#211a3d; --l3-bd:#42357a;
+  --l4:#6cb3f0; --l4-bg:#11243a; --l4-bd:#234a72;
+  --l5:#aeb7c7; --l5-bg:#1b2230; --l5-bd:#344055;
+  --gate:#ff9b62; --gate-bg:#2e1c12; --gate-bd:#6b3a1d;
+  --mem:#5fd0e0; --mem-bg:#0f2a2f; --mem-bd:#1f5660;
+  --chip:#1c2433; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-sans);line-height:1.5;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:28px 40px}
+.sheet{max-width:1240px;margin:0 auto;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:28px clamp(16px,3vw,36px) 24px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 24px;margin-bottom:22px}
+h1{margin:0;font-size:clamp(24px,3.2vw,34px);font-weight:900;letter-spacing:.01em;text-wrap:balance}
+h1 .dot{color:var(--muted);font-weight:400;margin:0 .3em}
+.sub{color:var(--muted);font-size:13px;font-family:var(--font-mono)}
+
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}
+.main{display:flex;flex-direction:column;gap:0;min-width:0}
+.side{display:flex;flex-direction:column;gap:14px;min-width:0}
+
+.layer{position:relative;border:1.5px solid var(--bd);background:var(--bgc);border-radius:12px;padding:14px 16px 16px 16px;display:grid;grid-template-columns:40px minmax(0,1fr);gap:4px 14px}
+.layer .no{grid-row:1 / span 3;width:34px;height:34px;border-radius:50%;border:2px solid var(--fg);color:var(--fg);display:grid;place-items:center;font-weight:700;font-family:var(--font-mono);background:var(--paper)}
+.layer h2{margin:4px 0 0;font-size:17px;font-weight:700;color:var(--fg);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.layer h2 small{font-size:12px;font-weight:500;color:var(--muted);font-family:var(--font-mono)}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+.card{flex:1 1 150px;min-width:0;background:var(--chip);border:1px solid var(--bd);border-radius:9px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start}
+.card svg{flex:none;width:22px;height:22px;stroke:var(--fg);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
+.card b{display:block;font-size:14px;font-weight:700}
+.card span{display:block;font-size:12px;color:var(--muted);line-height:1.45}
+.card.dim{border-style:dashed}
+.note{margin-top:10px;font-size:12px;color:var(--muted)}
+.note code,.mono{font-family:var(--font-mono);font-size:11.5px}
+.flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.flow .arrow{color:var(--fg);font-weight:700}
+
+.l1{--fg:var(--l1);--bgc:var(--l1-bg);--bd:var(--l1-bd)}
+.l2{--fg:var(--l2);--bgc:var(--l2-bg);--bd:var(--l2-bd)}
+.l3{--fg:var(--l3);--bgc:var(--l3-bg);--bd:var(--l3-bd)}
+.l4{--fg:var(--l4);--bgc:var(--l4-bg);--bd:var(--l4-bd)}
+.l5{--fg:var(--l5);--bgc:var(--l5-bg);--bd:var(--l5-bd)}
+.gate{--fg:var(--gate);--bgc:var(--gate-bg);--bd:var(--gate-bd)}
+.mem{--fg:var(--mem);--bgc:var(--mem-bg);--bd:var(--mem-bd)}
+
+.conn{display:flex;justify-content:center;gap:28px;padding:6px 0;font-size:12px;color:var(--muted)}
+.conn span{display:flex;align-items:center;gap:6px}
+.conn i{display:block;width:1.5px;height:18px;background:var(--line)}
+.conn .up::before,.conn .down::after{font-style:normal;font-weight:700;color:var(--ink)}
+.conn .down::after{content:"↓"}
+.conn .up::before{content:"↑"}
+
+.exec{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,220px);gap:12px;margin-top:10px}
+.sandbox{border:1.5px dashed var(--bd);border-radius:10px;padding:10px;background:color-mix(in srgb,var(--chip) 55%,transparent)}
+.sandbox .tag{font-size:11.5px;font-family:var(--font-mono);color:var(--fg);margin-bottom:8px;display:block}
+.sandbox .cards{margin-top:0}
+.mcp{border:1.5px solid var(--bd);border-radius:10px;background:var(--chip);padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.mcp .tag{font-size:11.5px;font-family:var(--font-mono);color:var(--fg)}
+.mcp b{font-size:14px}
+.mcp ul{margin:0;padding-left:16px;font-size:12px;color:var(--muted)}
+
+.panel{border:1.5px solid var(--bd);background:var(--bgc);border-radius:12px;padding:12px 14px}
+.panel h3{margin:0 0 2px;font-size:15px;color:var(--fg);display:flex;gap:8px;align-items:center}
+.panel h3 svg{width:20px;height:20px;stroke:var(--fg);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.panel ul{margin:6px 0 0;padding-left:16px;font-size:12.5px;color:var(--ink)}
+.panel li{margin:2px 0}
+.panel li em{font-style:normal;color:var(--muted)}
+.link{display:inline-block;margin-top:8px;font-size:11.5px;font-family:var(--font-mono);color:var(--fg);border:1px dashed var(--bd);border-radius:999px;padding:1px 9px;background:var(--chip)}
+
+.layers3{margin-top:18px;border:1px solid var(--line);border-radius:12px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));overflow:hidden}
+.layers3 div{padding:12px 16px;border-right:1px solid var(--line)}
+.layers3 div:last-child{border-right:0}
+.layers3 b{display:block;font-size:14px}
+.layers3 span{font-size:12.5px;color:var(--muted)}
+.layers3 .k1 b{color:var(--gate)} .layers3 .k2 b{color:var(--l3)} .layers3 .k3 b{color:var(--mem)}
+
+.base{margin-top:12px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.base div{border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--bg)}
+.base b{font-size:13.5px}
+.base span{display:block;font-size:12px;color:var(--muted)}
+
+footer{margin-top:20px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px}
+.motto{font-size:clamp(15px,1.8vw,19px);font-weight:900;letter-spacing:.04em;text-wrap:balance}
+.stamp{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:3px 10px;font-family:var(--font-mono)}
+
+@media (max-width:980px){.grid{grid-template-columns:minmax(0,1fr)}.side{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}}
+@media (max-width:640px){.exec{grid-template-columns:minmax(0,1fr)}.layers3,.base{grid-template-columns:minmax(0,1fr)}.layers3 div{border-right:0;border-bottom:1px solid var(--line)}.layers3 div:last-child{border-bottom:0}.layer{grid-template-columns:minmax(0,1fr)}.layer .no{grid-row:auto}.conn{gap:14px}}
+</style>
+</head>
+<body>
+
+<div class="sheet">
+  <header>
+    <h1>ForgePilot<span class="dot">·</span>模块化 AI 研发平台</h1>
+    <div class="sub">面向企业内部部署 · 代码与数据不出部署方</div>
+  </header>
+
+  <div class="grid">
+    <div class="main">
+
+      <section class="layer l1" aria-label="第一层 工作台">
+        <div class="no">1</div>
+        <h2>工作台 <small>React + TypeScript</small></h2>
+        <div class="cards">
+          <div class="card"><svg viewBox="0 0 24 24"><path d="M4 5h16v10H9l-5 4z"/><path d="M8 9h8M8 12h5"/></svg><div><b>对话模式</b><span>代码问答 · 跨仓库只读调用链</span></div></div>
+          <div class="card"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="m9 13 2 2 4-4"/></svg><div><b>任务模式</b><span>工单 → 修复 / 功能 → 可审核 PR</span></div></div>
+          <div class="card"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 3-5 6-5s6 2 6 5"/><path d="m15 9 2 2 4-4"/></svg><div><b>评审模式</b><span>PR → 可视化变更说明</span></div></div>
+          <div class="card"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z"/><path d="M9 12h6"/></svg><div><b>记忆与审批</b><span>确认、试用、批量审批清单</span></div></div>
+        </div>
+      </section>
+
+      <div class="conn"><span class="down">会话 API + SSE</span><span class="up">流式事件 · 断线补发</span></div>
+
+      <section class="layer l2" aria-label="第二层 统一接入与身份认证">
+        <div class="no">2</div>
+        <h2>统一接入 · 身份认证</h2>
+        <div class="cards">
+          <div class="card"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><div><b>统一账号登录</b><span>OIDC · Keycloak 模拟身份中心</span></div></div>
+          <div class="card"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l2 2M15 8l2 2"/></svg><div><b>API key</b><span>给程序用 · 绑定员工或服务账号</span></div></div>
+          <div class="card"><svg viewBox="0 0 24 24"><path d="M4 6h6v4H4zM14 6h6v4h-6zM9 16h6v4H9z"/><path d="M7 10v3h10v-3M12 13v3"/></svg><div><b>授权链</b><span>员工 → 团队 → 项目 → 仓库与操作</span></div></div>
+        </div>
+      </section>
+
+      <div class="conn"><span class="down">已认证的请求</span></div>
+
+      <section class="layer l3" aria-label="第三层 编排层">
+        <div class="no">3</div>
+        <h2>编排层 <small>任务理解与路由 · TypeScript</small></h2>
+        <div class="cards flow">
+          <div class="card"><svg viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a2 2 0 0 0-3-1z"/><path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/></svg><div><b>工单理解</b><span>本地小模型 · 提取字段带原文出处 · 分类建议</span></div></div>
+          <span class="arrow" aria-hidden="true">→</span>
+          <div class="card"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="m15 16 2 2 4-4"/></svg><div><b>校验与上下文组装</b><span>缺信息就追问 · 召回记忆 · 会话历史</span></div></div>
+          <span class="arrow" aria-hidden="true">→</span>
+          <div class="card"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6c5 0 4 6 8 6M8 18c5 0 4-6 8-6"/></svg><div><b>规则路由</b><span>项目配置 · 只在权限范围内选择</span></div></div>
+        </div>
+        <div class="note">任务状态机：可恢复的等待（补充信息 / 确认修复 / 确认方案 / 审批）· 从最小权限开始，升级须确认 · 分类不能代替权限判断</div>
+      </section>
+
+      <div class="conn"><span class="down">选择与装配</span><i aria-hidden="true"></i><span class="up">状态与结果</span></div>
+
+      <section class="layer l4" aria-label="第四层 执行层">
+        <div class="no">4</div>
+        <h2>执行层 <small>统一引擎接口 · 实现可替换</small></h2>
+        <div class="exec">
+          <div class="sandbox">
+            <span class="tag">每会话沙箱容器</span>
+            <div class="cards">
+              <div class="card"><svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="11" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 18v2M15 18v2"/></svg><div><b>pi · 默认引擎</b><span>agent loop · 内置工具 · 上下文压缩 · skill 加载 · MCP 客户端</span></div></div>
+              <div class="card"><svg viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v4M14 4h4a2 2 0 0 1 2 2v4M10 20H6a2 2 0 0 1-2-2v-4M14 20h4a2 2 0 0 0 2-2v-4"/><path d="M9 12h6"/></svg><div><b>本项目扩展</b><span>工具执行前问策略 · memory_propose / expand · 子 agent</span></div></div>
+              <div class="card dim"><svg viewBox="0 0 24 24"><path d="M5 19 19 5M8 5h11v11"/></svg><div><b>Claude Code</b><span>只用于评测对照 · 不进产品</span></div></div>
+            </div>
+          </div>
+          <div class="mcp">
+            <span class="tag">MCP ↔ 检索服务</span>
+            <b>按项目选择检索实现</b>
+            <ul>
+              <li>grep / 代码索引</li>
+              <li>提交历史检索</li>
+              <li>按仓库读文件</li>
+              <li>内部用 Cordis 装配</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <div class="conn"><span class="down">模型请求</span></div>
+
+      <section class="layer l5" aria-label="第五层 模型">
+        <div class="no">5</div>
+        <h2>模型</h2>
+        <div class="cards">
+          <div class="card"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="6" rx="1.5"/><rect x="4" y="13" width="16" height="6" rx="1.5"/><path d="M8 8h.01M8 16h.01"/></svg><div><b>本地推理服务</b><span>小模型 · 主模型 · 微调后的工单理解模型</span></div></div>
+          <div class="card dim"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 1 1 1-9.9A6 6 0 0 1 19 10a4 4 0 0 1-1 8z"/></svg><div><b>外部 API</b><span>可选 · 开发与对照</span></div></div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="side" aria-label="横切模块">
+      <section class="panel gate">
+        <h3><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg>策略服务与审批</h3>
+        <ul>
+          <li>项目策略：冻结期 · 禁止路径</li>
+          <li>工具执行前拦截 <em>· 不可用即拒绝</em></li>
+          <li>审批单：申请人不能自批</li>
+          <li>agent 不能审批或授权</li>
+        </ul>
+        <span class="link">← 4 执行前询问</span>
+      </section>
+
+      <section class="panel l3">
+        <h3><svg viewBox="0 0 24 24"><path d="M6 4h9l3 3v13H6z"/><path d="M9 11h6M9 15h6"/></svg>规则 · AGENTS.md</h3>
+        <ul>
+          <li>只认受保护基准分支的版本</li>
+          <li>由平台注入，任务分支改动不算</li>
+          <li>不加载仓库内 <span class="mono">.pi/</span> 资源</li>
+        </ul>
+        <span class="link">→ 4 注入引擎</span>
+      </section>
+
+      <section class="panel mem">
+        <h3><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg>会话管理</h3>
+        <ul>
+          <li>平台会话 <em>· PostgreSQL · 给人看</em></li>
+          <li>引擎会话文件 <em>· 存到沙箱外 · 给模型用</em></li>
+          <li>租约 · 检查点 · 崩溃恢复</li>
+        </ul>
+        <span class="link">↔ 3 持续保存 · 历史恢复</span>
+      </section>
+
+      <section class="panel mem">
+        <h3><svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-4 10.5V17h8v-3.5A6 6 0 0 0 12 3z"/><path d="M9 21h6"/></svg>长期记忆</h3>
+        <ul>
+          <li>只存推不出来的背景</li>
+          <li>模型只能提议 <em>· 依据可核对</em></li>
+          <li>先对本人试用 → 审批扩大</li>
+        </ul>
+        <span class="link">4 提议写入 → · → 3 按需召回</span>
+      </section>
+    </aside>
+  </div>
+
+  <div class="layers3" aria-label="三层把关">
+    <div class="k1"><b>策略</b><span>管能不能做 · 代码强制执行</span></div>
+    <div class="k2"><b>规则</b><span>管应该怎么做 · 代码评审决定</span></div>
+    <div class="k3"><b>记忆</b><span>管做的时候要知道什么 · 用前先核对</span></div>
+  </div>
+
+  <div class="base" aria-label="平台支撑">
+    <div><b>事件存储与可观测</b><span>每一步耗时、token、错误 · 失败可定位</span></div>
+    <div><b>worker · 队列 · 限流配额</b><span>API 与 worker 分离 · Redis · 崩溃循环保护</span></div>
+    <div><b>评测框架</b><span>2×2 对比 · SWE-bench · 合成任务 · 中毒测试</span></div>
+  </div>
+
+  <footer>
+    <div class="motto">上层理解与路由，下层统一接口执行；策略、规则、记忆三层把关</div>
+    <div class="stamp">概念设计 · 2026-11</div>
+  </footer>
+</div>
+</body>
+</html>
