@@ -123,6 +123,7 @@ RECEIVED → UNDERSTANDING → ROUTED → RUNNING → DELIVERED
 ```
 
 - 进入等待状态时，记录在等什么、已经问了几轮、什么时候过期，然后**释放执行资源**（销毁沙箱、结束引擎实例）。
+- 等待与过期使用**持久化的定时唤醒**：过期时间存入数据库，由调度器到点处理，不依赖进程内计时器，worker 重启不会遗漏。
 - 等待用户的计时器与引擎执行命令的超时是两个独立的计时器。
 - 用户回复或确认后，按任务 ID 恢复：
   1. 合并原工单与补充内容，重新跑一遍提取；
@@ -167,7 +168,7 @@ RECEIVED → UNDERSTANDING → ROUTED → RUNNING → DELIVERED
 2. 会话任务进入队列，由 worker 领取，并持有任务租约。
 3. worker 为会话创建沙箱容器，拉取仓库，在容器里启动引擎运行器。
 4. 每一个事件和状态检查点写入 PostgreSQL。会话 API 通过 SSE 推送；客户端断线重连时携带最后收到的事件编号，服务端补发缺失的事件。
-5. worker 崩溃时租约过期，其他 worker 从最近的检查点恢复任务。崩溃时正在执行的工具调用**不自动重跑**：标记为失败，并以工具结果的形式告诉模型"这次调用中断了"。引擎层的检查点使用保存到沙箱外的 pi 会话文件（3.14）；是否使用 pi-durable 见 proposal 第 6 节。
+5. worker 崩溃时租约过期，其他 worker 从最近的检查点恢复任务。崩溃时正在执行的工具调用：工具风险等级表中声明为**可安全重跑**的（只读类，如读文件、搜索）直接重跑；其余（bash、写文件等有副作用的）**不自动重跑**，标记为失败并以工具结果的形式告诉模型"这次调用中断了"，原因是这类命令不一定能安全地重复执行。**崩溃循环保护**：同一任务被崩溃打断达到上限（默认 5 次）即终止并报告，不再被领取。引擎层的检查点使用保存到沙箱外的 pi 会话文件（3.14）。设计借鉴 pi-durable，但不采用它（`decisions/012-pi-durable-not-adopted.md`）。
 6. 任务结束后按类别交付，随后销毁沙箱。
 
 ### 3.11 评测
@@ -452,7 +453,7 @@ RECEIVED → UNDERSTANDING → ROUTED → RUNNING → DELIVERED
 - `contracts/routing-rules.md`：路由规则格式
 - `contracts/task-states.md`：任务状态与迁移
 - `contracts/policy.md`：扩展与策略服务之间的接口（超时与失败语义）
-- `contracts/tools.md`：工具风险等级表
+- `contracts/tools.md`：工具风险等级表（含"能否安全重跑"）
 - `contracts/approval.md`：审批单与授权
 - `contracts/session-api.md`：会话服务接口（三种模式）
 - `contracts/retrieval.md`：检索服务的 MCP 工具与实现接口（含提交历史检索）
@@ -472,6 +473,7 @@ RECEIVED → UNDERSTANDING → ROUTED → RUNNING → DELIVERED
 - `decisions/009-long-term-memory.md`：长期记忆的写入与召回
 - `decisions/010-cross-repo-read-only.md`：跨仓库只读
 - `decisions/011-evaluation-data-sources.md`：评测与微调的数据来源
+- `decisions/012-pi-durable-not-adopted.md`：不采用 pi-durable，借鉴其设计
 
 计划中的决策记录：子 agent 只读、深度为 1。
 
