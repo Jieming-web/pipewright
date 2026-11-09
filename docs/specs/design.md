@@ -501,6 +501,7 @@ RECEIVED → UNDERSTANDING → ROUTED → RUNNING → DELIVERED
 - `decisions/012-pi-durable-not-adopted.md`：不采用 pi-durable，借鉴其设计
 - `decisions/013-self-improvement-loop.md`：自我改进循环（RSI）
 - `decisions/014-pi-package-choice.md`：引擎用 pi-coding-agent，非 agent 的模型调用用 pi-ai
+- `decisions/015-model-selection.md`：模型选型
 
 计划中的决策记录：子 agent 只读、深度为 1。
 
@@ -510,7 +511,7 @@ RECEIVED → UNDERSTANDING → ROUTED → RUNNING → DELIVERED
 - 检索服务内 Cordis 的具体用法，以及第一版两种检索实现的具体种类（开工时验证 Cordis 可行性）
 - 其他平台能力的接口划分（按"能力接缝"思想：接口定义、实现、使用方）
 - 引擎运行器与后端之间的通信方式
-- 本地推理服务选型（vLLM、Ollama、llama.cpp 等）和工单理解小模型的型号
+- 本地推理服务选型（vLLM、Ollama、llama.cpp 等）；模型角色与候选见 `decisions/015-model-selection.md`
 - 前端的具体库与组件（在 React + TypeScript 范围内，保持简单）
 - 可观测的实现方式（OpenTelemetry 或自建 trace），只要满足 S6
 
