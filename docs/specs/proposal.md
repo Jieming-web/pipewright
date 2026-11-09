@@ -147,7 +147,7 @@ R1 至 R14 的全部内容。具体工作项见 `tasks.md`。
 | 评测框架用 Python 还是 TypeScript | 工具链 | 倾向 Python，T2 开工时确定 |
 | 对话模式是否包括跨仓库定位 | R10 的范围 | 已定（2026-11-08）：第一版支持沿调用链跨本次对话选中的几个仓库做只读问答与排查，见 `decisions/010-cross-repo-read-only.md`；全公司范围的代码搜索与跨仓库修改不在第一版 |
 | pi-durable（pi 的持久化、抗崩溃运行时）与 R3 崩溃恢复的关系 | R3 的实现方式 | 已定（2026-11-08）：不采用，引擎仍用 pi coding-agent，T14 自己实现并借鉴其设计；pi-durable 脱离实验状态或 pi coding-agent 改用它时再评估，见 `decisions/012-pi-durable-not-adopted.md` |
-| pi 内置 MCP 的确认 | R5 | 目前依据新闻稿（Pi 1.0，2026-10-01），需对照 pi 官方文档核实 |
+| pi 内置 MCP 的确认 | R5 | 证据加强：pi-coding-agent 依赖独立的 MCP 客户端包 `@earendil-works/pi-mcp`（2026-11-09 查看 package.json）；具体配置方式在 T1 开工时核实 |
 | pi 禁用仓库 `.pi/` 资源的具体开关；pi 上下文钩子能否只追加 | R6、R13 | 分别在 T1、记忆第一版开工前核实 |
 | 记忆前置过滤的阈值、提取用的模型 | R13 | 开工时用数据和评测决定 |
 | loop engineering 是否加入 | 范围 | 待讨论（RSI 已定为 R14） |

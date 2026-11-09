@@ -36,7 +36,7 @@
 
 | 模块 | 职责 | 不负责 | 对应需求 |
 |---|---|---|---|
-| pi（外部依赖） | agent loop、内置工具、失败重试、上下文压缩、skill 加载、MCP 客户端、会话文件 | 权限、多会话、沙箱 | R1 |
+| pi（外部依赖） | 引擎使用 **pi-coding-agent** 的 SDK：agent loop、内置工具、失败重试、上下文压缩、skill 加载、MCP 客户端（pi-mcp）、会话文件、扩展机制；它依赖 pi-agent-core 与 pi-ai（`decisions/014-pi-package-choice.md`） | 权限、多会话、沙箱 | R1 |
 | 统一引擎接口 | 跨进程协议：启动任务、接收流式事件、工具执行前拦截、确认请求、取消；把引擎事件转换成本项目事件协议；提供 TypeScript 与 Python 客户端 | 具体引擎的实现 | R1 |
 | pi 适配器 / 引擎运行器 | 在沙箱容器内用 pi SDK 运行任务，挂载本项目扩展（工具拦截、注册本项目工具），与后端通信 | 策略判断 | R1、R4、R6 |
 | Claude Code 适配器 | 让 Claude Code 通过同一接口运行，仅用于评测 | 产品功能 | R1、R2 |
@@ -50,6 +50,7 @@
 | 子 agent 服务 | 另起一个只读的引擎实例执行探索任务，只返回摘要 | 修改代码 | R5、R6 |
 | skill 管理 | 按团队、按用户分发 skill；版本与权限；记录每次会话用了哪个 skill 的哪个版本 | skill 的加载（pi 负责） | R5、R6 |
 | 检索服务 | 以 MCP 服务向引擎提供代码检索；内部用 Cordis 按项目装配多种检索实现；在平台侧构建、增量更新、共享索引 | 引擎内的工具调用流程 | R12 |
+| 模型客户端（非 agent 调用） | 编排层的工单理解、记忆服务的前置过滤与召回精选等"一次请求、一个答案"的模型调用统一使用 **pi-ai**，与引擎共用模型配置方式与用量统计口径 | agent 逻辑 | R9、R11、R13 |
 | 本地推理服务 | 部署开源权重模型（小模型、主模型），提供 OpenAI 兼容接口；同时服务编排层（工单理解）和记忆服务（前置过滤、召回精选），只共用部署、不共用职责 | agent 逻辑、各调用方的业务判断 | R9 |
 | 微调流水线（Python） | 准备数据、训练工单理解小模型、产出可部署的模型 | 评测判定 | R9 |
 | 评测框架 | 跑任务集、判定结果、统计成功率、token、轮数、耗时和失败类型，保存执行轨迹；支持 2×2 对比与工单理解准确率评测 | agent 逻辑 | R2 |
@@ -499,6 +500,7 @@ RECEIVED → UNDERSTANDING → ROUTED → RUNNING → DELIVERED
 - `decisions/011-evaluation-data-sources.md`：评测与微调的数据来源
 - `decisions/012-pi-durable-not-adopted.md`：不采用 pi-durable，借鉴其设计
 - `decisions/013-self-improvement-loop.md`：自我改进循环（RSI）
+- `decisions/014-pi-package-choice.md`：引擎用 pi-coding-agent，非 agent 的模型调用用 pi-ai
 
 计划中的决策记录：子 agent 只读、深度为 1。
 
