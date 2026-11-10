@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeModelsJson, startFakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
 type Fake = Awaited<ReturnType<typeof startFakeOpenAIServer>>;
@@ -114,8 +114,7 @@ describe("fake OpenAI server", () => {
     expect(chunks.map((c) => c.choices[0]?.delta.content ?? "").join("")).toBe("partial-");
     expect(chunks.some((c) => c.choices[0]?.finish_reason || c.usage)).toBe(false);
     expect(s.requests).toHaveLength(1);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(s.stats.inFlight).toBe(0);
+    await vi.waitFor(() => expect(s.stats.inFlight).toBe(0));
     expect(s.errors).toEqual([]);
   });
 
