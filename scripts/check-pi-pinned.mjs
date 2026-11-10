@@ -16,19 +16,24 @@ const hasPi = (obj) => Object.keys(obj ?? {}).some((k) => k.includes(PI));
 
 export function checkPiPinned(rootDir) {
   const problems = [];
-  const manifests = [["package.json", join(rootDir, "package.json")]];
+  const manifests = [["package.json", join(rootDir, "package.json"), "."]];
   const pkgsDir = join(rootDir, "packages");
   if (existsSync(pkgsDir)) {
     for (const d of readdirSync(pkgsDir)) {
       const p = join(pkgsDir, d, "package.json");
-      if (existsSync(p)) manifests.push([`packages/${d}/package.json`, p]);
+      if (existsSync(p)) manifests.push([`packages/${d}/package.json`, p, `packages/${d}`]);
     }
   }
 
-  for (const [label, path] of manifests) {
+  const declaring = []; // 声明了 pi 的 [label, relDir]，锁文件必须逐一对上
+  for (const [label, path, relDir] of manifests) {
     const pkg = readJson(path);
     if (pkg.name === PI) problems.push(`${label}: 工作区内包名为 ${PI}，疑似 vendored 拷贝`);
     for (const f of DEP_FIELDS) {
+      for (const [k, v] of Object.entries(pkg[f] ?? {})) {
+        if (k !== PI && String(v).includes(PI)) problems.push(`${label}: ${f} 中 "${k}" 以别名引用 ${PI}`);
+      }
+      if (f !== "peerDependencies" && pkg[f]?.[PI] !== undefined) declaring.push([label, relDir]);
       const spec = pkg[f]?.[PI];
       if (spec !== undefined && spec !== PI_VERSION) {
         problems.push(`${label}: ${f} 中 ${PI} 必须是确切版本 ${PI_VERSION}，实际为 "${spec}"`);
@@ -49,15 +54,16 @@ export function checkPiPinned(rootDir) {
     const lock = readYaml(lockPath);
     if (hasPi(lock.patchedDependencies)) problems.push("pnpm-lock.yaml: patchedDependencies 含 pi");
     if (hasPi(lock.overrides)) problems.push("pnpm-lock.yaml: overrides 含 pi");
-    for (const [imp, data] of Object.entries(lock.importers ?? {})) {
-      for (const f of ["dependencies", "devDependencies", "optionalDependencies"]) {
-        const e = data?.[f]?.[PI];
-        if (!e) continue;
-        const resolved = String(e.version).replace(/\(.*$/, "");
-        if (resolved !== PI_VERSION) {
-          problems.push(`pnpm-lock.yaml: importer ${imp} 解析到 ${PI}@${resolved}，必须是 ${PI_VERSION}`);
-        }
+    const importers = lock.importers ?? {};
+    for (const [label, relDir] of declaring) {
+      const e = ["dependencies", "devDependencies", "optionalDependencies"].map((f) => importers[relDir]?.[f]?.[PI]).find(Boolean);
+      if (!e) {
+        problems.push(`pnpm-lock.yaml: importer ${relDir} 缺少 ${PI} 条目（${label} 已声明）`);
+        continue;
       }
+      if (e.specifier !== PI_VERSION) problems.push(`pnpm-lock.yaml: importer ${relDir} 的 specifier 为 "${e.specifier}"，必须是 ${PI_VERSION}`);
+      const resolved = String(e.version).replace(/\(.*$/, "");
+      if (resolved !== PI_VERSION) problems.push(`pnpm-lock.yaml: importer ${relDir} 解析到 ${PI}@${resolved}，必须是 ${PI_VERSION}`);
     }
   }
 

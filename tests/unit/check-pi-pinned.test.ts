@@ -15,6 +15,8 @@ interface Opts {
   runnerDeps?: Record<string, string>;
   workspaceYaml?: string;
   lockVersion?: string;
+  lockSpecifier?: string;
+  lockRaw?: string;
   extraFiles?: Record<string, string>;
 }
 
@@ -36,7 +38,8 @@ function fixture(o: Opts = {}): string {
   const v = o.lockVersion ?? "1.5.1";
   w(
     "pnpm-lock.yaml",
-    `lockfileVersion: '9.0'\nimporters:\n  packages/engine-runner:\n    dependencies:\n      '${PI}':\n        specifier: 1.5.1\n        version: ${v}\n`,
+    o.lockRaw ??
+      `lockfileVersion: '9.0'\nimporters:\n  packages/engine-runner:\n    dependencies:\n      '${PI}':\n        specifier: ${o.lockSpecifier ?? "1.5.1"}\n        version: ${v}\n`,
   );
   for (const [p, c] of Object.entries(o.extraFiles ?? {})) w(p, c);
   return root;
@@ -99,5 +102,22 @@ describe("checkPiPinned", () => {
 
   it("报告已知 vendored pi 路径", () => {
     expect(problems({ extraFiles: { "vendor/pi/package.json": JSON.stringify({ name: PI }) } })).toContain("vendor");
+  });
+
+  it("锁文件 runner importer 缺 pi 条目失败", () => {
+    const p = problems({ lockRaw: "lockfileVersion: '9.0'\nimporters:\n  packages/engine-runner:\n    dependencies: {}\n" });
+    expect(p).toContain("pnpm-lock.yaml");
+  });
+
+  it("锁文件缺 importers 失败", () => {
+    expect(problems({ lockRaw: "lockfileVersion: '9.0'\n" })).toContain("pnpm-lock.yaml");
+  });
+
+  it("锁文件 specifier 与确切版本不符失败", () => {
+    expect(problems({ lockSpecifier: "^1.5.1" })).toContain("specifier");
+  });
+
+  it.each([`npm:${PI}@1.5.0`, `npm:${PI}@1.5.1`])("别名 key 下引用 pi（%s）失败", (spec) => {
+    expect(problems({ runnerDeps: { [PI]: "1.5.1", "pi-alt": spec } })).toContain("pi-alt");
   });
 });
