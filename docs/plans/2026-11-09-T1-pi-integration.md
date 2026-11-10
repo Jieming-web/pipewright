@@ -47,7 +47,7 @@
 | 安装与资料访问 | 能下载指定 pi 版本及测试工具，能读取该版本 SDK 文档/声明与 Claude Agent SDK 官方文档 | 0A、0B |
 | 本地通信与子进程 | 临时 HTTP/WebSocket 可绑定 loopback 随机端口；Node 能启动并清理子进程 | 0A |
 | 执行与审查能力 | 核实所选执行方式及 writing-plans、using-git-worktrees、TDD、verification-before-completion、requesting-code-review 等所需技能/工具可用；缺失则报告，不默认为已具备 | 0A |
-| pi SDK | 候选 1.5.0，核实后锁定；资源隔离、扩展、MCP、事件、取消与清理 API 有固定版本证据 | 0A、0B |
+| pi SDK | 锁定 1.5.1（2026-11-10 作者决定由候选 1.5.0 改为 1.5.1，见实现说明 0A-R）；资源隔离、扩展、MCP、事件、取消与清理 API 有固定版本证据 | 0A、0B |
 | API 凭证 | 从项目根目录 `.env` 注入 `DASHSCOPE_API_KEY`；只记录存在/缺失和调用成败，不打印值、不提交 `.env` | 0C |
 | API 服务与模型 | 固定模型版本、服务地址、权限/额度及经 pi 的真实工具调用往返可用 | 0C |
 | Ollama 与本地模型 | `ollama --version`、服务可达、选定模型已下载；记录模型标签与 digest、量化、推理配置，实际完成一次推理请求 | 0C |

@@ -452,6 +452,69 @@ node run-lifecycle.mjs retry-ok retry-exhausted unreachable http400 stream-drop 
   - #9126、#8635、#11879：都有探测证据和 1.5.0 对照。直接打中"鉴权期间 abort"的尝试没有成功，0B.2 中已说明。
   - #11599：按要求只查了代码，结论是不涉及 SDK 嵌入路径。
 
+### 0A-R pi 1.5.1 复核（2026-11-10）
+
+执行者：Task 0A-R 子 agent。下文 `<scratch-r>` 指 `/private/tmp/claude-501/<session>/scratchpad/t0a-r`，`<scratch>` 仍指 0A 的 `t0a`（只读对照）。0A 正文不改，本节说明 0A 中“1.5.0”的表述在 1.5.1 上是否仍然适用。没有调用真实模型（loopback 桩，key 为 `stub-not-a-secret`），没有读取 `.env`。
+
+**作者决定与理由**：2026-11-10 作者把 pi 锁定版本由计划候选 1.5.0 改为 **1.5.1**。理由：1.5.1 修复了 #9126（会话清理在工具中止结果记录前拆掉扩展）和 #8635（提供方加载/鉴权期间取消被报告为错误），两者都在 T1 的取消与清理路径上；1.5.1 的两项破坏性变更（`GrepOperations.readFile` 不再用于上下文行；OpenAI 兼容模型在禁用全部工具时省略 `tools: []`）不影响 T1。作者同时要求 0B 覆盖 #11879 与 #11599（见 0B）。
+
+**锁定版本与来源**（这里是 1.5.1 的权威记录，0A.1 中的 1.5.0 行保留为历史）：
+
+| 项 | 值 | 证据 |
+|---|---|---|
+| 包 | `@earendil-works/pi-coding-agent` **1.5.1**（确切版本），发布于 2026-11-09T23:45:13Z | `npm view …@1.5.1`，`<scratch-r>/pkg/package.json` 用确切版本 |
+| tarball 完整性 | `sha512-rdu4pRvpQba2ep83nqHaN8L1pvY1OQ3i/2FucogA/eyRxwoUXMUXdk1Z9JnZFJR+9ck9Gs1ajuSb9m7Hz7ejYw==` | `npm view` 的 `dist.integrity` 与 `npm install --save-exact --ignore-scripts` 生成的 `package-lock.json` 一致；与 0B 记录的值一致 |
+| `@earendil-works/pi-mcp` | **1.5.1**，`sha512-cUFhLnanLjBf8+NpHU+shJTzvcfLBjjDI02tI7hSmYnYqNfhqXhFPEkqT8G+/e+PX6r46DX1ZU54BTC5+p+MRA==` | `npm view …pi-mcp@1.5.1 dist.integrity` 与 `package-lock.json` 一致；`pi-coding-agent@1.5.1` 的 dependencies 中 pi-ai、pi-agent-core、pi-mcp、pi-tui、pi-codemode 全是 1.5.1 |
+| engines | `node >=22.19.0` | `npm view`，与 1.5.0 相同 |
+| 官方仓库固定点 | tag `v1.5.1` 指向 commit `dd30101cfc5b0609411dd80b6f93adbc14db14cf`（`v1.5.0` 仍是 `f9a2636…`） | `git ls-remote --tags https://github.com/earendil-works/pi`，退出码 0；该 commit 的 `packages/coding-agent/package.json` 中 version 为 1.5.1 |
+| tarball 与 tag 是否一致 | 一致：`docs/{sdk,security,mcp,environment-variables,configuration,settings,extensions,skills}.md` 和 `examples/sdk/{07-context-files,12-full-control,14-codemode-mcp}.ts` 这 11 个文件与 commit dd30101 中 `packages/coding-agent/` 下的同名文件**逐字节相同** | 附录 A 的 `compare-tag.mjs`（对 dd30101），退出码 0。脚本中的 `src/**` 4 项不在 tarball 中，与 0A 一致。这补上了 0B 开头所说“tarball 与 tag 的逐字节比对归 0A 复核” |
+
+**文件/符号对比（1.5.0 与 1.5.1，`cmp`/`diff` 实测；1.5.0 取自 `<scratch>/pkg/node_modules`，只读）**
+
+0A.3–0A.6 引用的文件与符号，结果如下。
+
+相同（逐字节）：`dist/core/resource-loader.js`（`loadProjectContextFiles`、`loadContextFileFromDir`、`DefaultResourceLoader.reload`、`discoverSystemPromptFile`、`discoverAppendSystemPromptFile`）、`dist/core/resource-loader.d.ts`、`dist/core/settings-manager.js`（`create`、`fromStorageWithPaths`、`inMemory`）、`dist/core/sdk.js`、`dist/core/sdk.d.ts`、`dist/config.js`（`getAgentDir`）、`dist/extensions/mcp/index.d.ts`（`McpExtensionOptions`、`LoadedMcpConfig`、`createMcpExtension`）、`dist/extensions/mcp/config.d.ts`、`docs/{mcp,sdk,security,configuration,skills,environment-variables}.md`、`examples/sdk/{12-full-control,14-codemode-mcp}.ts`。
+
+有差异，逐项判断：
+
+| 文件 | 差异 | 对 0A 结论的影响 |
+|---|---|---|
+| `dist/core/package-manager.js` | `isOfflineModeEnabled` 改为导出；`update` 路径增加“更新了哪些包”的汇总。`resolve`、`addAutoDiscoveredResources`、`collectAncestorAgentsSkillDirs` 不在差异中 | 无。资源发现不变 |
+| `dist/extensions/mcp/index.js` | `createMcpToolName`、`mcpNamespace` 改从 `@earendil-works/pi-mcp` 导入（原来在 `core/mcp-servers.js` 和 `./tools.js`）；文本截断改用 `sliceHead`。`defaultLoadConfig` 仍是 `loadMcpConfig({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() })`；`logPath` 默认仍是 `join(getAgentDir(), "mcp.log")` | 无。0A.5 的 agentDir 注意事项原样成立 |
+| `dist/extensions/mcp/runtime.js` | `sliceTail` 截断 stderr；`McpSignInCancelledError` 改从 pi-mcp 重导出。`createDefaultTransport` 仍不设 `inheritEnv` | 无 |
+| `dist/extensions/mcp/oauth.js` | 改为调用 pi-mcp 的 `startMcpSignIn`、`completeMcpSignIn` 等；凭证默认路径仍是 `join(getAgentDir(), "mcp-auth.json")`，锁目录仍是 `getAgentDir()` | 无。OAuth 默认路径仍用进程级 agentDir |
+| `dist/core/agent-session.d.ts` | 新增私有成员 `_promptPreflightCount`、`_queuedMessagesWithImages`、`_recordSelection`，注释调整 | 无。`bindExtensions(bindings: ExtensionBindings)` 签名不变 |
+| `dist/core/extensions/types.d.ts` | 新增 `MarkdownMessageType`、`MarkdownTransformerOptions`，`registerMarkdownTransformer` 增加可选参数；注释调整 | 无。`ProjectTrustEvent`、`ExtensionAPI`、`registerMcpServer` 不变 |
+| `dist/core/model-runtime.d.ts` | 新增 `settleCredentialWrites()`。`ModelRuntime.create({ authPath, modelsPath, … })` 不变 | 无（新增方法，进程退出前可用，是否采用归 7） |
+| `docs/settings.md` | `cacheWarming` 默认值由 `"streaming"` 改为 `"idle"`（仅全局设置） | 无。推荐组合用内存设置，不涉及 |
+| `docs/extensions.md` | 载荷说明、RPC 模式下 compaction 的触发时机、`registerMarkdownTransformer` 选项 | 无 |
+| `@earendil-works/pi-mcp/dist` | 新增 `config.js`（导出 `validateMcpServerConfig`、`isMcpServerOverride` 与各 `Mcp*ServerConfig` 类型）、`input-schema.js`、`transports/lines.js`、`transports/pipe.js`；`StdioTransport` 内部由 `stdoutBuffer/stderrBuffer` 改为 `lines`。`StdioTransport` 的 env 合并仍是 `inheritEnv === false ? { …options.env } : { …process.env, …options.env }` | **不改变结论，但对 0A.5 的约束 2 有补充**，见下 |
+
+**补充（对 0A.5 约束 2 的修正性说明，不改 0A 原文）**：0A.5 写的是 `config.js` 中的解析函数没有导出，平台需自己校验。1.5.1 的 `@earendil-works/pi-mcp` 导出了 `validateMcpServerConfig(name, raw, options?)`（`pi-mcp/package.json` 的 `exports` 有 `.`、`./oauth`、`./testing`）。`pi-coding-agent` 的 `exports` 仍只有 `.` 和 `./rpc-entry`。因此平台若要用它，得把 `pi-mcp` 作为直接依赖并固定为 1.5.1。**这一点只读了类型声明，没有运行验证**，是否采用留给 T3/T7；不采用则按 0A.5 约束 2 自己校验即可。约束 1、3、4 在 1.5.1 上不变（约束 3 的依据是上表 `StdioTransport` 和 `createDefaultTransport` 的行）。
+
+**四组探测对比**（`<scratch-r>/pkg` 中用 1.5.1 重跑，命令见 0A.7，脚本沿用附录 A，未做任何修改；`probe-net-proc.mjs` 仍退出码 0）
+
+四个模式退出码都是 0，stderr 都为空。与 `<scratch>/out-*.json` 逐行 `diff`：
+
+| 模式 | 与 1.5.0 的差异 | 结论是否相同 |
+|---|---|---|
+| `baseline` | 只有 `"version"`，以及三个敌意 MCP 工具名在 `activeTools` 与模型请求中的**先后顺序**（后台异步连接的完成顺序，两个敌意服务都在）；上下文文件、skill、prompt、扩展、系统提示来源、`projectTrusted: true`、15 个扩展 marker 与 2 个 `mcp-started-*` 全部相同 | 相同：敌意资源全部加载 |
+| `baseline-home` | 同上：`"version"` 与 `hostile_homeagent`/`hostile_repo` 的顺序 | 相同：回落到伪 HOME 的 `~/.pi/agent`，敌意资源全部加载 |
+| `locked` | 只有 `"version"` | 相同：无 HOSTILE 标记，无扩展 marker，只有 `mcp-started-platform`；4 次模型请求的工具都是 `read, bash, mcp__platform__echo, mcp__platform__add`；`bash` 输出 `<root>/work/org/repo` 与 `CWD_MARKER_CONTENT`，`read` 得到 `CWD_MARKER_CONTENT`，`mcp__platform__echo` 得到 `echo(platform): hello-mcp`，`isError: false` |
+| `locked-default-mcp` | 只有 `"version"` | 相同：`mcp-started-hostile-envagent` 出现，MCP 默认配置仍不跟随 SDK 的 `agentDir` |
+
+没有出现停止条件中的任何一种（locked 中无敌意资源、cwd 正确、MCP 启用方式没变、默认 MCP 的注意事项一致）。
+
+**对 0A 结论的确认或修正**：
+- 确认：0A.3 资源入口清单、0A.4 推荐的 locked 组合与 `project_trust` 说明、0A.5 的启用步骤与四条约束、0A.6 的名称对照，在 1.5.1 上都成立。0A.4 代码片段里的 `// 1.5.0` 注释在 1.5.1 上同样适用。
+- 修正/补充只有一处：约束 2 的 `validateMcpServerConfig`（见上），不影响推荐组合。
+- 0A 正文中所有“1.5.0 中的事实”“1.5.0 实际名称”的表述，以本节为准读作“1.5.1 同样成立”；不再需要 1.5.0 的版本信息，只保留作历史。
+
+**三条澄清（0A 原文不改）**：
+1. **0A.4 推荐片段的来源**：片段是**由探测代码改写**的，不是逐字运行的代码。探测（`probe-pi.mjs`）的 `locked` 组实际使用的工具白名单是 `["read", "bash", "mcp__platform__*"]`，也就是 read、bash 和 MCP；片段里的 `edit`、`write` **没有实测**（pi 的内置工具按 `createAgentSession({ cwd })` 工作的结论来自 bash 与 read 的实测加文档）。使用前由 Task 7 在自己的测试里覆盖。
+2. **附录 A 的 `run-probe.mjs` 的运行位置**：它用相对路径，必须在 `pkg/` 目录下运行；敌意目录树输出根是 `../hostile`（即 `pkg/` 的上一级），`out-<mode>.json` 与 `err-<mode>.txt` 也写到 `pkg/` 的上一级。
+3. **“15 个扩展 marker”与“6 个扩展”的关系**：`baseline` 的 `loader.extensions` 有 6 项：5 个来自文件的敌意扩展（`repo/.pi/extensions/evil-repo.ts`、`evil-dir/index.ts`、`repo/.pi/extra-repo.ts`、`envagent/extensions/evil-envagent.ts`、`envagent/extra-envagent.ts`；`baseline-home` 中 envagent 换成 homeagent）和 1 个内联的 `createMcpExtension()`（`<inline:1>`）。每个敌意扩展在模块求值、factory 执行、`session_start` 三个阶段各写一个 marker，5 × 3 = 15；内联的 MCP 扩展不写 marker。另有 2 个 `mcp-started-*` marker 属于敌意 MCP 服务，不计入这 15 个。所以 `markers` 数组共 17 项。
+
 ## 1. 做了什么
 
 （待 Task 1 起的实现完成后填写。）
@@ -472,6 +535,7 @@ node run-lifecycle.mjs retry-ok retry-exhausted unreachable http400 stream-drop 
 | 偏差 | 原因 | 谁决定的 | 影响 |
 |---|---|---|---|
 | （0A 无偏差。计划中假设的 SDK 名称在 1.5.0 中都存在，对照见 0A.6。0A.5 列出的四条约束是对 SDK 事实的记录，留给后续任务吸收） | — | — | — |
+| pi 锁定版本由计划候选 1.5.0 改为 **1.5.1**（计划环境表的 pi SDK 行已同步）；0A 的结论在 1.5.1 上的复核见 0A-R 节 | 1.5.1 修复了 #9126、#8635，两者在 T1 的取消与清理路径上；两项破坏性变更不影响 T1 | 作者，2026-11-10 | 无行为影响：0A 四组探测在 1.5.1 上结论相同；0B 已在 1.5.1 上完成 |
 
 ## 5. 验证记录
 
