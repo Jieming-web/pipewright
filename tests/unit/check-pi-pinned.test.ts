@@ -120,4 +120,62 @@ describe("checkPiPinned", () => {
   it.each([`npm:${PI}@1.5.0`, `npm:${PI}@1.5.1`])("别名 key 下引用 pi（%s）失败", (spec) => {
     expect(problems({ runnerDeps: { [PI]: "1.5.1", "pi-alt": spec } })).toContain("pi-alt");
   });
+
+  describe("pi 全部子包（@earendil-works/pi-*）", () => {
+    const AI = "@earendil-works/pi-ai";
+    const lockWith = (pkgKey: string) =>
+      `lockfileVersion: '9.0'\nimporters:\n  packages/engine-runner:\n    dependencies:\n      '${PI}':\n        specifier: 1.5.1\n        version: 1.5.1\npackages:\n  '${pkgKey}':\n    resolution: {integrity: x}\n`;
+
+    it("pnpm.patchedDependencies 针对 pi-agent-core 失败", () => {
+      const p = problems({ rootPkg: { name: "r", pnpm: { patchedDependencies: { "@earendil-works/pi-agent-core@1.5.1": "patches/x.patch" } } } });
+      expect(p).toContain("patchedDependencies");
+    });
+
+    it("pnpm.overrides 重定向 pi-ai 失败", () => {
+      expect(problems({ rootPkg: { name: "r", pnpm: { overrides: { [AI]: "file:../my-pi-ai" } } } })).toContain("overrides");
+    });
+
+    it("锁文件 packages 中 pi-ai 版本不符失败（含 peer 后缀）", () => {
+      expect(problems({ lockRaw: lockWith(`${AI}@1.4.0`) })).toContain("1.4.0");
+      expect(problems({ lockRaw: lockWith(`${AI}@1.4.0(zod@3.25.76)`) })).toContain("1.4.0");
+    });
+
+    it("锁文件 packages 中 pi-ai@1.5.1（带 peer 后缀）通过", () => {
+      expect(checkPiPinned(fixture({ lockRaw: lockWith(`${AI}@1.5.1(zod@3.25.76)`) })).ok).toBe(true);
+    });
+
+    it("直接依赖 pi-ai：^1.5.1 失败，1.5.1 通过", () => {
+      expect(checkPiPinned(fixture({ runnerDeps: { [PI]: "1.5.1", [AI]: "^1.5.1" } })).ok).toBe(false);
+      const lock = `lockfileVersion: '9.0'\nimporters:\n  packages/engine-runner:\n    dependencies:\n      '${PI}':\n        specifier: 1.5.1\n        version: 1.5.1\n      '${AI}':\n        specifier: 1.5.1\n        version: 1.5.1\n`;
+      expect(checkPiPinned(fixture({ runnerDeps: { [PI]: "1.5.1", [AI]: "1.5.1" }, lockRaw: lock })).ok).toBe(true);
+    });
+
+    it("别名 key 引用 pi-ai 失败", () => {
+      expect(problems({ runnerDeps: { [PI]: "1.5.1", x: `npm:${AI}@1.5.0` } })).toContain('"x"');
+    });
+
+    it("包名以 @earendil-works/pi- 开头的工作区包视为 vendored", () => {
+      const p = problems({ extraFiles: { "packages/fake/package.json": JSON.stringify({ name: AI }) } });
+      expect(p).toContain("vendored");
+    });
+  });
+
+  describe("工作区包路径来自 pnpm-workspace.yaml", () => {
+    const app = (spec: string) => ({ "apps/console/package.json": JSON.stringify({ name: "console", dependencies: { [PI]: spec } }) });
+
+    it("apps/* 中的包 pi 版本不符失败", () => {
+      const r = checkPiPinned(fixture({ workspaceYaml: "packages:\n  - packages/*\n  - apps/*\n", extraFiles: app("^1.0.0") }));
+      expect(r.ok).toBe(false);
+      expect(r.problems.join("\n")).toContain("apps/console/package.json");
+    });
+
+    it("不含 glob 的精确目录被检查", () => {
+      const r = checkPiPinned(fixture({ workspaceYaml: "packages:\n  - packages/*\n  - apps/console\n", extraFiles: app("^1.0.0") }));
+      expect(r.problems.join("\n")).toContain("apps/console/package.json");
+    });
+
+    it.each(["apps/**", "!apps/x", "apps/{a,b}", "a/*/b"])("不支持的模式 %s 报问题（fail closed）", (pat) => {
+      expect(problems({ workspaceYaml: `packages:\n  - packages/*\n  - '${pat}'\n` })).toContain(pat);
+    });
+  });
 });
