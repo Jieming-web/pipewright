@@ -149,7 +149,7 @@
 - [x] **Step 1：写失败测试**，覆盖文本分块重组、工具参数重组、HTTP 错误、请求顺序、断线清理；脚本耗尽时返回明确错误并写入 `errors`，绝不复用最后一条文本。测试结束要求 `errors` 无意外项。 — 2026-11-10：`tests/unit/fake-openai-server.test.ts` 覆盖文本分块重组、分段与一次给全两种工具调用、HTTP 429、请求顺序、脚本耗尽（返回 500、写入 errors、不复用）、断线清理、`fakeModelsJson`，以及一轮真实 pi 1.5.1 文本对话（控制会话追加）；每个测试结尾都断言 errors 里没有意外项。返修第 1 轮把断线测试改为在 close 之前检查写出次数和 inFlight，并新增意外请求写入 errors 的测试。
 - [x] **Step 2：运行并确认预期失败**，`pnpm vitest run tests/unit/fake-openai-server.test.ts`。 — 2026-11-10：首次运行失败，原因是 `Cannot find module`，模块尚不存在；返修第 1 轮的测试同样先失败（2 failed | 8 passed）。控制会话做了变异检查：去掉断线判断后，断线测试失败（expected 52 to be less than 10），随后已还原。
 - [x] **Step 3：实现服务**，按 0C 核实的 OpenAI 兼容协议发送流式文本/工具调用；本地随机端口，不访问外部模型。 — 2026-11-10：服务只绑定 127.0.0.1 的随机端口；分块格式与 0C.4 一致，由控制会话逐项核对；意外的方法或路径返回 404 并写入 errors；测试可读取 `stats {writes, inFlight}`；`fakeModelsJson` 把 compat 全部关闭，`reasoning: false`，apiKey 使用字面值 `fake-key`。
-- [x] **Step 4：同命令通过后提交** `test(step01): 可编排的假模型服务`。 — 2026-11-10：控制会话复跑，该文件 10/10 通过，`pnpm typecheck` 无错误，`pnpm test` 36/36 通过；提交 f4c0fe9 `test(step01): 可编排的假模型服务`、a809bee `test(step01): 假模型服务断线与意外请求的检查`。
+- [x] **Step 4：同命令通过后提交** `test(step01): 可编排的假模型服务`。 — 2026-11-10：控制会话复跑，该文件 10/10 通过，`pnpm typecheck` 无错误，`pnpm test` 36/36 通过；提交 f4c0fe9 `test(step01): 可编排的假模型服务`、a809bee `test(step01): 假模型服务断线与意外请求的检查`。；2026-11-10 作者审查后返修第 2 轮（作者决定）：根目录 devDependencies 加入 pi `1.5.1`，测试改用正常 import（RED：Cannot find package）；控制会话复跑：该文件 10/10，`check:pi` 通过（根目录 importer 为 1.5.1，锁文件中只有一份 pi），`pnpm test` 49/49 通过；锁文件里间接依赖 `@smithy/node-http-handler` 由 4.12.1 升到 4.14.2，是 pnpm 重新解析依赖的副作用；提交 a0c92d0
 
 ### Task 2B：通过真实 pi 录制事件样本
 
