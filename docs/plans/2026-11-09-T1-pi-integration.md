@@ -95,10 +95,10 @@
 
 **Interfaces:** 输出锁定 pi 版本、资源入口清单、SDK 配置组合、MCP 配置样例和可复现的脱敏探测命令，供 0B、0C、7 使用。
 
-- [ ] **Step 1：检查执行环境**，按环境表运行版本、临时 git 提交、端口与子进程探测；记录实际命令、退出码和结果，任一必要能力失败即停止。
-- [ ] **Step 2：核实资源发现**，读取固定版本的 SDK、安全、扩展文档及类型声明。检查 `cwd`、`agentDir`、祖先目录、用户目录、环境变量和 settings 引用路径；确认自定义 `resourceLoader` 后工具工作目录仍正确。查明关闭上下文文件、配置、提示词、扩展、skill 自动发现的明确设置；空目录不作为充分证据。内联 `project_trust` 若可用，只作第二道保险。
-- [ ] **Step 3：核实 MCP**，以固定版本文档的章节、符号和示例路径记录内置 MCP 依赖、SDK 启用步骤、配置文件位置/格式及可信配置注入方式。`createMcpExtension`、`bindExtensions` 等名称均须以该版本为准；用临时本地 MCP 服务验证加载配置并列出工具。不自建替代客户端；能力不可用即报告。
-- [ ] **Step 4：记录并提交** `docs(step01): 核实执行环境与 pi 资源及 MCP 能力`。记录官方固定版本链接/commit，不引用浮动文档的行号。
+- [x] **Step 1：检查执行环境**，按环境表运行版本、临时 git 提交、端口与子进程探测；记录实际命令、退出码和结果，任一必要能力失败即停止。 — 2026-11-10：`node --version`、`pnpm --version`、`git --version`、临时仓库 init/commit/show、`node probe-net-proc.mjs` 等均退出 0（Node v24.15.0、pnpm 10.34.9、git 2.39.5、bash 3.2.57；loopback HTTP/WS 随机端口与子进程清理通过）；明细见 `docs/reviews/step01-pi-integration.md` 0A.2。
+- [x] **Step 2：核实资源发现**，读取固定版本的 SDK、安全、扩展文档及类型声明。检查 `cwd`、`agentDir`、祖先目录、用户目录、环境变量和 settings 引用路径；确认自定义 `resourceLoader` 后工具工作目录仍正确。查明关闭上下文文件、配置、提示词、扩展、skill 自动发现的明确设置；空目录不作为充分证据。内联 `project_trust` 若可用，只作第二道保险。 — 2026-11-10：依据 tag v1.5.0（f9a2636）文档与 `.d.ts`；`node run-probe.mjs baseline|baseline-home|locked|locked-default-mcp` 均退出 0：基线加载全部敌意资源；推荐组合（`noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles` + `SettingsManager.inMemory(…, {projectTrusted:false})` + `agentsFilesOverride` + `appendSystemPrompt: []` + `reload({resolveProjectTrust})`）只出现平台资源，bash/read 工作目录正确；见实现说明 0A.3–0A.4。
+- [x] **Step 3：核实 MCP**，以固定版本文档的章节、符号和示例路径记录内置 MCP 依赖、SDK 启用步骤、配置文件位置/格式及可信配置注入方式。`createMcpExtension`、`bindExtensions` 等名称均须以该版本为准；用临时本地 MCP 服务验证加载配置并列出工具。不自建替代客户端；能力不可用即报告。 — 2026-11-10：内置 `createMcpExtension`（依赖 `@earendil-works/pi-mcp@1.5.0`）+ `session.bindExtensions({})`；经 `loadConfig` 注入的临时 stdio 服务被加载、列出 `mcp__platform__echo/add` 并调用成功；发现默认配置读取进程级 `getAgentDir()`（不随 SDK `agentDir`）；见实现说明 0A.5。
+- [x] **Step 4：记录并提交** `docs(step01): 核实执行环境与 pi 资源及 MCP 能力`。记录官方固定版本链接/commit，不引用浮动文档的行号。 — 2026-11-10：实现说明已创建（规范 commit 64d3422，pi tag v1.5.0 = f9a2636），本地提交见同名 commit。
 
 ### Task 0B：引擎公共能力核实
 
