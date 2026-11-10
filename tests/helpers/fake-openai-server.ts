@@ -4,6 +4,8 @@ import type { AddressInfo } from "node:net";
 /** 一条脚本对应一次 POST /chat/completions，按到达顺序消耗，耗尽后报错而不是复用。 */
 export type ScriptedTurn =
   | { kind: "text"; chunks: string[]; chunkDelayMs?: number }
+  /** 发出文本块后直接销毁连接：没有 finish 块、usage 和 [DONE]，用于“说到一半断开”（0B.2 stream-drop） */
+  | { kind: "drop"; chunks: string[]; chunkDelayMs?: number }
   | {
       kind: "toolCall";
       name: string;
@@ -88,12 +90,14 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     const delay = turn.chunkDelayMs ?? 0;
 
     let finish: string;
-    if (turn.kind === "text") {
+    if (turn.kind === "text" || turn.kind === "drop") {
       finish = "stop";
       for (const [i, c] of turn.chunks.entries()) {
         if (i) await sleep(delay, signal);
         send(choice(i ? { content: c } : { role: "assistant", content: c }));
       }
+      // 空写的回调在前面的块交出后才触发；直接 destroy 会丢掉 cork 缓冲里的块
+      if (turn.kind === "drop") return void res.write("", () => res.destroy());
     } else {
       finish = "tool_calls";
       const id0 = turn.id ?? "call_fake_0";

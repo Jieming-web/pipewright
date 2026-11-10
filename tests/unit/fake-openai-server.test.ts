@@ -91,6 +91,34 @@ describe("fake OpenAI server", () => {
     expect(s.errors).toEqual([]);
   });
 
+  it("中途断开：发出指定文本块后销毁连接，没有 finish 块和 [DONE]，不算服务端 errors", async () => {
+    const s = await start([{ kind: "drop", chunks: ["par", "tial-"], chunkDelayMs: 5 }]);
+    const res = await post(s);
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let raw = "";
+    let failure: unknown;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        raw += dec.decode(value);
+      }
+    } catch (e) {
+      failure = e;
+    }
+    expect(failure).toBeInstanceOf(Error); // 连接被切断，而不是正常结束
+    expect(raw).not.toContain("[DONE]");
+    const chunks: Chunk[] = raw.split("\n\n").filter((b) => b.startsWith("data: ")).map((b) => JSON.parse(b.slice(6)));
+    expect(chunks.map((c) => c.choices[0]?.delta.content ?? "").join("")).toBe("partial-");
+    expect(chunks.some((c) => c.choices[0]?.finish_reason || c.usage)).toBe(false);
+    expect(s.requests).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.stats.inFlight).toBe(0);
+    expect(s.errors).toEqual([]);
+  });
+
   it("按到达顺序记录请求体，每次请求消耗一条脚本", async () => {
     const s = await start([
       { kind: "text", chunks: ["one"] },
