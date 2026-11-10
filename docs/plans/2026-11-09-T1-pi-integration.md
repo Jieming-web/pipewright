@@ -162,7 +162,7 @@
 - [x] **Step 1：写失败测试**，验证记录包含真实 SDK 的文本、工具开始/结束及最终结束事件；两个重试样本按 0B 查明的机制触发中间结束/重试，验证之后仍有事件；`retry-drop` 还要验证失败那次尝试已发出的文本增量保留在记录中。假服务新增的断开脚本同样先写失败测试。保存前脱敏，样本只含临时公开测试数据。 — 2026-11-10：`tests/integration/pi-recording.test.ts` 对每个场景都做两件事：用真实 pi 现场录制并断言，同时检查已提交的样本文件。断言覆盖文本、工具开始/结束、`agent_settled` 是最后一个事件且中间的 `agent_end` 带 `willRetry:true`，以及 retry-drop 保留了失败那次尝试已发出的 `partial-` 文本增量；假服务新增的断开脚本也补了单元测试。
 - [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/pi-recording.test.ts`。 — 2026-11-10：录制测试先失败，原因是找不到模块；假服务的断开测试先失败，报 `expected '' to be 'partial-'`。
 - [x] **Step 3：实现录制并运行四个场景**，README 写 pi 版本、生成命令、场景与脱敏规则。不能取得预期重试序列时停下核对 0B；不得手写事件冒充录制。额外手写边界样本须另标 synthetic。 — 2026-11-10：用 CLI 录完 4 个场景，全部是真实 pi 1.5.1 的输出，没有 synthetic 样本；README 写明了版本、生成命令、各场景说明和脱敏规则。控制会话复核：(1) 重新录制的 4 个样本与已提交的逐字节相同；(2) 变异检查，给 text 场景多加一条用不到的剧本后，录制报 `expected 2 requests, got 1`，且没有写出文件；(3) 重试的事件顺序与 0B.2 一致，实测比 0B.2 多出 `entry_appended`，`auto_retry_end` 出现在第二次尝试的 `message_end` 之后。
-- [x] **Step 4：同命令通过并提交** `test(step01): 录制真实 pi 事件样本`。 — 2026-11-10：控制会话复跑，录制测试和假服务测试共 19/19 通过，`pnpm test` 58/58 通过，`typecheck` 和 `check:pi` 都通过；提交 e63333e `test(step01): 假服务新增中途断开脚本`、5755912 `test(step01): 录制真实 pi 事件样本`。
+- [x] **Step 4：同命令通过并提交** `test(step01): 录制真实 pi 事件样本`。 — 2026-11-10：控制会话复跑，录制测试和假服务测试共 19/19 通过，`pnpm test` 58/58 通过，`typecheck` 和 `check:pi` 都通过；提交 e63333e `test(step01): 假服务新增中途断开脚本`、5755912 `test(step01): 录制真实 pi 事件样本`。；2026-11-10 作者审查后返修第 1 轮（作者决定）：根目录新增 `tsconfig.json`，`pnpm typecheck` 改为同时检查 `scripts/` 和 `tests/`（RED：故意写入 `maxRetries: "2"` 后，旧命令 exit 0，新命令报 TS2322）；断开测试改用 `vi.waitFor`；控制会话复跑 typecheck、check:pi、build 都通过，`pnpm test` 58/58 通过；提交 4790c85 `chore(step01): 脚本与测试纳入类型检查`
 
 ### Task 3：事件转换与唯一终止发布
 
