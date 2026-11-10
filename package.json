@@ -11,6 +11,7 @@
     "check:pi": "node scripts/check-pi-pinned.mjs"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.1",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",

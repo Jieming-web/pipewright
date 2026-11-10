@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { fakeModelsJson, startFakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
@@ -163,9 +162,7 @@ describe("fake OpenAI server", () => {
     const modelsPath = join(agentDir, "models.json");
     writeFileSync(modelsPath, JSON.stringify(fakeModelsJson(s.baseUrl)));
 
-    // pi 只装在 engine-runner 下，根目录解析不到，直接按路径导入
-    const entry = resolve("packages/engine-runner/node_modules/@earendil-works/pi-coding-agent/dist/index.js");
-    const pi: any = await import(pathToFileURL(entry).href);
+    const pi: any = await import("@earendil-works/pi-coding-agent");
     const modelRuntime = await pi.ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath });
     const model = modelRuntime.getModel("fake", "fake-model");
     expect(model).toBeTruthy();
