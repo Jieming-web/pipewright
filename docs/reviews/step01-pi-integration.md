@@ -515,6 +515,192 @@ node run-lifecycle.mjs retry-ok retry-exhausted unreachable http400 stream-drop 
 2. **附录 A 的 `run-probe.mjs` 的运行位置**：它用相对路径，必须在 `pkg/` 目录下运行；敌意目录树输出根是 `../hostile`（即 `pkg/` 的上一级），`out-<mode>.json` 与 `err-<mode>.txt` 也写到 `pkg/` 的上一级。
 3. **“15 个扩展 marker”与“6 个扩展”的关系**：`baseline` 的 `loader.extensions` 有 6 项：5 个来自文件的敌意扩展（`repo/.pi/extensions/evil-repo.ts`、`evil-dir/index.ts`、`repo/.pi/extra-repo.ts`、`envagent/extensions/evil-envagent.ts`、`envagent/extra-envagent.ts`；`baseline-home` 中 envagent 换成 homeagent）和 1 个内联的 `createMcpExtension()`（`<inline:1>`）。每个敌意扩展在模块求值、factory 执行、`session_start` 三个阶段各写一个 marker，5 × 3 = 15；内联的 MCP 扩展不写 marker。另有 2 个 `mcp-started-*` marker 属于敌意 MCP 服务，不计入这 15 个。所以 `markers` 数组共 17 项。
 
+### 0C 模型资料与真实调用探测（2026-11-10）
+
+执行者：Task 0C 子 agent。下文 `<scratch0c>` 指 `/private/tmp/claude-501/<session>/scratchpad/t0c`。pi 为 `@earendil-works/pi-coding-agent@1.5.1`，用 `npm install --save-exact --ignore-scripts` 装在 `<scratch0c>/pkg`；`package-lock.json` 中的 integrity 为 `sha512-rdu4pRvpQba2ep83nqHaN8L1pvY1OQ3i/2FucogA/eyRxwoUXMUXdk1Z9JnZFJR+9ck9Gs1ajuSb9m7Hz7ejYw==`，与 0A-R 一致。
+
+**调用边界**：这是 T1 第一次调用真实模型，只调用了以下几处。
+- 百炼：一次免费的模型列表查询（3 个地域端点各一次 GET），加上一次经 pi 的探测（2 个对话请求）。
+- 本机 Ollama：一次经 pi 的探测（2 个请求）。
+
+探测只发送临时样例文件的内容。密钥只通过 `node --env-file=/Users/chenjieming/Desktop/coding-agent/.env` 注入探测进程；没有打印、复制或记录 `.env` 的内容。模型配置只写变量名 `$DASHSCOPE_API_KEY`。记录代理只保存请求头的名称，不保存值。运行结束后扫描了 `<scratch0c>` 下的所有输出，没有发现密钥值或 `Bearer` 值。
+
+#### 0C.0 作者决定（2026-11-10，经协调者转达，原文照录）
+
+1. Local small model: `qwen3:4b-instruct-2507-q4_K_M`. The author confirmed it is also the intended base model for T6 (ticket understanding) and T13 (fine-tuning), per ADR 015/R9/R11.
+2. Keep the spec (the local model also runs the five questions, results recorded). The Ollama context is set through a derived model, so the global service is unchanged: tag `qwen3-4b-instruct-2507-ctx16k`, created by the author with `ollama create … -f Modelfile`. Modelfile content (record it verbatim):
+   ```
+   FROM qwen3:4b-instruct-2507-q4_K_M
+   PARAMETER num_ctx 16384
+   ```
+   T1 probes and later runs use the derived tag.
+3. Thinking mode OFF for the T1 API model qwen3.6-35b-a3b.
+4. API model version is recorded as the undated ID `qwen3.6-35b-a3b` plus observation date 2026-11-10, with a note that it may change. The deviation from ADR 015 ("所有模型锁定版本") will be appended at T2. Record it as a deviation row.
+
+背景：子 agent 第一次执行时，本机 Ollama 中没有任何模型，因此报告了阻塞，并给出了候选标签和上下文长度的选项（4096 的默认上下文可能不够五题使用）。作者据此做出以上决定，并自行完成了下载和派生模型的创建。
+
+#### 0C.1 公开资料
+
+| 项 | Qwen3.6-35B-A3B（T1 选用） | Qwen3-Coder-Next（留给 T2） |
+|---|---|---|
+| 官方模型卡 | <https://huggingface.co/Qwen/Qwen3.6-35B-A3B><br>• 35B 总参数，3B 激活<br>• 原生上下文 262,144<br>• 引用信息的年月为 2026-04<br>• 默认是思考模式；在百炼上用顶层 `enable_thinking: false` 关闭 | <https://huggingface.co/Qwen/Qwen3-Coder-Next><br>• 80B 总参数，3B 激活<br>• 上下文 262,144<br>• 只有非思考模式<br>• 页面没有写发布日期 |
+| 许可证 | Apache-2.0（模型卡的 License 字段） | Apache-2.0（模型卡的 License 字段） |
+| 训练截止日期 | 未公开 | 未公开 |
+| 百炼可用性（本 key） | **可用**。key 属于华北2（北京）：`GET https://dashscope.aliyuncs.com/compatible-mode/v1/models` 返回 200，列出 182 个模型，其中有 `qwen3.6-35b-a3b`。新加坡（`dashscope-intl`）和弗吉尼亚（`dashscope-us`）端点返回 401 `invalid_api_key`，因为百炼的 key 按地域绑定（help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope） | **不可用**。本 key 的模型列表中没有任何含 `coder-next` 的 ID（只有 `qwen3-coder-flash`）；百炼官方页面也查不到它的模型 ID 和价格 |
+| 固定模型 ID | `qwen3.6-35b-a3b`，观察日期 2026-11-10。**平台没有带日期的快照 ID**：模型页和模型列表都只有这一个 ID。带日期的只出现在闭源系列，例如 `qwen3.6-flash-2026-04-16`、`qwen3.6-plus-2026-04-02`。<br>平台对版本的说明（help.aliyun.com/zh/model-studio/model-depreciation）：不带日期的系列名、带日期的版本和 `-latest` 都属于“正式版”，下线前至少提前 3 个月公告。**页面没有说明不带日期的 ID 背后的权重或行为是否会变**，所以这个版本可能变化（见作者决定 4） | — |
+| 接入地址 | `https://dashscope.aliyuncs.com/compatible-mode/v1`（OpenAI 兼容，已实测）。官方文档现在推荐业务空间专属域名 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，本次没有使用 | — |
+| 价格（百炼原价，元/百万 token） | 北京：输入 1.8，输出 10.8。不区分思考与非思考模式，不含限时优惠（help.aliyun.com/zh/model-studio/qwen3-6-35b-a3b）。同一页面标注 RPM 600、TPM 1,000,000，并标明支持 Function Calling | 只找到第三方报价，彼此不一致，没有采用 |
+| 密钥变量名 | `DASHSCOPE_API_KEY` | — |
+
+**选择**：T1 使用 `qwen3.6-35b-a3b`。它是 ADR 015 倾向的候选，也是本 key 当前唯一能直接调用的候选。两个候选的接通比较留给 T2。
+
+**本地小模型**：`qwen3:4b-instruct-2507-q4_K_M`（作者决定 1），对应官方 Qwen3-4B-Instruct-2507（<https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507>）。
+- 许可证 Apache-2.0。
+- 模型卡写明 "supports only non-thinking mode"。
+- 原生上下文 262,144；训练截止日期未公开。
+
+#### 0C.2 环境
+
+| 环境表行 | 命令 | 结果 |
+|---|---|---|
+| API 凭证 | `node --env-file=<abs>/.env -e '…'`（只输出 present/missing） | `present (length>0)` |
+| API 服务与模型（权限/区域） | `node --env-file=… <scratch0c>/scripts/list-models.mjs <scratch0c>/out-models.json` | 北京 200（182 个模型，含 `qwen3.6-35b-a3b`）；新加坡、弗吉尼亚 401 `invalid_api_key` |
+| Ollama 安装 | `ollama --version` | `ollama version is 0.40.15` |
+| Ollama 服务 | `curl http://127.0.0.1:11434/api/version` | `{"version":"0.40.15"}`。进程为 `ollama serve`，由 brew 的 launch agent `sh.brew.ollama` 启动 |
+| Ollama 服务配置（全局，未改动） | `plutil -p ~/Library/LaunchAgents/sh.brew.ollama.plist`；`/opt/homebrew/var/log/ollama.log` 中的启动配置 | `OLLAMA_FLASH_ATTENTION=1`、`OLLAMA_KV_CACHE_TYPE=q8_0`、`OLLAMA_CONTEXT_LENGTH:0`、`OLLAMA_NUM_PARALLEL:1`、`OLLAMA_KEEP_ALIVE:5m0s`；Metal 可用 10.7 GiB；日志中有 `vram-based default context … default_num_ctx=4096` |
+| 选定模型已下载 | `ollama list`；`curl …/api/tags` | 两个标签都在，见下表 |
+| 实际加载 | 在 Ollama 探测结束后马上执行 `ollama ps` | `qwen3-4b-instruct-2507-ctx16k:latest  7f091551b95c  3.9 GB  100% GPU  CONTEXT 16384  RUNNER llamacpp` |
+| Mac 资源 | `sysctl -n hw.memsize`；`memory_pressure`；`df -h` | 物理内存 16 GiB（17179869184），Apple M3，macOS 15.7.3。系统可用内存：没有加载模型时（当天第一次检查）约 37%，模型加载后约 26%。两次检查时其他进程的负载不同，所以差值不等于模型占用的内存。数据卷可用空间：下载前 58 GiB，下载后 51 GiB |
+
+本地模型（`/api/tags` 与 `ollama show` 实测；下载与派生模型的创建由作者完成）：
+
+| 项 | 基础标签 `qwen3:4b-instruct-2507-q4_K_M` | 派生标签 `qwen3-4b-instruct-2507-ctx16k`（T1 使用） |
+|---|---|---|
+| 完整 digest | `0edcdef34593eac1aa2be9c7d06c432dcf81945adca5eca2f27662c18f168ba0`。它等于 `registry.ollama.ai/v2/library/qwen3/manifests/4b-instruct-2507-q4_K_M` 的 sha256，与 ollama.com 标签页上显示的 `0edcdef34593` 一致 | `7f091551b95c30f4ff31a067faa273f56a3563b556cfd3d9f80d47c9b5d20ffc`。`/api/tags` 中的名称为 `qwen3-4b-instruct-2507-ctx16k:latest`：这里的 `:latest` 是本地派生模型的默认标签名，不是 registry 的浮动标签，版本以 digest 为准 |
+| 权重 | 模型层 `sha256:85e4a5b7b8ef0e48af0e8658f5aaab9c2324c76c1641493f4d1e25fce54b18b9`，2,497,280,480 字节 | 同一个权重层：`ollama show --modelfile` 中的 FROM 指向 `blobs/sha256-85e4a5b7…18b9`；`details.parent_model` 为 `qwen3:4b-instruct-2507-q4_K_M` |
+| 格式、规模与量化 | gguf，qwen3，4.0B，**Q4_K_M**；embedding 2560；模型元数据中的 context length 为 262144 | 相同 |
+| 参数 | temperature 0.7、top_k 20、top_p 0.8、repeat_penalty 1、stop `<\|im_start\|>`、`<\|im_end\|>`；没有设置 num_ctx，所以使用服务默认的 4096 | 与基础标签相同，另加 **num_ctx 16384** |
+| 模板与能力 | `template source: gguf_chat_template`。Ollama 列出的能力为 `tools, thinking, completion` | 相同 |
+| runner（`/api/tags`） | `ggml` | `llamacpp`（`ollama ps` 中也是 llamacpp） |
+| 大小（`/api/tags`） | 2,497,293,803 字节 | 2,497,293,447 字节 |
+
+**能力标签的注意事项**：Ollama 为这两个标签都列出了 `thinking` 能力，但官方模型卡写明 Instruct-2507 只支持非思考模式。本次探测中也没有出现任何思考内容（pi 的事件中没有 `thinking_*` 增量，响应中没有 `reasoning` 字段）。所以 `thinking` 这个能力标签不能作为“模型会思考”的依据。
+
+#### 0C.3 经 pi 的探测
+
+**配置**（API 和 Ollama 共用）：
+- 资源加载使用 0A.4 的 locked 组合：`noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles`，`agentsFilesOverride` 返回空，`appendSystemPrompt: []`，`reload({ resolveProjectTrust: async () => false })`。
+- 设置：`SettingsManager.inMemory({ cacheWarming: "off", retry: { enabled: true, maxRetries: 2 } }, { projectTrusted: false })`。`cacheWarming` 的取值依据是 `dist/core/settings-schema.d.ts` 中的 `cacheWarming: "off" | "streaming" | "idle"`。`SettingsManager.inMemory` 把设置写入 global 层，而 `getCacheWarmingMode()` 读的就是 global 层（`dist/core/settings-manager.js`）。探测运行时这个方法返回 `"off"`。
+- 会话：`SessionManager.inMemory`，工具为 `["read", "ls"]`，`thinkingLevel: "off"`。
+- 启动方式：`<scratch0c>/pkg/run-real.mjs` 用最小环境启动 `probe-real.mjs`。最小环境只有 `PATH`、伪 `HOME`、空的 `PI_CODING_AGENT_DIR`、`PI_OFFLINE=1`、`PI_SKIP_VERSION_CHECK=1`，再加上 `--env-file`。
+- 记录方式：pi 的 `baseUrl` 指向 loopback 随机端口上的记录代理，由代理转发到上游。
+- 脚本全文见附录 C。
+- 任务目录：一个临时目录，里面只有一个文件 `hello.txt`，内容为 `ForgePilot probe sample file. The magic word is: pelican.`。因为最小环境中没有 `TMPDIR`，这个目录建在 `/tmp` 下。
+- 提示：`Use the read tool to read the file hello.txt in the current directory. Then reply with only the magic word it contains.`
+
+`models.json`（写在 runner 私有的 agentDir 中；`baseUrl` 是代理地址）：
+
+```json
+{ "providers": {
+  "qwen-api": {
+    "baseUrl": "<代理>/compatible-mode/v1", "api": "openai-completions", "apiKey": "$DASHSCOPE_API_KEY",
+    "compat": { "thinkingFormat": "qwen", "supportsDeveloperRole": false, "supportsStore": false, "supportsReasoningEffort": false },
+    "models": [{ "id": "qwen3.6-35b-a3b", "reasoning": true, "input": ["text"], "contextWindow": 262144, "maxTokens": 8192 }] },
+  "ollama": {
+    "baseUrl": "<代理>/v1", "api": "openai-completions", "apiKey": "ollama",
+    "models": [{ "id": "qwen3-4b-instruct-2507-ctx16k", "reasoning": false, "input": ["text"], "contextWindow": 16384, "maxTokens": 4096 }] } } }
+```
+
+实际每次运行只写其中一个 provider。
+
+**`qwen-api` 的 `compat` 是必需的**：
+- 这组 `compat` 与 pi 自带模型目录中同一平台的条目一致（`pi-ai/dist/providers/data/qwen-token-plan-cn.json` 中的 `qwen3.6-plus` 等）。
+- pi 不能从 `dashscope.aliyuncs.com` 这个 URL 识别出百炼（`pi-ai/dist/api/openai-completions.js` 的 `detectCompat`）。不写 `compat` 时，pi 会使用 `thinkingFormat: "openai"`，发送 `store` 字段，并使用 developer 角色。这种组合没有实测。
+- `reasoning: true` 加上 `thinkingFormat: "qwen"`，才能让 `thinkingLevel: "off"` 变成请求中的 `enable_thinking: false`（`openai-completions.js` 中 `compat.thinkingFormat === "qwen" && model.reasoning` 的分支）。这对应作者决定 3。
+
+**命令与结果**：
+
+| 运行 | 命令（在 `<scratch0c>/pkg` 中执行） | 退出码 / stderr | 请求数 | 结果 |
+|---|---|---|---|---|
+| API | `node run-real.mjs qwen-api` | 0 / 空 | 2 个，都返回 200，没有重试 | 最终回答 `pelican` |
+| Ollama | `node run-real.mjs ollama qwen3-4b-instruct-2507-ctx16k` | 0 / 空 | 2 个，都返回 200，没有重试 | 最终回答 `pelican` |
+
+API 的第一次运行在发出请求之前就失败了，共 0 个请求、0 花费。原因是探测脚本自己的事件订阅回调没有处理字符串形式的 user content，抛出的异常被 pi 记成了助手错误 `(m.content ?? []).map is not a function`。修正脚本后重跑，上表记录的是重跑结果。这次失败与模型和服务都无关。
+
+事件序列（两次运行的形状相同，只列关键事件；时间为相对 prompt 开始的毫秒数，格式为“API / Ollama”）：
+
+| 事件 | API（qwen3.6-35b-a3b） | Ollama（派生标签） |
+|---|---|---|
+| assistant `stopReason: "toolUse"` | 856 ms。toolCall `read`，参数 `{"path":"<tmp>/repo/hello.txt"}`（绝对路径） | 9659 ms，含冷启动加载模型。toolCall `read`，参数 `{"path":"hello.txt"}`（相对路径） |
+| `tool_execution_start` → `tool_execution_end{isError: false}` | 856 → 863 ms，结果为文件内容 | 9660 → 9668 ms，结果为文件内容 |
+| 第 2 个请求中的工具结果回传 | 消息中依次是 assistant（带 `tool_calls`）和 `role: "tool"`。`tool_call_id` 与调用 id 相同，content 为文件内容 | 同左 |
+| assistant `stopReason: "stop"` | 1299 ms，文本 `pelican` | 9989 ms，文本 `pelican` |
+| 结束 | `agent_end{willRetry: false}` → `agent_settled{aborted: false}` → prompt resolve | 同左 |
+| settled 后观察 4.5 秒 | 没有新请求 | 没有新请求 |
+
+**用量与花费**：
+- API：请求 1 输入 1129 / 输出 36，请求 2 输入 1198 / 输出 2，合计输入 2,327、输出 38 token。平台只回报 token 数，不回报金额。按北京原价估算：2,327×1.8/10⁶ + 38×10.8/10⁶ ≈ **0.0046 元**。没有在百炼控制台核对账单。pi 记录的 `usage.cost` 为 0，因为 `models.json` 没有写 `cost`。
+- Ollama：请求 1 的 prompt 为 991 token，prompt 处理 3110 ms（约 319 token/s），生成 20 token 用时 779 ms（约 25.7 token/s）。请求 2 的 prompt 为 1038 token，其中 `cached_tokens` 1010，pi 把它记为 `cacheRead`。
+
+**小模型能力与服务/集成故障，分开记录**：
+- **服务/集成故障：无。**
+  - Ollama 的 `/v1/chat/completions` 接受 pi 的请求，包括 `store: false`、`max_completion_tokens`、`stream_options.include_usage` 和 tools。
+  - 工具调用被正确解析成 OpenAI 的 `tool_calls`，`finish_reason` 为 `tool_calls`。
+  - 派生标签的上下文生效：`ollama ps` 显示 CONTEXT 16384。
+  - Ollama provider 不需要任何 `compat` 设置。
+- **小模型能力**：在这个最简单的单步只读任务上，小模型选对了工具，给出了正确的参数，并回答正确。
+- **限制**：这次探测只覆盖“一次工具调用加一次回答”。多步检索、长上下文，以及五题那样需要搜索调用点的任务都没有覆盖，不能据此推断五题的结果。
+  - 首次请求约 9.7 秒，其中 prompt 处理 3.1 秒、生成 0.78 秒，其余约 6 秒推断为模型加载（没有单独计时）。`OLLAMA_KEEP_ALIVE` 为 5 分钟，空闲超过这个时间后会再次冷启动。
+  - pi 的系统提示加两个工具约 1k token。16384 的上下文对单题足够；五题实际会占用多少上下文，在 10C 中记录。
+
+#### 0C.4 OpenAI 兼容线上协议（供 Task 2A 的假服务模仿）
+
+原始记录在 `<scratch0c>/out/wire-qwen-api.json` 和 `<scratch0c>/out/wire-ollama.json`，只记录了请求头名称。
+
+**请求**（两个上游都一样）：
+- `POST <base>/chat/completions`
+- body 的顶层字段：`model`、`messages`、`tools`、`stream: true`、`stream_options: {include_usage: true}`、`max_completion_tokens`。
+  - 百炼另有 `enable_thinking: false`，不发 `store`。
+  - Ollama 另有 `store: false`，因为 pi 默认识别为支持 `store`。
+- system 提示使用 `role: "system"`。
+- user 的 content 是数组 `[{type: "text", text}]`。
+- tools 的形状是 `{type: "function", function: {name, description, parameters}}`，没有 `strict`。
+- 回传工具结果时，assistant 消息为 `{role, content: null, tool_calls: [{id, type: "function", function: {name, arguments: "<JSON 字符串>"}}]}`，工具消息为 `{role: "tool", content, tool_call_id}`。
+- 请求头包括 `authorization`、`content-type`、`accept`、`user-agent` 和一组 `x-stainless-*`，值都没有记录。
+
+**响应**：`text/event-stream`。每个分块的格式为 `data: {json}\n\n`，最后以 `data: [DONE]` 结束。每个分块都有 `id`（同一个响应内相同）、`object: "chat.completion.chunk"`、`created`、`model`。
+
+| 项 | 百炼（qwen3.6-35b-a3b） | Ollama 0.40.15 |
+|---|---|---|
+| 公共字段 | `system_fingerprint: null`；除用量块外每块都有 `usage: null`；`choices[0]` 一般包含 `index: 0`、`logprobs: null`、`finish_reason: null` | `system_fingerprint: "fp_ollama"`；不带 `usage: null` 和 `logprobs` |
+| 工具调用 | **流式分段**。<br>首块：`delta: {role: "assistant", content: null, tool_calls: [{index: 0, id: "call_…", type: "function", function: {name: "read", arguments: ""}}]}`。<br>续块：`tool_calls[0] = {index: 0, id: "", type: "function", function: {arguments: "<片段>"}}`。**续块的 `id` 是空字符串，不是省略**。参数被切成 8 段。参数最后一段所在的块不带 `finish_reason` 和 `logprobs` 字段 | **一次给全**。<br>只有一块：`delta: {role: "assistant", content: "", tool_calls: [{id: "<32 位随机串>", index: 0, type: "function", function: {name: "read", arguments: "{\"path\":\"hello.txt\"}"}}]}` |
+| 工具调用的结束块 | `{finish_reason: "tool_calls", delta: {content: ""}}` | `{delta: {}, finish_reason: "tool_calls"}` |
+| 文本 | 首块 `delta: {content: "pel", role: "assistant"}`，续块 `delta: {content: "ican"}` | 首块 `delta: {role: "assistant", content: "pel"}`，续块 `delta: {content: "ican"}` |
+| 文本的结束块 | `{finish_reason: "stop", delta: {content: ""}}` | `{delta: {}, finish_reason: "stop"}` |
+| 用量块（在 `[DONE]` 之前） | `choices: []`，`usage: {prompt_tokens, completion_tokens, total_tokens, completion_tokens_details: {text_tokens}, prompt_tokens_details: {text_tokens}}` | `choices: []`，`usage: {prompt_tokens, prompt_tokens_details: {cached_tokens}, completion_tokens, total_tokens}`，另有非标准的 `timings` 对象 |
+
+本次观测到的 `finish_reason` 只有 `tool_calls` 和 `stop`。没有观测到 `length`，也没有观测到思考模式下的 `reasoning_content`（T1 关闭思考，见作者决定 3）。2A 的假服务至少应支持两种工具调用流形状：百炼那样的分段加空 `id`，以及 Ollama 那样的一次给全。
+
+#### 0C.5 Task 0 关卡核对（0A、0A-R、0B、0C）
+
+| 必要项（计划环境表 / Task 0 步骤） | 证据 | 结论 |
+|---|---|---|
+| Node / pnpm | 0A.2：Node v24.15.0（满足 ≥ 22.19），pnpm 10.34.9 | 有证据 |
+| Git / shell / 文件系统，任务分支、工作区、提交身份 | 0A.2：git 2.39.5、bash 3.2.57；临时仓库的 init/commit/show 都成功；分支 `step-01-pi-integration` | 有证据 |
+| 安装与资料访问 | 0A.1、0A.2、0A-R（1.5.1 的 integrity 和 tag dd30101，文档逐字节一致）、0B 开头（Claude Agent SDK 0.3.322 的类型和 6 页官方文档） | 有证据 |
+| 本地通信与子进程 | 0A.2：`probe-net-proc.mjs` 退出码 0（HTTP、WS 随机端口，子进程清理） | 有证据 |
+| 执行与审查能力 | 0A.2 的“执行与审查能力”行 | 有证据 |
+| pi SDK：资源隔离、扩展、MCP、事件、取消与清理 | 0A.3–0A.5、0A-R 的四组探测（1.5.1 上结论相同）、0B.1–0B.5 | 有证据 |
+| API 凭证 | 0C.2：`present (length>0)`；只通过 `--env-file` 注入；输出中没有密钥 | 有证据 |
+| API 服务与模型：固定版本、地址、权限/额度、经 pi 的真实工具调用往返 | 0C.1：`qwen3.6-35b-a3b`，没有快照 ID，按作者决定 4 记录 ID 加观察日期。0C.2：北京端点 200。0C.3：`read` 往返、回传、回答、`agent_settled` 都完成 | 有证据（版本锁定按作者决定 4 处理，偏差见第 4 节） |
+| Ollama 与本地模型：版本、服务、下载、标签与 digest、量化、推理配置、一次推理 | 0C.2 两张表；0C.3 的 Ollama 运行 | 有证据 |
+| Mac 资源：16GB 下小模型可加载，可用内存与磁盘 | 0C.2：`ollama ps` 显示 3.9 GB、100% GPU；加载后系统可用内存约 26%；磁盘可用 51 GiB | 有证据 |
+| 验收仓库 / Docker | 不属于 Task 0 关卡（分别归 10A1/10B，以及 T2） | 不适用 |
+
+所有必要项都有证据。Task 0 的记录不代替 T1 验收 3、4 的五题运行（10B、10C）。
+
+**Task 1 可以开始。**
+
 ## 1. 做了什么
 
 （待 Task 1 起的实现完成后填写。）
@@ -536,6 +722,9 @@ node run-lifecycle.mjs retry-ok retry-exhausted unreachable http400 stream-drop 
 |---|---|---|---|
 | （0A 无偏差。计划中假设的 SDK 名称在 1.5.0 中都存在，对照见 0A.6。0A.5 列出的四条约束是对 SDK 事实的记录，留给后续任务吸收） | — | — | — |
 | pi 锁定版本由计划候选 1.5.0 改为 **1.5.1**（计划环境表的 pi SDK 行已同步）；0A 的结论在 1.5.1 上的复核见 0A-R 节 | 1.5.1 修复了 #9126、#8635，两者在 T1 的取消与清理路径上；两项破坏性变更不影响 T1 | 作者，2026-11-10 | 无行为影响：0A 四组探测在 1.5.1 上结论相同；0B 已在 1.5.1 上完成 |
+| API 主模型版本只记录为不带日期的 ID `qwen3.6-35b-a3b` 加观察日期 2026-11-10，该版本可能变化；这偏离了 ADR 015 的“所有模型锁定版本” | 百炼没有为这个模型提供带日期的快照 ID，平台也没有说明不带日期的 ID 背后是否会变（0C.1） | 作者，2026-11-10（0C.0 决定 4） | 平台若更新模型，T1 的运行结果可能无法复现，而且无法从 ID 上看出变化。对 ADR 015 的偏差记录在 T2 追加 |
+| 本地小模型的上下文通过派生模型 `qwen3-4b-instruct-2507-ctx16k`（`num_ctx 16384`）设置，不修改全局 Ollama 服务；T1 的探测和后续运行都使用派生标签 | 服务默认上下文为 4096，五题可能不够用；计划和规范要求本地模型也跑五题并记录结果，这一点保持不变 | 作者，2026-11-10（0C.0 决定 2） | 计划中没有写派生模型。8A 的 `models.example.json` 和 10C 都使用派生标签，基础标签只作为它的来源。全局服务配置没有变 |
+| T1 的 API 主模型关闭思考模式（`thinkingLevel: "off"`，请求中为 `enable_thinking: false`），而 Qwen3.6 的官方默认是开启思考 | 作者决定 | 作者，2026-11-10（0C.0 决定 3） | 改变了 agent 的推理方式。T1 的五题结果对应非思考模式；2A 不需要模拟 `reasoning_content` |
 
 ## 5. 验证记录
 
@@ -544,6 +733,7 @@ node run-lifecycle.mjs retry-ok retry-exhausted unreachable http400 stream-drop 
 | T1-6 pi 以锁定版本的依赖形式引入，没有修改或 fork | 0A 只在临时目录中做了确切版本的安装，并核对了 integrity 和 tag | 开工核实：1.5.0 可锁定，tarball 文档与 tag v1.5.0 一致。**验收本身待 Task 1 的脚手架完成后执行** |
 | T1-8 不加载仓库内的 `.pi/` 资源 | 0A.4 的敌意目录树探测，包括基线对照 | 开工核实：开关已经找到并实测生效。**正式测试待 Task 7 执行** |
 | T1-9 核实内置 MCP 客户端的配置方式 | 0A.5 的文档和类型核实，以及临时 stdio MCP 服务的探测 | 开工核实完成：配置方式已记录，加载、列出工具和调用都已实测 |
+| T1-3 通过配置使用 Qwen API 候选和 Ollama 小模型；开工核实平台、价格、工具调用和训练截止日期 | 0C.1 的资料核实；0C.3 的两次经 pi 的真实探测（`node run-real.mjs qwen-api`、`node run-real.mjs ollama qwen3-4b-instruct-2507-ctx16k`） | 开工核实完成：两者都完成了 `read` 往返并给出正确回答，两次运行的探测代码相同，只有 `models.json` 和所选的 provider/model 不同。**验收本身（完成任务，以及只改配置就能切换）待 8A、10B、10C 执行** |
 
 未执行的检查：T1 的验收 1–5、7、10 都还没有开始；验收 6 和 8 目前只完成了开工核实，不算验收通过。
 
@@ -556,6 +746,13 @@ node run-lifecycle.mjs retry-ok retry-exhausted unreachable http400 stream-drop 
 - 0B：Claude Agent SDK 一侧只核对了 0.3.322 的类型和 2026-11-10 的在线文档，没有实测。官方文档页没有版本号。
 - 0B：中止时只实测了 bash；read、edit、write 和 MCP 工具在中止时的行为没有探测。"鉴权期间 abort" 没能直接复现，#8635 以工具中止后补的那条消息作为证据（见 0B.2）。
 - 0B：1.5.1 的 `cacheWarming` 默认是 `"idle"`，它对 openai-completions 模型是否会发出额外请求，没有实测。建议在平台设置中写 `"off"`（见 0B.2）。
+- 0C（补充上一条）：两次探测都设置了 `cacheWarming: "off"`，settled 之后 4.5 秒内没有额外请求。`"idle"` 本身仍然没有实测。
+- 0C → T2：本 key（华北2 北京）不能调用 Qwen3-Coder-Next，模型列表中没有，官方页面也查不到百炼的模型 ID。T2 的主模型比较需要另找平台或换候选，这需要作者决定（ADR 015）。
+- 0C → 8A：百炼的 provider 必须写 `compat: { thinkingFormat: "qwen", supportsDeveloperRole: false, supportsStore: false, supportsReasoningEffort: false }`，模型要写 `reasoning: true`，`enable_thinking: false` 才会发出去。不写 `compat` 的组合没有实测。Ollama provider 不需要 `compat`。见 0C.3。
+- 0C → 2A：假服务要模仿的线上协议见 0C.4，包括两种工具调用流形状、百炼续块中的空字符串 `id`，以及 `choices: []` 的用量块。没有观测到 `length`、`reasoning_content` 和错误流。
+- 0C：百炼的花费只按原价和 token 数估算，没有在控制台核对账单。接入地址用的是旧域名 `dashscope.aliyuncs.com`，没有改用文档推荐的业务空间专属域名。
+- 0C：Ollama 为 Instruct-2507 列出了 `thinking` 能力，与官方模型卡“只支持非思考模式”不一致。本次没有观察到思考输出。不要根据这个能力标签开启思考。
+- 0C：小模型只验证了单步只读任务，不能据此推断五题的表现，五题结果见 10C。
 
 ## 7. 讲解自测题
 
@@ -1260,6 +1457,224 @@ for (const s of process.argv.slice(2)) {
     console.log(`  ${String(t).padStart(5)} ${type ?? "#" + what} ${Object.keys(x).length ? JSON.stringify(x) : ""}`);
   }
 }
+```
+
+</details>
+
+## 附录 C：0C 探测脚本全文（2026-11-10，均在 `<scratch0c>/` 下运行）
+
+<details><summary><code>scripts/list-models.mjs</code>：百炼各地域模型列表（免费 GET，只输出状态与模型 ID）</summary>
+
+```js
+// Task 0C: list models visible to DASHSCOPE_API_KEY on each region's OpenAI-compatible endpoint.
+// Free, non-generative GET. Prints only HTTP status and model ids; never prints the key or request headers.
+import { writeFileSync } from "node:fs";
+const key = process.env.DASHSCOPE_API_KEY;
+if (!key) { console.log("DASHSCOPE_API_KEY missing"); process.exit(2); }
+const bases = {
+  "cn-beijing": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "ap-singapore": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  "us-virginia": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+};
+const out = {};
+for (const [region, base] of Object.entries(bases)) {
+  try {
+    const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(20000) });
+    const body = await r.text();
+    let ids = null, err = null;
+    try {
+      const j = JSON.parse(body);
+      ids = (j.data ?? []).map((m) => m.id);
+      err = j.error ? { code: j.error.code, type: j.error.type, message: String(j.error.message).slice(0, 200) } : null;
+    } catch { err = { raw: body.slice(0, 200) }; }
+    out[region] = { base, status: r.status, count: ids?.length ?? 0, ids, err };
+    console.log(region, r.status, "models:", ids?.length ?? 0, err ? JSON.stringify(err) : "");
+  } catch (e) { out[region] = { base, fetchError: e.message }; console.log(region, "fetch error:", e.message); }
+}
+writeFileSync(process.argv[2], JSON.stringify(out, null, 2));
+```
+
+</details>
+
+<details><summary><code>pkg/run-real.mjs</code>：最小环境启动器</summary>
+
+```js
+// Task 0C launcher: start probe-real.mjs with a minimal environment (as 0A's run-probe.mjs does):
+// PATH, fake HOME, empty PI_CODING_AGENT_DIR, PI_OFFLINE=1, PI_SKIP_VERSION_CHECK=1.
+// The key enters the child only via `node --env-file=<abs path>`; this launcher never reads it.
+// usage (run in pkg/): node run-real.mjs <qwen-api|ollama> [ollamaTag]
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const [mode, tag] = process.argv.slice(2);
+const top = resolve("..");
+const env = {
+  PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+  HOME: `${top}/fakehome`,
+  PI_CODING_AGENT_DIR: `${top}/envagent`,
+  PI_OFFLINE: "1",
+  PI_SKIP_VERSION_CHECK: "1",
+};
+mkdirSync(env.HOME, { recursive: true });
+mkdirSync(env.PI_CODING_AGENT_DIR, { recursive: true });
+const args = ["--env-file=/Users/chenjieming/Desktop/coding-agent/.env", "probe-real.mjs", mode, `${top}/out`];
+if (tag) args.push(tag);
+const r = spawnSync(process.execPath, args, { env, encoding: "utf8", timeout: 240000 });
+writeFileSync(`${top}/out-stderr-${mode}.txt`, r.stderr ?? "");
+console.log(r.stdout.trim());
+console.log(`exit=${r.status} signal=${r.signal} stderrBytes=${(r.stderr ?? "").length}`);
+```
+
+</details>
+
+<details><summary><code>pkg/probe-real.mjs</code>：经 pi 的真实模型探测与记录代理</summary>
+
+```js
+// Task 0C: minimal real-model probe through pi 1.5.1 with the 0A.4 locked settings + cacheWarming "off".
+// usage: node --env-file=<project>/.env probe-real.mjs <qwen-api|ollama> <outDir> [ollamaTag]
+// A loopback logging proxy sits between pi and the upstream so the OpenAI-compatible wire format can be recorded.
+// The proxy never records header values (only header names); the key is only referenced as "$DASHSCOPE_API_KEY".
+import http from "node:http";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, VERSION,
+} from "@earendil-works/pi-coding-agent";
+
+const mode = process.argv[2];
+const outDir = process.argv[3];
+const ollamaTag = process.argv[4];
+mkdirSync(outDir, { recursive: true });
+const UPSTREAM = {
+  "qwen-api": { origin: "https://dashscope.aliyuncs.com", basePath: "/compatible-mode/v1" },
+  ollama: { origin: "http://127.0.0.1:11434", basePath: "/v1" },
+}[mode];
+if (!UPSTREAM) throw new Error("mode must be qwen-api or ollama");
+
+const t0 = Date.now();
+const ms = () => Date.now() - t0;
+
+// ---- task workspace: temp dir with one small public sample file ----
+const work = mkdtempSync(join(tmpdir(), "t0c-"));
+const repo = join(work, "repo"); mkdirSync(repo);
+writeFileSync(join(repo, "hello.txt"), "ForgePilot probe sample file. The magic word is: pelican.\n");
+const agentDir = join(work, "platform-agent"); mkdirSync(agentDir); // runner-private, empty
+
+// ---- loopback logging proxy ----
+const wire = [];
+const DROP = new Set(["host", "connection", "content-length", "accept-encoding"]);
+const proxy = http.createServer((req, res) => {
+  const chunks = [];
+  req.on("data", (d) => chunks.push(d));
+  req.on("end", async () => {
+    const i = wire.length;
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    const entry = { i, t: ms(), method: req.method, path: req.url, requestHeaderNames: Object.keys(req.headers).sort() };
+    try { entry.requestBody = JSON.parse(bodyText); } catch { entry.requestBodyRaw = bodyText.slice(0, 2000); }
+    wire.push(entry);
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) if (!DROP.has(k)) headers[k] = v;
+    try {
+      const up = await fetch(UPSTREAM.origin + req.url, { method: req.method, headers, body: req.method === "GET" ? undefined : bodyText });
+      entry.status = up.status;
+      entry.responseContentType = up.headers.get("content-type");
+      res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/octet-stream" });
+      let raw = "";
+      const dec = new TextDecoder();
+      for await (const part of up.body) { raw += dec.decode(part, { stream: true }); res.write(part); }
+      entry.responseRaw = raw;
+      entry.tEnd = ms();
+      res.end();
+    } catch (e) { entry.proxyError = e.message; res.writeHead(502); res.end(JSON.stringify({ error: { message: `proxy: ${e.message}` } })); }
+  });
+});
+await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
+const proxyBase = `http://127.0.0.1:${proxy.address().port}${UPSTREAM.basePath}`;
+
+// ---- model config: references the variable name only ----
+const models = mode === "qwen-api"
+  ? { providers: { "qwen-api": {
+      baseUrl: proxyBase, api: "openai-completions", apiKey: "$DASHSCOPE_API_KEY",
+      // same compat pi's own catalog uses for this platform (pi-ai/dist/providers/data/qwen-token-plan-cn.json, qwen3.6-plus)
+      compat: { thinkingFormat: "qwen", supportsDeveloperRole: false, supportsStore: false, supportsReasoningEffort: false },
+      models: [{ id: "qwen3.6-35b-a3b", reasoning: true, input: ["text"], contextWindow: 262144, maxTokens: 8192 }],
+    } } }
+  : { providers: { ollama: {
+      baseUrl: proxyBase, api: "openai-completions", apiKey: "ollama",
+      models: [{ id: ollamaTag, reasoning: false, input: ["text"], contextWindow: 16384, maxTokens: 4096 }],
+    } } };
+const modelsPath = join(agentDir, "models.json");
+writeFileSync(modelsPath, JSON.stringify(models, null, 2));
+const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath });
+const [provider, modelId] = mode === "qwen-api" ? ["qwen-api", "qwen3.6-35b-a3b"] : ["ollama", ollamaTag];
+const model = modelRuntime.getModel(provider, modelId);
+if (!model) throw new Error("model not resolved");
+
+// ---- 0A.4 locked combination + cacheWarming off ----
+const settingsManager = SettingsManager.inMemory({ cacheWarming: "off", retry: { enabled: true, maxRetries: 2 } }, { projectTrusted: false });
+const loader = new DefaultResourceLoader({
+  cwd: repo, agentDir, settingsManager,
+  noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+  agentsFilesOverride: () => ({ agentsFiles: [] }), appendSystemPrompt: [], extensionFactories: [],
+});
+await loader.reload({ resolveProjectTrust: async () => false });
+const { session } = await createAgentSession({
+  cwd: repo, agentDir, model, thinkingLevel: "off", modelRuntime, resourceLoader: loader,
+  settingsManager, sessionManager: SessionManager.inMemory(repo), tools: ["read", "ls"],
+});
+await session.bindExtensions({});
+
+// ---- event log ----
+const events = [];
+const deltaCounts = {};
+session.subscribe((ev) => {
+  if (ev.type === "message_update") { const k = ev.assistantMessageEvent?.type; deltaCounts[k] = (deltaCounts[k] ?? 0) + 1; return; }
+  if (ev.type === "tool_execution_update" || ev.type === "entry_appended") return;
+  const o = { t: ms(), type: ev.type };
+  if (ev.type === "agent_end") { o.willRetry = ev.willRetry; }
+  if (ev.type === "agent_settled") o.aborted = ev.aborted;
+  if (ev.type.startsWith("auto_retry")) Object.assign(o, { attempt: ev.attempt, errorMessage: ev.errorMessage, success: ev.success, finalError: ev.finalError });
+  if (ev.type === "message_end") {
+    const m = ev.message;
+    Object.assign(o, { role: m.role, stopReason: m.stopReason, errorMessage: m.errorMessage, usage: m.usage,
+      content: typeof m.content === "string" ? [{ type: "text", text: m.content.slice(0, 300) }] : (m.content ?? []).map((c) => c.type === "text" ? { type: "text", text: c.text } : c.type === "toolCall" ? { type: "toolCall", id: c.id, name: c.name, arguments: c.arguments } : c.type === "thinking" ? { type: "thinking", chars: (c.thinking ?? "").length } : { type: c.type }) });
+    if (m.role === "toolResult") Object.assign(o, { toolName: m.toolName, toolCallId: m.toolCallId, isError: m.isError });
+  }
+  if (ev.type === "tool_execution_start") Object.assign(o, { toolName: ev.toolName, toolCallId: ev.toolCallId, args: ev.args });
+  if (ev.type === "tool_execution_end") Object.assign(o, { toolName: ev.toolName, toolCallId: ev.toolCallId, isError: ev.isError, text: (ev.result?.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("").slice(0, 300) });
+  events.push(o);
+});
+
+const prompt = "Use the read tool to read the file hello.txt in the current directory. Then reply with only the magic word it contains.";
+let promptOutcome = "resolved";
+try { await session.prompt(prompt); } catch (e) { promptOutcome = `rejected: ${e.message}`; }
+await new Promise((r) => setTimeout(r, 1500)); // observe any request after settled
+const requestsAtSettle = wire.length;
+await new Promise((r) => setTimeout(r, 3000));
+
+const result = {
+  version: VERSION, mode, provider, modelId, upstream: UPSTREAM.origin + UPSTREAM.basePath,
+  cacheWarmingMode: settingsManager.getCacheWarmingMode(),
+  promptOutcome, finalText: session.getLastAssistantText(),
+  requestsTotal: wire.length, requestsAfterSettleWindow: wire.length - requestsAtSettle,
+  deltaCounts, events,
+};
+session.dispose();
+proxy.close();
+
+// ---- write outputs, then verify no secret leaked into them ----
+writeFileSync(join(outDir, `result-${mode}.json`), JSON.stringify(result, null, 2));
+writeFileSync(join(outDir, `wire-${mode}.json`), JSON.stringify(wire, null, 2));
+const key = process.env.DASHSCOPE_API_KEY ?? "";
+let leaked = false;
+for (const f of readdirSync(outDir)) {
+  const s = readFileSync(join(outDir, f), "utf8");
+  if ((key && s.includes(key)) || /Bearer\s+\S/.test(s)) { leaked = true; console.log("LEAK in", f); }
+}
+console.log(JSON.stringify({ mode, version: VERSION, cacheWarmingMode: result.cacheWarmingMode, promptOutcome, requestsTotal: wire.length, statuses: wire.map((w) => w.status), finalText: result.finalText, leakCheck: leaked ? "LEAK" : "clean" }));
+process.exit(leaked ? 3 : 0);
 ```
 
 </details>
