@@ -223,6 +223,235 @@ node run-probe.mjs locked-default-mcp     # 反例：MCP 默认配置读取进�
 
 `run-probe.mjs` 每次运行前都会重建敌意目录树，并用最小环境启动探测进程：`PATH`、伪 `HOME`、敌意 `PI_CODING_AGENT_DIR`、`PI_OFFLINE=1`、`PI_SKIP_VERSION_CHECK=1`。输出中的路径都替换成了 `<root>`。2026-11-10 的实际结果：四个模式的退出码都是 0，stderr 为空，结论见 0A.4 和 0A.5。脚本全文见附录 A。
 
+### 0B 引擎公共能力核实（2026-11-10）
+
+执行者：Task 0B 子 agent。下文 `<scratch0b>` 指 `/private/tmp/claude-501/<session>/scratchpad/t0b`。
+
+**目标版本**：2026-11-10，作者决定把 pi 锁定为 **1.5.1**，不再用 1.5.0（经协调者转达；版本决定本身和 0A 在 1.5.1 上的复核由另一个任务记录）。本节结论都以 1.5.1 为准。
+
+- **pi**：`@earendil-works/pi-coding-agent@1.5.1`，发布于 2026-11-09T23:45:13Z。
+  - `dist.integrity` 为 `sha512-rdu4pRvpQba2ep83nqHaN8L1pvY1OQ3i/2FucogA/eyRxwoUXMUXdk1Z9JnZFJR+9ck9Gs1ajuSb9m7Hz7ejYw==`，与 `<scratch0b>/package-lock.json` 中的值一致。
+  - 依赖 pi-agent-core、pi-ai、pi-mcp、pi-codemode、pi-tui 都是 1.5.1。
+  - 官方仓库 tag `v1.5.1` 指向 commit **`dd30101cfc5b0609411dd80b6f93adbc14db14cf`**（`git ls-remote --tags https://github.com/earendil-works/pi`）。
+  - 用 `npm install --save-exact --ignore-scripts` 装到 `<scratch0b>`。代码证据按 `dist/` 路径加符号名引用，依赖包写作 `pi-agent-core/dist/…`、`pi-ai/dist/…`；文档按随包 `docs/` 的文件名加章节标题引用。
+  - 本节没有逐字节比对 1.5.1 tarball 与 tag 源码，这项归 0A 在 1.5.1 上的复核。
+- **1.5.0 对照**：先在 1.5.0 上做过同样的核实。改用 1.5.1 后，逐个比对了涉及的文件（`cmp`，1.5.0 取自 0A 的安装目录，只读）：
+  - **两版相同**：`pi-agent-core/dist/agent-loop.js`、`pi-agent-core/dist/agent.js`、`dist/core/settings-manager.js`、`dist/core/session-manager.d.ts`、`dist/core/sdk.js`、`dist/utils/shell.js`、`docs/sdk.md`、`docs/session-format.md`。
+  - **有差异，但本节引用的符号没变**：
+    - `dist/core/agent-session.js`：`abort`、`dispose`、`_startRun`、`_emitAgentSettled`、`_willRetryAfterAgentEnd`、`_handlePostAgentRun`、`_prepareRetry`、`_beforeToolCall` 都没变。`prompt` 的前置检查拆成了 `_preparePrompt`，reject 的条件没变。
+    - `dist/core/extensions/runner.js`：`emitToolCall`、`createContext`、`noOpUIContext` 没变。
+    - `dist/core/tools/bash.js`：只改了超时报错（#11613），abort 路径没变。
+    - `pi-ai/dist/utils/retry.js`：只多了一条可重试的错误文本。
+    - `docs/extensions.md`、`docs/settings.md`：本节引用的章节没变。
+  - **与本节相关的改动**：`pi-ai/dist/api/lazy.js`（#8635）、`dist/core/agent-session-runtime.js`（#9126），见 0B.2。
+  - 所有探测都在 1.5.1 上重跑过。#9126、#8635 的场景另在 1.5.0 上跑了一遍作对照。
+- **Claude Agent SDK**：`@anthropic-ai/claude-agent-sdk@0.3.322`，发布于 2026-11-10T01:57:38Z。
+  - `dist.integrity` 为 `sha512-r88ij7R3SPV2j3BtFuavgrbWZNE8SVVS42AOQ1KxlS+QnSwNNnUhmVXV3Es2dniZySBYX8ENebL43ffhiB0azw==`。
+  - 用 `npm install --save-exact --ignore-scripts` 装到 `<scratch0b>/csdk`，只读了 `sdk.d.ts`。
+  - 2026-11-10 读取了 `code.claude.com/docs/en/agent-sdk/` 下的 `hooks`、`permissions`、`user-input`、`streaming-output`、`agent-loop`、`sessions` 六页官方文档。这些页面不带版本号，所以**版本化证据以 0.3.322 的 `sdk.d.ts` 符号为准**，文档页只用来说明语义，按"页面 + 章节标题"引用。
+- **调用边界**：没有调用 Claude/Anthropic API，也没有把 Claude 接进任何代码。pi 的探测只用 loopback 随机端口上的 OpenAI 兼容桩服务，API key 是字面量 `stub-not-a-secret`。
+
+#### 0B.1 能力 × pi × Claude Agent SDK
+
+统一接口只要求两边都能表达的能力。pi 一列中的"探测"指 0B.3 的实测，其余是代码或文档证据。Claude 一列都**没有实测**（T1 不接 Claude）。
+
+| 能力 | pi 1.5.1 | Claude Agent SDK 0.3.322 | 差异与统一接口的边界 |
+|---|---|---|---|
+| 工具执行前放行 | 扩展 `pi.on("tool_call", h)`，h 返回 `undefined`，或返回不含 `block` 的结果。<br>顺序：`tool_execution_start → tool_call → 执行 → tool_result → tool_execution_end`。<br>出处：`docs/extensions.md` 的 "Lifecycle Overview" 和 "#### tool_call"；`dist/core/extensions/types.d.ts` 的 `ToolCallEventResult`；`dist/core/agent-session.js` 的 `_beforeToolCall`。<br>探测：`hook` | PreToolUse 钩子：`Options.hooks.PreToolUse` 中的 `HookCallback` 返回 `{}`，或返回 `permissionDecision: "allow"`。<br>权限回调：`Options.canUseTool` 返回 `{behavior: "allow"}`。<br>出处：`sdk.d.ts` 的 `HookCallback`、`PreToolUseHookSpecificOutput`、`HookPermissionDecision`、`CanUseTool`、`PermissionResult`；hooks 页 "Outputs"；permissions 页 "How permissions are evaluated" | 两边都能表达 `{decision: "allow"}`。<br>Claude 适配器的拦截点应选 PreToolUse：canUseTool 会被 allow 规则和权限模式绕过（permissions 页 "Allow and deny rules" 中的警告）。PreToolUse 返回 allow 也不跳过 deny/ask 规则。<br>pi 中工具不存在或参数校验失败的调用不经过 `tool_call`，直接以错误结果结束（`pi-agent-core/dist/agent-loop.js` 的 `prepareToolCall`）。统一接口不为这类调用发拦截请求 |
+| 阻止，并让模型看到原因 | 返回 `{block: true, reason}`：工具不执行，`tool_execution_end.isError = true`，结果文本就是 reason，模型在下一次请求中能看到。<br>**h 抛错同样会阻止**，错误消息成为工具结果（fail closed）。<br>出处：`prepareToolCall` 中的 `createErrorToolResult(beforeResult.reason …)` 和外层 try/catch。<br>探测：`hook`。`blocked by probe policy`、`hook exploded` 都出现在下一次请求的 tool 消息里；marker-b、marker-c 都没有生成 | PreToolUse 返回 `permissionDecision: "deny"` 和 `permissionDecisionReason`（文档："tells the model why"）。<br>canUseTool 返回 `{behavior: "deny", message}`。<br>**回调抛错时，默认 `onFailure: "continue"`，动作照常进入权限流程（fail open）**。要阻止，须在 matcher 上设 `onFailure: "block"`，要求 TS SDK ≥ 0.3.317；0.3.322 中 `HookCallbackMatcher.onFailure` 存在。<br>出处：hooks 页 "Add context and block a tool"、"Block the action when a callback fails" | 两边都能表达 `{decision: "block", reason}`，reason 都会传给模型。<br>差异在回调出错时：pi 默认阻止，Claude 默认放行。将来的 Claude 适配器必须设 `onFailure: "block"`，不在 T1 范围内 |
+| 改写输入 | 在 h 中原地修改 `event.input`，不能返回新对象。<br>**修改后不再校验**（`docs/extensions.md` "#### tool_call"：No re-validation is performed after your mutation）。<br>探测：`hook`。命令中的 `ORIGINAL` 被改为 `REWRITTEN`，marker-a 的内容是 `REWRITTEN` | PreToolUse 在 `hookSpecificOutput.updatedInput` 中返回新对象，配合 allow 或 ask。canUseTool 也可返回 `updatedInput`。<br>出处：hooks 页 "Modify tool input"；`sdk.d.ts` 的 `PreToolUseHookSpecificOutput.updatedInput` | 两边都能表达。但 Task 4 的 `Decision` 没有改写字段，**T1 的统一接口不要求改写**。<br>以后如果加入，pi 一侧要由运行器在改写后自己校验 |
+| 异步等待调用方的决定（Task 6 最多等 30 秒） | h 是 async。pi 逐个 await handler，**没有超时**，也**不会因 abort 放弃等待**（`dist/core/extensions/runner.js` 的 `emitToolCall`；`prepareToolCall` 中 await `beforeToolCall`）。<br>h 能拿到 `ctx.signal`，即当前 agent 的 AbortSignal（`docs/extensions.md` "### ctx.signal"）。<br>探测：`abort-hook-*`，见 0B.2 | `HookCallback` 收到 `{signal}`，按 matcher 的 `timeout` 等待（PreToolUse 默认 600 秒），超时则阻止该调用。<br>canUseTool 收到 `signal`，文档说它可以"stay pending indefinitely"。<br>中断查询时，等待中的回调所对应的工具调用会被取消。<br>出处：hooks 页 "Hook timeout"；user-input 页开头 | 两边都能等待异步决定，也都提供 AbortSignal。<br>**30 秒默认超时、超时按 block、取消时释放等待，都由运行器负责（Task 6）**，不依赖引擎的超时。<br>cancelAll 必须主动结算所有等待，pi 不会替它释放（0B.2 实测） |
+| 确认（问用户） | SDK 中没有内置的"问用户"决定值。<br>`ctx.ui.confirm` 只有 `bindExtensions({uiContext})` 提供了 UI 时才有效，否则是 no-op，直接返回 `false`（`dist/core/extensions/runner.js` 的 `noOpUIContext`）。<br>可行的表达：在同一个 `tool_call` handler 中等待外部确认，再返回放行或 `{block, reason}` | PreToolUse 返回 `permissionDecision: "ask"`，调用转给 canUseTool；在 canUseTool 中等人回复，再返回 allow 或 deny。<br>出处：hooks 页 "Outputs"；user-input 页 "Handle tool approval requests"。<br>`AskUserQuestion` 是模型发起的澄清问题，不属于这一项 | 统一接口中的确认由运行器在拦截等待内部完成：发出 `confirm_request`，等待 `confirm_response`，再转成放行或阻止。两个引擎都能在拦截回调中做到。<br>统一接口**不使用引擎原生的确认 UI**，也不要求引擎有 "ask" 决定值 |
+| 取消 | `session.abort()`：设置中止标志，取消重试等待和压缩，调用 `agent.abort()`，再 `waitForIdle()`。返回时 `agent_settled{aborted: true}` 已经发出。<br>`session.dispose()`：触发同样的中止，但**不等待**，随后使扩展 ctx 失效并清空监听器。<br>`AgentSessionRuntime.dispose()`：1.5.1 起会**先 await `abort()`**，再发出 `session_shutdown`（#9126）。<br>出处：`docs/sdk.md` 的 "Prompting"、"Session storage"；`dist/core/agent-session.js` 的 `abort`、`dispose`；`dist/core/agent-session-runtime.js` 的 `dispose`；`dist/core/tools/bash.js`（以 `detached` 方式 spawn，abort 时调用 `killProcessTree`）。<br>探测：`abort-*`、`dispose-inflight`、`runtime-dispose-inflight` | `Options.abortController`（"When aborted, the query will stop and clean up resources"）。<br>`Query.interrupt()`，只在流式输入模式下可用。<br>`Query.close()`：强制结束，清理等待中的请求、MCP 传输和 CLI 子进程。<br>出处：`sdk.d.ts` 的 `Options.abortController`、`Query.interrupt`、`Query.close` | 两边都能表达 `cancel`。<br>`run.cancelled` 由运行器在清理完成后判定并发布（Task 3、8B），不照搬引擎的结束消息。<br>Claude 取消后结果消息的形态没有核实，留到接入 Claude 时再查 |
+| 流式事件：文本增量、工具开始/结束、最终结果 | 通过 `session.subscribe` 订阅：<br>• 文本增量：`message_update`，其中 `assistantMessageEvent.type === "text_delta"`，文本在 `.delta`<br>• 完整消息：`message_end`（文档："authoritative completed message"）<br>• 工具开始：`tool_execution_start{toolCallId, toolName, args}`<br>• 工具结束：`tool_execution_end{toolCallId, toolName, result, isError}`。每个最终确定的调用都会有，包括被阻止和被中止的<br>• 重试：`auto_retry_start`、`auto_retry_end`<br>• 最终静止：`agent_settled`（见 0B.2）<br>出处：`docs/sdk.md` 的 "Subscribing to events"；`dist/core/agent-session.d.ts` 的 `AgentSessionEvent` | • 文本增量：`includePartialMessages: true` 时 `stream_event` 中的 `content_block_delta` / `text_delta`<br>• 完整消息：每完成一个内容块发一条 `SDKAssistantMessage`，同一响应的各条共享 message id<br>• 工具调用：assistant 中的 `tool_use` 块；工具结果：`SDKUserMessage` 中的 tool_result<br>• 重试：`SDKAPIRetryMessage`（system/api_retry）<br>• 最终：`SDKResultMessage`（subtype 为 `success` 或 `error_*`）。之后还可能有少量系统消息，要迭代到流结束<br>出处：streaming-output 页 "Enable streaming output"、"Message flow"；agent-loop 页 "Message types"、"Handle the result"；`sdk.d.ts` 的 `SDKPartialAssistantMessage`、`SDKAssistantMessage`、`SDKResultMessage`、`SDKAPIRetryMessage` | 统一接口只要求 `text.delta`、`message.completed`（assistant 文本）、`tool.started` / `tool.finished`（带 callId）和唯一的终止事件，两边都能给出。<br>两点差异：<br>• Claude 按内容块分条，`message.completed` 要按 message id 聚合<br>• Claude 没有单独的"开始执行"事件，`tool.started` 只能取自 `tool_use` 块<br>重试事件不进入统一接口（Task 3 的事件集中没有），只影响何时终止。<br>**终止事件由运行器统一产生**：pi 依据 `agent_settled`，Claude 依据 result 消息加流结束 |
+| 会话文件与恢复 | 持久化：`SessionManager.create(cwd, sessionDir?)`，文件为 `<sessionDir>/<时间戳>_<id>.jsonl`，默认在 `~/.pi/agent/sessions/--<path>--/`。路径可从 `session.sessionFile` 读到。<br>恢复：`SessionManager.open(path)`；另有 `continueRecent`、`forkFrom`。<br>内存：`SessionManager.inMemory(cwd)`，此时 `sessionFile` 为 undefined。<br>出处：`docs/sdk.md` 的 "Session storage"；`docs/session-format.md` 的 "File Location"；`dist/core/session-manager.d.ts`。<br>探测：`session-file` | 持久化：默认写到 `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`；设置了 `CLAUDE_CONFIG_DIR` 时在它下面的 `projects/`。<br>恢复：`Options.resume: <session-id>`；另有 `continue`、`forkSession`、`resumeSessionAt`。<br>不落盘：`persistSession: false`（只有 TS）。<br>会话 ID 来自 init 消息或 result 中的 `session_id`。<br>出处：sessions 页 "Choose an approach"、"Resume by ID"；`sdk.d.ts` 的 `Options.resume`、`persistSession`、`sessionId`、`forkSession` | 持久化、恢复、内存运行两边都能表达。<br>差异：pi 用文件路径定位会话；Claude 用会话 ID，目录由 CLI 决定，只能通过 `CLAUDE_CONFIG_DIR` 改根目录。<br>所以统一接口的 `resume.sessionFileRef` 当作引擎不透明的引用：pi 为文件路径，Claude 为会话 ID。`sessionDir` 只在 pi 有直接对应。<br>T1 中 resume 返回 `not_implemented`（Task 4），runner 使用 inMemory 会话 |
+
+#### 0B.2 pi 1.5.1 生命周期：结束判定与清理的依据
+
+**扩展绑定**：与 0A.4 的推荐组合一致，探测就是这样写的。
+1. 在 `new DefaultResourceLoader({ …, extensionFactories: [{ name, factory }] })` 中传入内联 factory。
+2. `await loader.reload(…)` 时 factory 执行，在其中用 `pi.on("tool_call", …)` 注册 handler。
+3. 调用 `createAgentSession({ resourceLoader: loader, … })`。
+4. `await session.bindExtensions({})`，这一步发出 `session_start`。
+
+探测中每一次 bash 调用都触发了 `tool_call`。在并行工具模式下，同一条 assistant 消息中的多个调用先**依次**经过 `tool_call` 预检，再并发执行（`docs/extensions.md` "#### tool_call"），所以同一时刻最多只有一个拦截在等待。
+
+**各事件的实际语义**：
+- **`agent_end{messages, willRetry}`**：一次底层 agent 运行结束，**不是最终信号**。
+  - `willRetry` 是 pi 自己的预判（`dist/core/agent-session.js` 的 `_willRetryAfterAgentEnd`）：重试开启、次数没用完、最后一条助手消息是可重试错误、并且没有中止请求时为 true。
+  - 即使 `willRetry: false`，之后也可能还有 `agent_before_settle` 的续跑、压缩后重试或排队消息（`docs/extensions.md` "Lifecycle Overview" 和 "agent_start / agent_end / agent_before_settle / agent_settled"）。
+- **`agent_settled{aborted}`**：每次被接受的运行**恰好发一次**，是"最终静止、没有待处理工作"的**唯一信号**，Task 8B 据此选择 `run.settled`。
+  - 它由 `_startRun` 的 `finally` 中的 `_emitAgentSettled` 发出。此时重试、压缩、排队消息都已处理完，`isIdle` 为 true。
+  - `aborted` 表示本次运行中是否请求过中止。
+  - 文档依据：`docs/sdk.md` "Subscribing to events"：Use `agent_settled` when the host needs to know that Pi will not continue automatically。
+- **`prompt()` resolve**：运行结束（含自动重试）后才 resolve（`docs/sdk.md` "Prompting"）。
+  - `_startRun` 在 `finally` 中 await `_emitAgentSettled`，所以 resolve 晚于 `agent_settled` 分发给监听器。所有探测中，`prompt:resolved` 都紧跟在 `agent_settled` 之后。
+  - **模型最终失败不会让 prompt reject**，它照样 resolve，失败信息在最后一条助手消息的 `stopReason: "error"` 和 `errorMessage` 中。
+- **`prompt()` reject**：只在**没有启动运行**时发生，此时不会有 `agent_settled`。会 reject 的情况：
+  - 运行中再次调用且没给 `streamingBehavior`。这一条已实测，报错 `Agent is already processing. Specify streamingBehavior …`。
+  - 没有模型；没有凭证；正在压缩或生成分支摘要；`before_agent_start` 抛错。这几条是代码证据（`dist/core/agent-session.js` 的 `prompt`、`_preparePrompt`、`_startRun`）。
+- **`abort()`**：resolve 时 `agent_settled{aborted: true}` 已经发出（内部 `waitForIdle`）。
+
+**重试**：
+- **配置**：在 `settings.retry` 下（`docs/settings.md` "Network and retries"；`dist/core/settings-manager.js` 的 `getRetrySettings`）。
+  - `enabled`：默认 true
+  - `maxRetries`：默认 3
+  - `baseDelayMs`：默认 2000
+  - `maxAgentDelayMs`：默认 60000
+- **延迟**：第 n 次重试等待 `baseDelayMs · 2^(n−1)`，有上限，**没有随机抖动**（`pi-ai/dist/utils/retry.js` 的 `retryDelayMs`）。默认配置下用尽重试要等 2 + 4 + 8 = 14 秒。
+- **Task 8B 可用的快速测试配置**：`SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 20 } }, { projectTrusted: false })`。实测重试耗尽的整次运行约 110 ms。
+- **provider 层不重试**：`retry.provider.maxRetries` 默认是 0，所以每次尝试只发一个 HTTP 请求。实测 `maxRetries: 2` 时共 3 个请求。
+- **哪些错误可重试**：由 `isRetryableAssistantError` 对 `errorMessage` 做正则匹配，包括 429/500/502/503/504、connection error、timeout、fetch failed 等。上下文溢出不走重试，交给压缩处理（`pi-ai/dist/utils/retry.js`；`dist/core/agent-session.js` 的 `_isRetryableError`）。
+
+实测事件序列（1.5.1，只列与结束判定有关的事件）：
+
+| 场景 | 序列 | 最后一条助手消息 |
+|---|---|---|
+| `retry-ok`<br>第 1 次请求返回 500，第 2 次成功 | `agent_end{willRetry: true}`<br>→ `auto_retry_start{attempt: 1, delayMs: 20}`<br>→ `agent_start` → 文本增量<br>→ `auto_retry_end{success: true}`<br>→ `agent_end{willRetry: false}`<br>→ `agent_settled{aborted: false}`<br>→ prompt resolve | `stop` |
+| `retry-exhausted`<br>一直返回 500，`maxRetries: 2` | `agent_end{true}`<br>→ `auto_retry_start{1, 20ms}`<br>→ `agent_end{true}`<br>→ `auto_retry_start{2, 40ms}`<br>→ `agent_end{false}`<br>→ `auto_retry_end{success: false, finalError}`<br>→ `agent_settled{aborted: false}`<br>→ prompt resolve | `error`<br>`500: {"message":"stub internal server error",…}` |
+| `unreachable`<br>刚释放的本机端口，`maxRetries: 1` | 与上一行同形：<br>`agent_end{true}`<br>→ `auto_retry_start{1}`<br>→ `agent_end{false}`<br>→ `auto_retry_end{success: false}`<br>→ `agent_settled{false}` | `error`<br>`Connection error.: connect ECONNREFUSED 127.0.0.1:<port>` |
+| `http400`<br>不可重试 | 只有一个 `agent_end{false}`，**没有 `auto_retry_*`**，然后 `agent_settled{false}` | `error`<br>`400: {"message":"stub bad request",…}` |
+
+**#11879：流在回复开始后被切断，现在会自动重试**
+- **改了什么**：1.5.1 在 `pi-ai/dist/utils/retry.js` 的 `RETRYABLE_PROVIDER_ERROR_PATTERN` 中新增了 `"cut short after the reply had begun"`，其余可重试规则没有变。
+- **怎么测的**：桩服务的第一次响应先发出文本分块 `partial-`，50 ms 后中断。中断有两种做法：
+  - `stream-drop`：直接销毁连接。
+  - `stream-cut-short`：发送一个 SSE 错误事件，`message` 为 `Claude Code's stream from Anthropic was cut short after the reply had begun`，然后正常结束响应。
+
+  之后的请求都正常返回 `recovered`，`maxRetries: 2`。
+
+| 场景 | 1.5.1 | 1.5.0 对照 |
+|---|---|---|
+| `stream-drop` | 先发出 `text_delta "partial-"`<br>→ `message_end{error, "terminated: other side closed (UND_ERR_SOCKET)"}`<br>→ **`agent_end{willRetry: true}`**<br>→ `auto_retry_start{1, 20ms}`<br>→ 第 2 次请求，`text_delta "recovered"`<br>→ `auto_retry_end{success: true}`<br>→ `agent_end{false}`<br>→ `agent_settled{aborted: false}`<br>最终回答 `recovered` | 同样会重试，errorMessage 是 `terminated`。连接被切断的情况在 1.5.0 中本来就会重试 |
+| `stream-cut-short` | 与上一行形状相同：<br>中间有 `agent_end{willRetry: true}` 和 `auto_retry_start`，第 2 次请求成功<br>→ `auto_retry_end{success: true}`<br>→ `agent_settled{false}` | **不重试**：只有一个 `agent_end{willRetry: false}`，然后 `agent_settled{false}`。<br>最终失败，`stopReason: "error"`，最后一条助手消息中保留了部分文本 `partial-`。<br>这就是 #11879 修复的问题 |
+| `stream-drop-always`（仅 1.5.1）<br>每次都被切断 | 共 3 次请求。每次尝试都先发出 `text_delta "partial-"`，再出现 `agent_end{true}` 和 `auto_retry_start`。<br>最后一次是 `agent_end{false}`<br>→ `auto_retry_end{success: false, finalError: "terminated: other side closed (UND_ERR_SOCKET)"}`<br>→ `agent_settled{false}` | — |
+
+- **对 Task 2A/2B/3 的影响**：
+  1. 被切断的那次尝试**已经发出的 `text_delta` 不会撤回**，重试后会从头再流一遍。`session.messages` 中只保留最终那条助手消息：失败的尝试从模型上下文中省略，`assistantMessagesInContext` 为 1。所以统一事件流中可能出现"部分文本 + 重试后的完整文本"。Task 3 的契约要写明：`text.delta` 可能包含失败尝试的文本，最终文本以 `message.completed` 为准。是否需要标记或丢弃这类增量，由 Task 3 决定。
+  2. 重试耗尽时，最后一条助手消息可能带着部分文本（`getLastAssistantText()` 返回 `partial-`），同时 `stopReason` 为 `error`。按结束判定规则 3，结果仍是 `run.failed`。
+  3. Task 2A 的假服务和 2B 的重试样本可以直接用"先发分块再销毁连接"来触发中间结束和重试。两个版本中这种方式都会重试，不依赖 #11879；要专门复现 #11879，应发送带上述文本的错误事件。
+
+**#11599：RPC/print 模式的关闭修复，不涉及 SDK 嵌入路径**（只查了代码，没有写探测）
+- 1.5.1 与关闭相关的改动只在 `dist/modes/rpc/rpc-mode.js` 和 `dist/modes/print-mode.js` 中，内容是 idle 时的 `ctx.shutdown()`，以及信号计数（`signalCount`）和 stdin EOF 不再打断清理。
+- `dist/core/agent-session.js` 的 diff 中没有关闭相关的改动。
+- `dist/core/extensions/runner.js` 只改了 Markdown transformer。
+- `dist/core/agent-session-runtime.js` 中 `dispose` 的改动来自 #9126 和 #11692，与 #11599 无关。
+- 结论：runner 用 SDK 嵌入，不受 #11599 影响。另外，在 SDK 中 `ctx.shutdown()` 要靠 `bindExtensions({ shutdownHandler })` 才有效果；runner 传的是 `{}`，所以扩展调用 `ctx.shutdown()` 什么也不会发生（`dist/core/agent-session.d.ts` 的 `ExtensionBindings.shutdownHandler`）。
+
+**#8635：中止时报"已中止"而不是"错误"**
+- **改了什么**：在 `pi-ai/dist/api/lazy.js` 的 `lazyStream` 中，provider 模块加载或鉴权这类准备步骤失败时，1.5.0 一律给 `stopReason: "error"`；1.5.1 在 `signal.aborted` 时改为 `"aborted"`。`dist/core/model-runtime.js` 的 `stream` / `streamSimple` 现在会把 `options.signal` 传给它。
+- **对本项目的影响**：如果在工具执行期间 abort，pi 会在 `agent_settled` 之前再走一次模型请求的准备步骤。由于 signal 已经中止，这一步失败，不发出 HTTP 请求，只追加一条 `errorMessage: "This operation was aborted"` 的助手消息。实测 `abort-bash`：
+  - 1.5.0：这条消息的 `stopReason` 是 `"error"`，`agent_end.lastStop` 也是 `error`。
+  - 1.5.1：都变为 `"aborted"`。`abort-hook-*` 场景在 1.5.1 上也是 `"aborted"`。
+- **流式请求中途 abort**（`abort-stream`）两版都是 `aborted`（`Request was aborted`），不经过这段代码。
+- **想直接打中"鉴权期间 abort"，没有成功**：`abort-during-auth` 用一个要 sleep 1 秒的 `!command` 作为 API key。这个命令同步执行、阻塞了事件循环，abort 定时器到 1.1 秒才触发，那时准备步骤已经结束。两版结果都是 `aborted`（`Request aborted`），都没有发出请求，所以这个场景**区分不出两版**。#8635 对本项目的效果以上面 `abort-bash` 的对照为准。
+
+**#9126：runtime dispose 先等工具中止完，再拆扩展**
+- **改了什么**：1.5.1 的 `AgentSessionRuntime.dispose()`（`dist/core/agent-session-runtime.js`）改成先 `await this.session.abort()`，再发出 `session_shutdown`，然后 `session.dispose()`，最后等凭证写盘（#11692）。`AgentSession.dispose()` 本身没变。
+- **实测**（`runtime-dispose-inflight`：bash 正在 `sleep 30` 时调用 `runtime.dispose()`）：
+  - 1.5.0：`session_shutdown` 在调用后 0 ms 就发出；订阅者和扩展**都收不到** `tool_execution_end` 和 `agent_settled`；会话记录中**没有**工具结果。
+  - 1.5.1：顺序依次为：
+    1. 扩展和订阅者先收到 `tool_execution_end{isError: true, "Command aborted"}`
+    2. 中止消息
+    3. `agent_settled{aborted: true}`
+    4. `session_shutdown{reason: "quit"}`
+    5. `runtime.dispose()` resolve
+
+    会话记录中**有**工具结果。两版中进程组都被杀掉了。
+- **对 runner 的意义**：runner 按 0A.4 直接用 `createAgentSession`，拿到的是 `AgentSession`，不是 runtime。`AgentSession.dispose()` 在 1.5.1 中仍然不等待：`dispose-inflight` 在 1.5.1 上依旧收不到 settled，会话记录中也没有工具结果。所以 #9126 只在改用 `AgentSessionRuntime` 时才起作用。Task 8B 无论用哪一种，都应先 `await abort()` 再 dispose；这正是计划写好的顺序。
+
+**结束判定规则**：由上面的证据推出，供 Task 3、8B 使用，不超出计划。
+1. 只在 `agent_settled` 时选择终止结果。不在 `agent_end` 时终止（无论 `willRetry` 是什么），也不在 `message_end{stopReason: "error"}` 时终止。这条对应 Review Focus 3。
+2. `agent_settled{aborted: true}`：结果为取消。在 T1 中只有运行器会调用 abort。**先判断 `aborted`**，不要用最后一条消息的 stopReason 推断。1.5.1 中工具执行期间中止后补的那条消息已经是 `aborted`，但 1.5.0 中是 `error`。以 `aborted` 为准不依赖这个细节。
+3. `agent_settled{aborted: false}`，且最后一条助手消息（也就是最后一个 `agent_end.messages` 中的那条）的 `stopReason === "error"`：结果为 `run.failed{reason: errorMessage}`。重试耗尽时，这个值与 `auto_retry_end.finalError` 相同；不可重试的错误没有 `auto_retry_end`，所以原因**从消息中取**。
+4. 其余情况：`run.settled`。
+5. `prompt()` reject：运行没有启动，也不会有 settled 事件。按 `run.failed{reason: 拒绝信息}` 处理。
+6. 留给 Task 3 的问题：中间失败尝试和中止产生的 `message_end`，`stopReason` 为 `error` 或 `aborted`，文本为空。它们不是终止事件。是否为它们生成 `message.completed`，由 Task 3 在契约中写明。
+
+**abort、dispose 与拦截等待**（1.5.1 实测）：
+- **流式请求中途**：`abort()` 后 2 ms 内依次出现 `message_end{stopReason: "aborted", "Request was aborted"}`、`agent_settled{aborted: true}`，abort 和 prompt 都 resolve。桩服务看到这个**没写完的响应**被客户端关闭（`finished: false`）。之后没有重试，也没有新请求。
+- **bash 运行中**（`sleep 30 &` 加 `wait`）：`abort()` 后约 7 ms 收到 `tool_execution_end{isError: true, "Command aborted"}`，然后是 `agent_settled{aborted: true}`。**shell 和后台的 sleep 子进程都已不存在**：pi 以 detached 进程组方式 spawn，用 `killProcessTree` 结束整个进程组。之后没有新的模型请求，工具结果写进了会话记录。
+- **拦截 handler 不理会 `ctx.signal`、一直不返回**：`abort()` **2 秒后仍未返回**。测试随后让 handler 返回"放行"，abort 马上完成，但工具**没有执行**（`Operation aborted`，marker 不存在）。原因是 `prepareToolCall` 在 handler 返回后会再检查一次 `signal.aborted`。
+- **拦截 handler 监听 `ctx.signal`**：abort 后 1 ms 内 handler 就结算，abort 随即完成，工具没有执行。
+- **只调 `AgentSession.dispose()`、没有先 abort**（bash 运行中）：`dispose()` 同步返回，子进程被杀，prompt 随后 resolve。但**订阅者收不到 `agent_settled`**，会话记录中也没有工具结果：dispose 同步清空了监听器，1.5.1 中这一点没有变。
+- **重复 dispose**：每个场景最后都连续调用两次 `dispose()`，包括已经 abort 过和已经 dispose 过的情况，都没有抛错。
+
+**对清理约定的结论**：Task 8B Step 3 的顺序在 1.5.1 上成立：先结算协调等待（Task 6 的 cancelAll），然后 `await abort()`，最后 `dispose()`。有三个前提：
+1. 必须先释放拦截等待。否则 abort 会一直等下去，只能靠 8B 的 5 秒清理时限兜底。
+2. 终止结果在 `agent_settled` 时就要选定，不能指望 dispose 之后还有事件。
+3. 先 abort 或已经收到 settled，再调用 dispose。
+
+**1.5.1 的一项默认值变化**：`cacheWarming` 的默认值从 `"streaming"` 改成了 `"idle"`（CHANGELOG 1.5.1 "Changed"；`docs/settings.md`）。`idle` 模式下，pi 会在两次运行之间最多 30 分钟内刷新符合条件的 prompt cache。`createAgentSession` 会创建 `CacheWarmer`（`dist/core/sdk.js`），`dispose` 会取消它。
+
+本次探测中，settled 之后没有出现多余的请求。但这一项会影响"settled 后不再调用模型"，以及 Review Focus 5 "不掩盖额外调用"。建议 Task 8A/8B 在平台设置中显式写 `cacheWarming: "off"`，并由测试断言请求数。这只是建议，没有实测 `idle` 对 openai-completions 模型是否生效。
+
+**结论**：计划依赖的能力在 1.5.1 中都存在，语义能支撑 Task 3、4、8B 的结束判定和清理约定，**没有阻塞项**。
+
+#### 0B.3 探测方法与场景
+
+`<scratch0b>/probe-lifecycle.mjs`（全文见附录 B）用 0A 推荐的隔离组合创建会话：
+- 设置：`SettingsManager.inMemory(…, {projectTrusted: false})`
+- 资源加载：`DefaultResourceLoader`，打开全部 `no*` 开关，只加载一个内联扩展 `probe`。它注册 `tool_call`，并记录扩展侧收到的 `tool_execution_end` 和 `session_shutdown`
+- 会话：`SessionManager.inMemory`；`session-file` 场景改用 `SessionManager.create(repo, <临时目录>)`
+- 工具：`read`、`bash`
+- `runtime-dispose-inflight`：用同样的设置和 loader 选项，经 `createAgentSessionServices`、`createAgentSessionFromServices`、`createAgentSessionRuntime` 创建 runtime
+
+模型是 loopback 随机端口上的 OpenAI 兼容桩服务，按场景返回：SSE 文本、工具调用、HTTP 500、HTTP 400，或者只发一个分块后一直挂起。`unreachable` 场景改用一个刚绑定又释放的本机端口。
+
+探测进程由 `run-lifecycle.mjs` 以最小环境启动：`PATH`、伪 `HOME`、空的 `PI_CODING_AGENT_DIR`、`PI_OFFLINE=1`、`PI_SKIP_VERSION_CHECK=1`。
+
+| 场景 | 验证什么 | 1.5.1 结果 |
+|---|---|---|
+| `hook` | 依次发出 3 个 bash 调用，handler 每次等待 300 ms 后：<br>• 改写第 1 个（`ORIGINAL` → `REWRITTEN`）<br>• 用 reason 阻止第 2 个<br>• 在第 3 个中抛错 | • `tool_execution_start` 早于 handler 调用<br>• 改写生效，marker-a 的内容为 `REWRITTEN`<br>• 阻止和抛错时工具都没有执行，marker-b、marker-c 不存在，`isError: true`<br>• 第 3、4 次请求的 tool 消息中依次出现 `blocked by probe policy`、`hook exploded`<br>• `hasSignal: true` |
+| `retry-ok` / `retry-exhausted` / `unreachable` / `http400` | 中间结束、重试、最终失败 | 见 0B.2 的序列表。请求数依次为 2、3、0（连接被拒）、1 |
+| `stream-drop` / `stream-drop-always` / `stream-cut-short`（#11879） | 已开始流式回复后被切断；前一个和最后一个场景另在 1.5.0 上跑了对照 | 见 0B.2 的 #11879 |
+| `abort-stream` | 收到第一个文本增量后，再调一次 `prompt`，然后 `abort()` | 第二次 prompt reject（缺 `streamingBehavior`）。其余见 0B.2 |
+| `abort-bash` / `dispose-inflight` | bash 进入 `sleep 30` 后 800 ms，分别调用 abort 或 dispose | 调用前两个 pid 都存活，之后都不存在；各只发了 1 次请求。<br>会话记录中的工具结果：abort 有，dispose 没有 |
+| `runtime-dispose-inflight`（#9126） | 同上，但调用 `runtime.dispose()`；另在 1.5.0 上跑一遍作对照 | 见 0B.2 的 #9126 |
+| `abort-during-auth`（#8635） | 用 sleep 1 秒的 `!command` 作为 API key，300 ms 时 abort；另在 1.5.0 上跑一遍作对照 | 两版相同，没有区分出两版，原因见 0B.2。<br>#8635 的对照改用 `abort-bash`（1.5.0 也跑了一遍） |
+| `abort-hook-ignores-signal` / `abort-hook-honors-signal` | handler 等待决定期间调用 abort | 前者 2 秒后仍挂起，handler 返回后才结束，工具没有执行。<br>后者立即结束，工具没有执行 |
+| `session-file` | 持久化后，用 `SessionManager.open(file)` 重建会话 | 文件存在。重建前后都是 3 条消息，`getLastAssistantText()` 为 `persisted answer` |
+
+#### 0B.4 复现命令
+
+```sh
+# 在 <scratch0b> 中执行，package.json 只有 {"type":"module"}
+npm view @earendil-works/pi-coding-agent@1.5.1 version dist.integrity --json
+git ls-remote --tags https://github.com/earendil-works/pi | grep -E 'v1\.5\.[01]$'
+npm install --save-exact --ignore-scripts @earendil-works/pi-coding-agent@1.5.1
+npm view @anthropic-ai/claude-agent-sdk@0.3.322 version dist.integrity --json
+(cd csdk && npm install --save-exact --ignore-scripts @anthropic-ai/claude-agent-sdk@0.3.322)   # 只读 sdk.d.ts
+node run-lifecycle.mjs retry-ok retry-exhausted unreachable http400 stream-drop stream-drop-always \
+  stream-cut-short hook abort-stream abort-bash dispose-inflight runtime-dispose-inflight \
+  abort-during-auth abort-hook-ignores-signal abort-hook-honors-signal session-file
+# 1.5.0 对照：v150/ 中放同样的三个脚本，node_modules/@earendil-works 是指向 0A 安装目录的只读符号链接
+(cd v150 && node run-lifecycle.mjs abort-during-auth runtime-dispose-inflight abort-bash stream-drop stream-cut-short)
+```
+
+2026-11-10 的实际结果：
+- 1.5.1：16 个场景的退出码都是 0，stderr 都是 0 字节，`VERSION` 为 `1.5.1`。
+- 1.5.0 对照：5 个场景的退出码都是 0，stderr 都是 0 字节，`VERSION` 为 `1.5.0`。
+- 每个场景的结果 JSON 保存在 `<scratch0b>/out/` 和 `<scratch0b>/v150/out/`。
+
+`unreachable` 场景的端口经过一次修正：最初用的 `127.0.0.1:9` 会被 Node 的 fetch 当作禁用端口直接拒绝（`bad port`），不是真正的连接被拒，所以改为刚释放的随机端口后重跑。
+
+#### 0B.5 Step 3 自查
+
+- 每项能力都有固定版本的出处：
+  - pi：1.5.1（tag `v1.5.1` = `dd30101`）的 `dist/` 符号和随包文档的章节。
+  - Claude：0.3.322 的 `sdk.d.ts` 符号，加文档页的章节标题。
+  - Claude 一侧只核对了文档和类型，没有实测，0B.1 中已注明。
+- 每个差异都写了处理边界（0B.1 的最后一列）：
+  - 改写：T1 不要求。
+  - 确认：由运行器在拦截等待中实现。
+  - 回调失败：pi 默认 fail closed；Claude 适配器须设 `onFailure: "block"`。
+  - 取消结果和终止事件：由运行器判定。
+  - 恢复引用：作为不透明字符串。
+  - Claude 的流式事件：需按 message id 聚合。
+- 1.5.1 中指定核实的修复：
+  - #9126、#8635、#11879：都有探测证据和 1.5.0 对照。直接打中"鉴权期间 abort"的尝试没有成功，0B.2 中已说明。
+  - #11599：按要求只查了代码，结论是不涉及 SDK 嵌入路径。
+
 ## 1. 做了什么
 
 （待 Task 1 起的实现完成后填写。）
@@ -260,6 +489,9 @@ node run-probe.mjs locked-default-mcp     # 反例：MCP 默认配置读取进�
 - 0A：主题发现只有代码和文档证据，探测用的主题文件格式无效。主题不影响 agent 行为。
 - 0A：`packages` 自动安装和 CLI 在信任解析前读取 `sessionDir` 这两条路径没有实测；推荐组合不使用文件设置，也不使用 CLI，因此不会触发它们。
 - 0A：系统 bash 为 3.2.57（macOS 自带）。本会话的守卫不允许直接调用 `bash`，版本是通过 Node 子进程获取的。
+- 0B：Claude Agent SDK 一侧只核对了 0.3.322 的类型和 2026-11-10 的在线文档，没有实测。官方文档页没有版本号。
+- 0B：中止时只实测了 bash；read、edit、write 和 MCP 工具在中止时的行为没有探测。"鉴权期间 abort" 没能直接复现，#8635 以工具中止后补的那条消息作为证据（见 0B.2）。
+- 0B：1.5.1 的 `cacheWarming` 默认是 `"idle"`，它对 openai-completions 模型是否会发出额外请求，没有实测。建议在平台设置中写 `"off"`（见 0B.2）。
 
 ## 7. 讲解自测题
 
@@ -655,6 +887,313 @@ for (const u of urls) {
     console.log(`${r.status}\t${r.url}${extra}`);
   } catch (e) {
     console.log(`ERR\t${u}\t${e.message}`);
+  }
+}
+```
+
+</details>
+
+## 附录 B：0B 探测脚本全文（2026-11-10，均在 `<scratch0b>/` 下运行；`v150/` 中是同样的副本，用于 1.5.0 对照）
+
+<details><summary><code>probe-lifecycle.mjs</code>：pi 运行生命周期探测（桩模型）</summary>
+
+```js
+// Task 0B: probe pi 1.5.0 run lifecycle against a loopback stub OpenAI-compatible server.
+// usage: node probe-lifecycle.mjs <scenario>
+// No real model API is called. API key is the literal "stub-not-a-secret".
+import http from "node:http";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices,
+  DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, VERSION,
+} from "@earendil-works/pi-coding-agent";
+
+const scenario = process.argv[2];
+const work = mkdtempSync(join(tmpdir(), "t0b-"));
+const repo = join(work, "repo"); mkdirSync(repo);
+const agentDir = join(work, "agent"); mkdirSync(agentDir);
+const t0 = Date.now();
+const ms = () => Date.now() - t0;
+const log = [];
+const note = (what, extra = {}) => log.push({ t: ms(), what, ...extra });
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const sleep = (n) => new Promise((r) => setTimeout(r, n));
+const withTimeout = (p, n) => Promise.race([p.then(() => "resolved", (e) => `rejected: ${e.message}`), sleep(n).then(() => `still pending after ${n}ms`)]);
+
+// ---- stub OpenAI-compatible server ----
+const base = { id: "stub", object: "chat.completion.chunk", created: 0, model: "stub-model" };
+const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+const sseHead = (res) => res.writeHead(200, { "content-type": "text/event-stream" });
+const chunk = (res, c) => res.write(`data: ${JSON.stringify(c)}\n\n`);
+const text = (res, s) => { sseHead(res); chunk(res, { ...base, choices: [{ index: 0, delta: { role: "assistant", content: s }, finish_reason: null }] }); chunk(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage }); res.end("data: [DONE]\n\n"); };
+const toolCall = (res, i, name, args) => { sseHead(res); chunk(res, { ...base, choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: `call_${i}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: null }] }); chunk(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage }); res.end("data: [DONE]\n\n"); };
+const http400 = (res) => { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "stub bad request", type: "invalid_request_error" } })); };
+const http500 = (res) => { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "stub internal server error", type: "server_error" } })); };
+
+const requests = [];
+let handler = (_i, _body, res) => text(res, "done");
+const stub = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (d) => (body += d));
+  req.on("end", () => {
+    const i = requests.length;
+    const parsed = JSON.parse(body || "{}");
+    const toolMsgs = (parsed.messages ?? []).filter((m) => m.role === "tool").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+    requests.push({ i, t: ms(), toolResultsSeenByModel: toolMsgs });
+    note("stub:request", { i });
+    res.on("close", () => note("stub:response-closed", { i, finished: res.writableFinished }));
+    handler(i, parsed, res);
+  });
+});
+await new Promise((r) => stub.listen(0, "127.0.0.1", r));
+const port = stub.address().port;
+// unreachable: a loopback port that was just bound and released, so nothing listens there (connection refused)
+const closedPort = await new Promise((r) => { const s = http.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+const baseUrl = scenario === "unreachable" ? `http://127.0.0.1:${closedPort}/v1` : `http://127.0.0.1:${port}/v1`;
+
+// abort-during-auth: the key comes from a slow "!command", so the abort lands while pi resolves auth (#8635)
+const apiKey = scenario === "abort-during-auth" ? "!sleep 1; echo stub-not-a-secret" : "stub-not-a-secret";
+writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { stub: { baseUrl, api: "openai-completions", apiKey, models: [{ id: "stub-model" }] } } }));
+const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
+const model = modelRuntime.getModel("stub", "stub-model");
+
+// ---- probe extension: tool_call hook ----
+let releaseHook; // for hook-ignores-signal
+const probeExtension = (pi) => {
+  pi.on("tool_execution_end", (event) => note("ext:tool_execution_end", { toolCallId: event.toolCallId, isError: event.isError }));
+  pi.on("session_shutdown", (event) => note("ext:session_shutdown", { reason: event.reason }));
+  pi.on("tool_call", async (event, ctx) => {
+    const cmd = event.input?.command ?? "";
+    note("hook:tool_call", { toolCallId: event.toolCallId, cmd, hasSignal: !!ctx.signal });
+    if (scenario === "hook") {
+      await sleep(300); // async decision
+      if (cmd.includes("BLOCKME")) return { block: true, reason: "blocked by probe policy" };
+      if (cmd.includes("THROWME")) throw new Error("hook exploded");
+      if (cmd.includes("ORIGINAL")) event.input.command = cmd.replace("ORIGINAL", "REWRITTEN");
+      return undefined; // allow
+    }
+    if (scenario === "abort-hook-ignores-signal") {
+      return await new Promise((r) => { releaseHook = r; }); // ignores ctx.signal
+    }
+    if (scenario === "abort-hook-honors-signal") {
+      return await new Promise((r) => ctx.signal.addEventListener("abort", () => { note("hook:saw-abort"); r({ block: true, reason: "cancelled while waiting for decision" }); }, { once: true }));
+    }
+    return undefined;
+  });
+};
+
+const settings = { retry: { enabled: true, maxRetries: scenario === "unreachable" ? 1 : 2, baseDelayMs: 20 } };
+const settingsManager = SettingsManager.inMemory(settings, { projectTrusted: false });
+const loaderOptions = {
+  noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+  agentsFilesOverride: () => ({ agentsFiles: [] }), appendSystemPrompt: [],
+  extensionFactories: [{ name: "probe", factory: probeExtension }],
+};
+const loader = new DefaultResourceLoader({ cwd: repo, agentDir, settingsManager, ...loaderOptions });
+await loader.reload({ resolveProjectTrust: async () => false });
+const sessionDir = join(work, "sessions");
+const sessionManager = scenario === "session-file" ? SessionManager.create(repo, sessionDir) : SessionManager.inMemory(repo);
+let runtime, session;
+if (scenario === "runtime-dispose-inflight") {
+  // AgentSessionRuntime path (#9126): same locked settings and loader options, built through services.
+  const createRuntime = async ({ cwd, sessionManager: sm, sessionStartEvent }) => {
+    const services = await createAgentSessionServices({ cwd, agentDir, settingsManager, modelRuntime, resourceLoaderOptions: loaderOptions, resourceLoaderReloadOptions: { resolveProjectTrust: async () => false } });
+    return { ...(await createAgentSessionFromServices({ services, sessionManager: sm, sessionStartEvent, model, thinkingLevel: "off", tools: ["read", "bash"] })), services, diagnostics: services.diagnostics };
+  };
+  runtime = await createAgentSessionRuntime(createRuntime, { cwd: repo, agentDir, sessionManager });
+  session = runtime.session;
+} else {
+  ({ session } = await createAgentSession({
+    cwd: repo, agentDir, model, thinkingLevel: "off", modelRuntime, resourceLoader: loader,
+    settingsManager, sessionManager, tools: ["read", "bash"],
+  }));
+}
+
+const pick = (ev) => {
+  const o = { t: ms(), type: ev.type };
+  if (ev.type === "agent_end") { o.willRetry = ev.willRetry; o.lastStop = ev.messages.filter((m) => m.role === "assistant").at(-1)?.stopReason; }
+  if (ev.type === "agent_settled") o.aborted = ev.aborted;
+  if (ev.type === "auto_retry_start") Object.assign(o, { attempt: ev.attempt, maxAttempts: ev.maxAttempts, delayMs: ev.delayMs, errorMessage: ev.errorMessage });
+  if (ev.type === "auto_retry_end") Object.assign(o, { success: ev.success, attempt: ev.attempt, finalError: ev.finalError });
+  if (ev.type === "message_end" && ev.message.role === "assistant") Object.assign(o, { stopReason: ev.message.stopReason, errorMessage: ev.message.errorMessage });
+  if (ev.type === "message_update") o.delta = ev.assistantMessageEvent?.type;
+  if (ev.type.startsWith("tool_execution")) Object.assign(o, { toolName: ev.toolName, toolCallId: ev.toolCallId });
+  if (ev.type === "tool_execution_end") Object.assign(o, { isError: ev.isError, text: (ev.result?.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("").slice(0, 160) });
+  return o;
+};
+const SKIP = new Set(["message_update", "tool_execution_update", "entry_appended"]);
+let sawDelta = false;
+session.subscribe((ev) => {
+  if (ev.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta" && scenario.startsWith("stream-")) log.push({ ...pick(ev), text: ev.assistantMessageEvent.delta });
+  if (ev.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta" && !sawDelta) { sawDelta = true; log.push(pick(ev)); onFirstDelta?.(); }
+  if (!SKIP.has(ev.type)) log.push(pick(ev));
+  if (ev.type === "tool_execution_start") onToolStart?.(ev);
+});
+let onFirstDelta, onToolStart;
+await session.bindExtensions({});
+const result = { version: VERSION, scenario };
+
+const runPrompt = () => {
+  note("prompt:called");
+  const p = session.prompt("probe");
+  p.then(() => note("prompt:resolved"), (e) => note("prompt:rejected", { error: e.message }));
+  return p.catch(() => {});
+};
+
+if (scenario === "stream-drop" || scenario === "stream-drop-always" || scenario === "stream-cut-short") {
+  // #11879: the first attempt streams some text and is then cut off; later attempts succeed.
+  const cutShort = "Claude Code's stream from Anthropic was cut short after the reply had begun";
+  handler = (i, _b, res) => {
+    if (i > 0 && scenario !== "stream-drop-always") return text(res, "recovered");
+    sseHead(res);
+    chunk(res, { ...base, choices: [{ index: 0, delta: { role: "assistant", content: "partial-" }, finish_reason: null }] });
+    setTimeout(() => {
+      if (scenario !== "stream-cut-short") { note("stub:destroy-socket", { i }); res.socket.destroy(); }
+      else { note("stub:send-error-event", { i }); chunk(res, { error: { message: cutShort, type: "server_error" } }); res.end(); }
+    }, 50);
+  };
+  await runPrompt();
+  const last = session.messages.filter((m) => m.role === "assistant").at(-1);
+  result.lastAssistant = { stopReason: last?.stopReason, errorMessage: last?.errorMessage, text: session.getLastAssistantText() };
+  result.assistantMessagesInContext = session.messages.filter((m) => m.role === "assistant").length;
+} else if (scenario === "retry-ok") {
+  handler = (i, _b, res) => (i === 0 ? http500(res) : text(res, "recovered"));
+  await runPrompt();
+} else if (scenario === "retry-exhausted" || scenario === "unreachable" || scenario === "http400") {
+  handler = (_i, _b, res) => (scenario === "http400" ? http400(res) : http500(res));
+  await runPrompt();
+  const last = session.messages.filter((m) => m.role === "assistant").at(-1);
+  result.lastAssistant = { stopReason: last?.stopReason, errorMessage: last?.errorMessage };
+} else if (scenario === "hook") {
+  handler = (i, _b, res) => {
+    if (i === 0) return toolCall(res, i, "bash", { command: "echo ORIGINAL > marker-a.txt" });
+    if (i === 1) return toolCall(res, i, "bash", { command: "echo x > marker-b.txt # BLOCKME" });
+    if (i === 2) return toolCall(res, i, "bash", { command: "echo y > marker-c.txt # THROWME" });
+    return text(res, "done");
+  };
+  await runPrompt();
+  result.markers = { a: existsSync(join(repo, "marker-a.txt")) ? readFileSync(join(repo, "marker-a.txt"), "utf8").trim() : null, b: existsSync(join(repo, "marker-b.txt")), c: existsSync(join(repo, "marker-c.txt")) };
+} else if (scenario === "abort-stream") {
+  handler = (_i, _b, res) => { sseHead(res); chunk(res, { ...base, choices: [{ index: 0, delta: { role: "assistant", content: "partial..." }, finish_reason: null }] }); /* never ends */ };
+  let abortP;
+  onFirstDelta = () => {
+    // concurrent prompt without streamingBehavior must reject
+    session.prompt("second").then(() => note("second-prompt:resolved"), (e) => note("second-prompt:rejected", { error: e.message }));
+    note("abort:called"); abortP = session.abort(); abortP.then(() => note("abort:resolved"));
+  };
+  const p = runPrompt();
+  result.promptOutcome = await withTimeout(p, 5000);
+  await abortP;
+  await sleep(300); // let the stub observe the client side closing the unfinished response
+} else if (scenario === "abort-during-auth") {
+  let abortP;
+  setTimeout(() => { note("abort:called", { requestsSoFar: requests.length }); abortP = session.abort(); abortP.then(() => note("abort:resolved")); }, 300);
+  const p = runPrompt();
+  result.promptOutcome = await withTimeout(p, 5000);
+  await abortP; await sleep(1500);
+  result.requestsAfterAbort = requests.length;
+  const last = session.messages.filter((m) => m.role === "assistant").at(-1);
+  result.lastAssistant = { stopReason: last?.stopReason, errorMessage: last?.errorMessage };
+} else if (scenario === "abort-bash" || scenario === "dispose-inflight" || scenario === "runtime-dispose-inflight") {
+  handler = (i, _b, res) => (i === 0 ? toolCall(res, i, "bash", { command: "sleep 30 & echo $! > sleep.pid; echo $$ > shell.pid; wait" }) : text(res, "after"));
+  let stopP;
+  onToolStart = async () => {
+    await sleep(800);
+    result.pids = { sleep: Number(readFileSync(join(repo, "sleep.pid"), "utf8")), shell: Number(readFileSync(join(repo, "shell.pid"), "utf8")) };
+    result.aliveBefore = { sleep: alive(result.pids.sleep), shell: alive(result.pids.shell) };
+    if (scenario === "abort-bash") { note("abort:called"); stopP = session.abort().then(() => note("abort:resolved")); }
+    else if (scenario === "dispose-inflight") { note("dispose:called"); session.dispose(); note("dispose:returned"); stopP = Promise.resolve(); }
+    else { note("runtime.dispose:called"); stopP = runtime.dispose().then(() => note("runtime.dispose:resolved")); }
+  };
+  const p = runPrompt();
+  result.promptOutcome = await withTimeout(p, 5000);
+  await stopP; await sleep(300);
+  result.aliveAfter = { sleep: alive(result.pids.sleep), shell: alive(result.pids.shell) };
+  result.requestsAfterStop = requests.length;
+  // was the aborted tool's result recorded in the session transcript?
+  result.toolResultRecorded = session.sessionManager.getEntries().some((e) => e.type === "message" && e.message?.role === "toolResult");
+} else if (scenario === "abort-hook-ignores-signal" || scenario === "abort-hook-honors-signal") {
+  handler = (i, _b, res) => (i === 0 ? toolCall(res, i, "bash", { command: "echo ran > marker-hook.txt" }) : text(res, "after"));
+  let abortP;
+  onToolStart = async () => {
+    await sleep(300);
+    note("abort:called"); abortP = session.abort(); abortP.then(() => note("abort:resolved"));
+    result.abortWithin2s = await withTimeout(abortP, 2000);
+    if (releaseHook) { note("test:releasing-hook-with-allow"); releaseHook(undefined); result.abortAfterRelease = await withTimeout(abortP, 2000); }
+  };
+  const p = runPrompt();
+  result.promptOutcome = await withTimeout(p, 8000);
+  await sleep(200);
+  result.toolRan = existsSync(join(repo, "marker-hook.txt"));
+} else if (scenario === "session-file") {
+  handler = (_i, _b, res) => text(res, "persisted answer");
+  await runPrompt();
+  result.sessionFile = session.sessionFile?.replace(work, "<work>");
+  result.fileExists = !!session.sessionFile && existsSync(session.sessionFile);
+  result.messageCount = session.messages.length;
+  const file = session.sessionFile;
+  session.dispose();
+  const reopened = await createAgentSession({ cwd: repo, agentDir, model, thinkingLevel: "off", modelRuntime, resourceLoader: loader, settingsManager, sessionManager: SessionManager.open(file), tools: ["read", "bash"] });
+  result.reopenedMessageCount = reopened.session.messages.length;
+  result.reopenedLastText = reopened.session.getLastAssistantText();
+  reopened.session.dispose();
+}
+
+// dispose safety / idempotence (after whatever the scenario did)
+try { session.dispose(); session.dispose(); result.disposeTwice = "ok"; } catch (e) { result.disposeTwice = `threw: ${e.message}`; }
+result.requests = requests.map((r) => ({ i: r.i, t: r.t, toolResultsSeenByModel: r.toolResultsSeenByModel.map((s) => s.slice(0, 160)) }));
+result.events = log.sort((a, b) => a.t - b.t);
+stub.close();
+rmSync(work, { recursive: true, force: true });
+console.log(JSON.stringify(result, null, 1));
+process.exit(0);
+```
+
+</details>
+
+<details><summary><code>run-lifecycle.mjs</code>：以最小环境逐个运行场景</summary>
+
+```js
+// Run probe-lifecycle.mjs scenarios with a minimal environment (fake HOME, empty PI_CODING_AGENT_DIR, offline).
+// usage: node run-lifecycle.mjs <scenario...>
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+const here = resolve(".");
+const home = join(here, "fakehome");
+mkdirSync(join(home, "agent"), { recursive: true });
+mkdirSync(join(here, "out"), { recursive: true });
+const env = { PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1" };
+let worst = 0;
+for (const s of process.argv.slice(2)) {
+  const r = spawnSync(process.execPath, ["probe-lifecycle.mjs", s], { encoding: "utf8", env, timeout: 60000 });
+  writeFileSync(join(here, "out", `${s}.json`), r.stdout ?? "");
+  writeFileSync(join(here, "out", `${s}.err`), r.stderr ?? "");
+  console.log(`scenario=${s} exit=${r.status} signal=${r.signal} stderrBytes=${(r.stderr ?? "").length}`);
+  if (r.status !== 0) worst = 1;
+}
+process.exit(worst);
+```
+
+</details>
+
+<details><summary><code>summarize.mjs</code>：打印每个场景的结果和事件序列</summary>
+
+```js
+// Print each scenario's result compactly: non-event fields as JSON, events one per line.
+import { readFileSync } from "node:fs";
+for (const s of process.argv.slice(2)) {
+  const r = JSON.parse(readFileSync(`out/${s}.json`, "utf8"));
+  const { events, requests, ...rest } = r;
+  console.log(`=== ${s}`);
+  console.log(JSON.stringify(rest));
+  console.log("requests:", JSON.stringify(requests));
+  for (const e of events) {
+    const { t, type, what, ...x } = e;
+    if (type === "message_start" || type === "turn_start") continue;
+    console.log(`  ${String(t).padStart(5)} ${type ?? "#" + what} ${Object.keys(x).length ? JSON.stringify(x) : ""}`);
   }
 }
 ```
