@@ -19,6 +19,8 @@ export interface FakeOpenAIServer {
   baseUrl: string;
   requests: unknown[];
   errors: string[];
+  /** 观测用：writes 为已写出的 SSE 块数，inFlight 为尚未结束的 POST 处理函数数 */
+  stats: { writes: number; inFlight: number };
   close(): Promise<void>;
 }
 
@@ -27,6 +29,7 @@ const FRAGMENTS = 8; // 与 0C.4 观测到的百炼切分段数一致
 export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<FakeOpenAIServer> {
   const requests: unknown[] = [];
   const errors: string[] = [];
+  const stats = { writes: 0, inFlight: 0 };
   const closing = new AbortController(); // close() 时唤醒所有等待中的延迟
   let next = 0;
 
@@ -50,9 +53,12 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", async () => {
+      stats.inFlight++;
       try {
         if (req.method !== "POST" || !req.url?.split("?")[0].endsWith("/chat/completions")) {
-          return sendJson(res, 404, { error: { message: `unexpected ${req.method} ${req.url}` } });
+          const msg = `unexpected request: ${req.method} ${req.url}`;
+          errors.push(msg);
+          return sendJson(res, 404, { error: { message: msg } });
         }
         requests.push(JSON.parse(raw));
         const turn = turns[next++];
@@ -67,6 +73,8 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
         errors.push(`handler failed: ${e instanceof Error ? e.message : String(e)}`);
         if (!res.headersSent) sendJson(res, 500, { error: { message: "fake server failure" } });
         else res.destroy();
+      } finally {
+        stats.inFlight--;
       }
     });
   });
@@ -76,7 +84,7 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     const base = { id, object: "chat.completion.chunk", created: 0, model: "fake-model", system_fingerprint: null };
     const choice = (delta: object, finish: string | null = null) => ({ ...base, usage: null, choices: [{ index: 0, delta, logprobs: null, finish_reason: finish }] });
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-    const send = (o: unknown) => !signal.aborted && res.write(`data: ${JSON.stringify(o)}\n\n`);
+    const send = (o: unknown) => !signal.aborted && (stats.writes++, res.write(`data: ${JSON.stringify(o)}\n\n`));
     const delay = turn.chunkDelayMs ?? 0;
 
     let finish: string;
@@ -114,6 +122,7 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     baseUrl: `http://127.0.0.1:${port}/v1`,
     requests,
     errors,
+    stats,
     close: () =>
       new Promise<void>((ok) => {
         closing.abort();

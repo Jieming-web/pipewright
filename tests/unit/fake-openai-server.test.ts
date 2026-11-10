@@ -115,18 +115,34 @@ describe("fake OpenAI server", () => {
     s.errors.length = 0; // 预期内的错误，已断言
   });
 
-  it("断线清理：客户端中途断开后服务端停止写入，close() 很快返回", async () => {
-    const s = await start([{ kind: "text", chunks: Array.from({ length: 50 }, () => "x"), chunkDelayMs: 200 }]);
+  it("断线清理：客户端中途断开后服务端停止写入，处理函数在脚本结束前退出（close 之前观察）", async () => {
+    const s = await start([{ kind: "text", chunks: Array.from({ length: 50 }, () => "x"), chunkDelayMs: 100 }]); // 脚本全长约 5s
     const ac = new AbortController();
     const res = await post(s, { messages: [] }, ac.signal);
     const reader = res.body!.getReader();
     await reader.read(); // 收到至少一块后断开
     ac.abort();
     await reader.read().catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 150)); // 留出服务端发现断线的时间
+    const writesAfterAbort = s.stats.writes;
+    await new Promise((r) => setTimeout(r, 400)); // 若仍在写，每 100ms 一块，这里至少多 3 块
+    expect(s.stats.writes).toBe(writesAfterAbort);
+    expect(writesAfterAbort).toBeLessThan(10);
+    expect(s.stats.inFlight).toBe(0);
     const t0 = Date.now();
     await s.close();
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(s.errors).toEqual([]);
+  });
+
+  it("意外请求（其它方法或路径）返回 404 并写入 errors", async () => {
+    const s = await start([]);
+    const res = await fetch(`${s.baseUrl}/models`);
+    expect(res.status).toBe(404);
+    expect(s.errors).toHaveLength(1);
+    expect(s.errors[0]).toContain("/models");
+    expect(s.requests).toEqual([]);
+    s.errors.length = 0; // 预期内的错误，已断言
   });
 
   it("fakeModelsJson 生成 provider fake / model fake-model", () => {
