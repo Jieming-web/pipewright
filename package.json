@@ -1,0 +1,21 @@
+{
+  "name": "forgepilot",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "packageManager": "pnpm@10.34.9",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b packages/engine-protocol packages/engine-runner packages/engine-client",
+    "build": "tsc -b packages/engine-protocol packages/engine-runner packages/engine-client",
+    "check:pi": "node scripts/check-pi-pinned.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "yaml": "^2.6.0"
+  }
+}

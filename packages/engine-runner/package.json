@@ -1,0 +1,11 @@
+{
+  "name": "@forgepilot/engine-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "scripts": { "build": "tsc -b" },
+  "dependencies": { "@earendil-works/pi-coding-agent": "1.5.1", "@forgepilot/engine-protocol": "workspace:*", "ws": "^8.18.0" }
+}
