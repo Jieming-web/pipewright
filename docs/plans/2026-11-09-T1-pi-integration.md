@@ -155,13 +155,13 @@
 
 **目标**：先取得真实 SDK 事件，再写转换器；无需真实模型。
 
-**Files:** Create `scripts/record-pi-fixtures.ts`、`tests/fixtures/pi-events/{text-only,tool-call-then-text,retry}.jsonl`、`tests/fixtures/pi-events/README.md`、`tests/integration/pi-recording.test.ts`。
+**Files:** Create `scripts/record-pi-fixtures.ts`、`tests/fixtures/pi-events/{text-only,tool-call-then-text,retry,retry-drop}.jsonl`、`tests/fixtures/pi-events/README.md`、`tests/integration/pi-recording.test.ts`。Modify `tests/helpers/fake-openai-server.ts`、`tests/unit/fake-openai-server.test.ts`：`ScriptedTurn` 新增一种脚本，发出指定的若干文本块后断开连接（2026-11-10 作者决定，用于录制“说到一半断开再重试”的真实样本，见 0B.2 第 330–332 行）。
 
-**Interfaces:** `recordPiFixture(scenario: "text" | "tool" | "retry", output: string): Promise<void>`，使用真实 pi、2A 假服务与 0A 核实的隔离设置；CLI `pnpm tsx scripts/record-pi-fixtures.ts --scenario <场景> --output <路径>`。
+**Interfaces:** `recordPiFixture(scenario: "text" | "tool" | "retry" | "retry-drop", output: string): Promise<void>`（`retry`：第一次请求返回可重试的 HTTP 错误，第二次成功；`retry-drop`：第一次请求发出部分文本后断开，第二次成功），使用真实 pi、2A 假服务与 0A 核实的隔离设置；CLI `pnpm tsx scripts/record-pi-fixtures.ts --scenario <场景> --output <路径>`。
 
-- [ ] **Step 1：写失败测试**，验证记录包含真实 SDK 的文本、工具开始/结束及最终结束事件；重试样本按 0B 查明的机制触发中间结束/重试，验证之后仍有事件。保存前脱敏，样本只含临时公开测试数据。
+- [ ] **Step 1：写失败测试**，验证记录包含真实 SDK 的文本、工具开始/结束及最终结束事件；两个重试样本按 0B 查明的机制触发中间结束/重试，验证之后仍有事件；`retry-drop` 还要验证失败那次尝试已发出的文本增量保留在记录中。假服务新增的断开脚本同样先写失败测试。保存前脱敏，样本只含临时公开测试数据。
 - [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/pi-recording.test.ts`。
-- [ ] **Step 3：实现录制并运行三个场景**，README 写 pi 版本、生成命令、场景与脱敏规则。不能取得预期重试序列时停下核对 0B；不得手写事件冒充录制。额外手写边界样本须另标 synthetic。
+- [ ] **Step 3：实现录制并运行四个场景**，README 写 pi 版本、生成命令、场景与脱敏规则。不能取得预期重试序列时停下核对 0B；不得手写事件冒充录制。额外手写边界样本须另标 synthetic。
 - [ ] **Step 4：同命令通过并提交** `test(step01): 录制真实 pi 事件样本`。
 
 ### Task 3：事件转换与唯一终止发布
