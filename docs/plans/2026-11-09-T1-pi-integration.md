@@ -310,7 +310,7 @@
 - [x] **Step 1：写失败测试**，验证启动拒绝不挂起、文本/终止、拒绝原因透传、确认人的 by 与理由透传；accepted 后第一个事件就是 run.failed（没有 run.started）时，waitForEnd 正常返回该终止事件。初次启动拒绝时 waitForEnd 同样 reject；运行中第二次 start 被拒绝不破坏原有等待。终止前断线 reject（不是伪造 run.cancelled），终止后正常关闭不覆盖结果；重复 waitForEnd 得到缓存结果。callback 抛错或没有 handler 时发送带原因的拒绝。 — 2026-11-23：新建 `tests/integration/engine-client.test.ts`（进程内 runner + 假模型服务，异常服务端用 ws 桩）：启动拒绝不挂起、文本/终止、拒绝原因透传、确认人 by 与理由透传、首事件 run.failed、初次拒绝时 waitForEnd reject、运行中第二次 start 被拒不影响原等待、终止前断线 reject、终止后关闭不覆盖、重复 waitForEnd、callback 抛错/无 handler/返回非法应答时发带原因的拒绝（确认 by:"engine-client"，控制会话裁决）；返修补：两个 start 同时挂起不丢终止结果、抛出无 toString 的值。
 - [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/engine-client.test.ts`。 — 2026-11-23：RED 19 个失败（EngineClient 不存在）；返修第 1 轮 RED：并发 start 时 waitForEnd 拿到 not_implemented；Object.create(null) 导致 10 秒超时与未处理 rejection。
 - [x] **Step 3：实现客户端**，使用双向校验及 requestId 关联。非致命错误仅通知对应调用或 onError，非法服务端消息使连接失败并结算等待；close 释放 listener/等待项。onEvent/onError 回调抛错由客户端捕获并写 stderr，不让进程崩溃；处理器缺失或抛错时自动拒绝确认的 `by` 为 `"engine-client"`（作者 2026-11-23 决定）。start 前注册回调，避免漏掉开始后的即时请求。 — 2026-11-23：`engine-client.ts`：收发都经 protocol 校验；requestId 关联启动拒绝；非法服务端消息使连接失败并结算等待；首个结果为准；拦截/确认 fail closed。审查：SDD 与 ponytail-review 均通过，按作者规则 1 轮返修（合并拒绝路径、并发 start、reasonOf 不抛错、去掉固定等待），复审 Approved。
-- [x] **Step 4：同命令通过并提交** `feat(step01): TS 引擎客户端与错误传播`。 — 2026-11-23：控制会话复跑 `pnpm test` 271/271，typecheck、build、check:pi 通过，测试后 git 干净；控制会话 8 项变异全部被抓到。提交 41db693、fcf7a93。
+- [x] **Step 4：同命令通过并提交** `feat(step01): TS 引擎客户端与错误传播`。 — 2026-11-23：控制会话复跑 `pnpm test` 271/271，typecheck、build、check:pi 通过，测试后 git 干净；控制会话 8 项变异全部被抓到。提交 41db693、fcf7a93。作者追加回调异常捕获（返修第 2 轮，cb312bd）：onEvent/onError 同步抛错写 stderr、后续消息照常处理；复跑 `pnpm test` 272/272，typecheck、build、check:pi 通过；去掉捕获的变异被抓到。
 
 ### Task 9C：跨进程异常与清理验证
 
