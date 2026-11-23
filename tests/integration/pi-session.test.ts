@@ -14,7 +14,8 @@ const FIXTURE = join(import.meta.dirname, "../fixtures/hostile-repo");
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const RULES = [{ repo: "alpha", path: "AGENTS.md", content: "CALLER_RULE_ALPHA 先跑测试", sourceCommit: "c1" }];
 const TEXT: ScriptedTurn[] = [{ kind: "text", chunks: ["ok"] }];
-const QWEN_COMPAT = { thinkingFormat: "qwen", supportsDeveloperRole: false, supportsStore: false, supportsReasoningEffort: false };
+const EXAMPLE = join(import.meta.dirname, "../../config/models.example.json");
+const QWEN = JSON.parse(readFileSync(EXAMPLE, "utf8")).providers["qwen-api"];
 
 let root: string;
 let servers: FakeOpenAIServer[];
@@ -115,7 +116,7 @@ describe.sequential("createPiSession", () => {
 
   it("qwen 风格配置（compat + reasoning:true）发送 enable_thinking:false", async () => {
     const s = await serve(TEXT);
-    writeModels({ fake: fakeProvider(s.baseUrl, { compat: QWEN_COMPAT, models: [{ id: "fake-model", reasoning: true, input: ["text"], contextWindow: 32768, maxTokens: 4096 }] }) });
+    writeModels({ fake: fakeProvider(s.baseUrl, { compat: QWEN.compat, models: [{ ...QWEN.models[0], id: "fake-model" }] }) });
     const { session } = await open();
     await session.prompt("go");
     session.dispose();
@@ -143,12 +144,17 @@ describe.sequential("createPiSession", () => {
 
   it("loadModelRuntime 返回 ModelRuntime 并暴露已注册模型", async () => {
     writeModels({ fake: fakeProvider("http://127.0.0.1:1/v1") });
-    expect((await loadModelRuntime(p("model/models.json"))).getModel("fake", "fake-model")?.id).toBe("fake-model");
+    expect((await loadModelRuntime(p("model/models.json"), p("scratch"))).getModel("fake", "fake-model")?.id).toBe("fake-model");
   });
 
-  it("config/models.example.json 可被 pi 加载，含 fake、qwen-api、ollama", async () => {
-    const rt = await loadModelRuntime(join(import.meta.dirname, "../../config/models.example.json"));
+  it("加载配置不在 models 文件目录写任何文件，pi 状态文件落在 stateDir", async () => {
+    mkdirSync(p("cfg")); mkdirSync(p("state"));
+    cpSync(EXAMPLE, p("cfg/models.example.json"));
+    const rt = await loadModelRuntime(p("cfg/models.example.json"), p("state"));
     for (const [prov, id] of [["fake", "fake-model"], ["qwen-api", "qwen3.6-35b-a3b"], ["ollama", "qwen3-4b-instruct-2507-ctx16k"]]) expect(rt.getModel(prov, id)?.id).toBe(id);
+    await rt.setRuntimeApiKey("fake", "k"); // 触发 pi 写状态的路径之一
+    expect(readdirSync(p("cfg"))).toEqual(["models.example.json"]);
+    expect(readdirSync(p("state")).length).toBeGreaterThan(0);
   });
 
   it("默认内存会话：不写任何会话文件", async () => {
@@ -172,11 +178,22 @@ describe.sequential("createPiSession", () => {
     expect(readFileSync(file, "utf8")).toContain("go");
   });
 
+  it("名为 ..foo 的合法子目录被接受并留在根内", async () => {
+    const s = await serve(TEXT);
+    writeModels({ fake: fakeProvider(s.baseUrl) });
+    const { session } = await open({ task: task({ sessionDir: "..foo/run1" }) });
+    await session.prompt("go");
+    const file = session.sessionFile!;
+    session.dispose();
+    expect(file.startsWith(p("sessions/..foo/run1"))).toBe(true);
+  });
+
   describe("sessionDir 越界", () => {
     const outside = () => p("outside");
     beforeEach(() => { mkdirSync(outside()); symlinkSync(outside(), p("sessions/link")); });
     it.each([
       ["绝对路径", () => p("outside/abs")],
+      ["根内的绝对路径", () => p("sessions/run1")],
       ["含 .. 越界", () => "../outside/dotdot"],
       ["软链接跳出根目录", () => "link/escaped"],
     ])("%s：报错、不创建会话、根目录之外没有写入", async (_n, dir) => {

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { createAgentSession, SessionManager, VERSION, type AgentSession } from "@earendil-works/pi-coding-agent";
 import type { RunSnapshot, StartTask } from "@forgepilot/engine-protocol";
 import type { createInterceptCoordinator } from "./intercept-coordinator.js";
@@ -7,7 +7,7 @@ import { createInterceptExtension } from "./intercept-extension.js";
 import { loadModelRuntime } from "./model-config.js";
 import { createRestrictedResourceLoader } from "./restricted-resource-loader.js";
 
-const inside = (root: string, p: string) => { const r = relative(root, p); return r === "" || (!r.startsWith("..") && !isAbsolute(r)); };
+const inside = (root: string, p: string) => { const r = relative(root, p); return r === "" || (r !== ".." && !r.startsWith(".." + sep) && !isAbsolute(r)); };
 
 /** sessionDir 只能是 sessionsRoot 下的相对路径；返回校验后的绝对目录（尚未创建）。 */
 function resolveSessionDir(sessionsRoot: string, sessionDir: string): string {
@@ -35,7 +35,7 @@ export async function createPiSession(opts: {
 }): Promise<{ session: AgentSession; snapshot: RunSnapshot }> {
   const { task } = opts;
   const sessionDir = task.sessionDir === undefined ? undefined : resolveSessionDir(opts.sessionsRoot, task.sessionDir);
-  const modelRuntime = await loadModelRuntime(opts.modelsPath);
+  const modelRuntime = await loadModelRuntime(opts.modelsPath, opts.scratchDir);
   const model = modelRuntime.getModel(task.model.provider, task.model.id);
   if (!model) throw new Error(`model not found: ${task.model.provider}/${task.model.id}`);
   await modelRuntime.getAuth(model); // 缺少环境变量引用时在这里抛出 pi 的明确错误，而不是等到首个请求
@@ -45,7 +45,6 @@ export async function createPiSession(opts: {
     contextFiles: task.contextFiles,
     extensionFactories: [createInterceptExtension(opts.decide, opts.signal)],
   });
-  if (sessionDir) mkdirSync(sessionDir, { recursive: true });
   const { session } = await createAgentSession({
     cwd: opts.workDir, // 只决定内置工具的工作目录
     agentDir: opts.scratchDir,
@@ -56,7 +55,6 @@ export async function createPiSession(opts: {
     settingsManager: restricted.settingsManager, // 必须显式传：缺省会回退到信任项目设置的 SettingsManager.create
     sessionManager: sessionDir ? SessionManager.create(opts.workDir, sessionDir) : SessionManager.inMemory(opts.workDir),
   });
-  await session.bindExtensions({}); // 拦截扩展从此刻起生效
   return {
     session,
     snapshot: { engine: { name: "pi", version: VERSION }, model: { provider: model.provider, id: model.id }, contextFiles: restricted.loadedContextFiles() },

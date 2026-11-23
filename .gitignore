@@ -11,3 +11,5 @@ tmp/
 .forgepilot/
 models.local.json
 .superpowers/
+config/auth.json
+config/models-store.json
