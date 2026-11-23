@@ -294,10 +294,10 @@
 
 **Interfaces:** `startRunnerServer(opts: {port: number; modelsPath: string; workDir: string; sessionsRoot: string; interceptTimeoutMs?: number; confirmTimeoutMs?: number; recordPiEventsPath?: string; idleTimeoutMs?: number}): Promise<{port: number; close(): Promise<void>; done: Promise<{ok: boolean}>}>`。`done` 在服务因终止、空闲超时、断线或外部 `close()` 结束后 resolve，永不 reject；引擎清理失败或超过清理时限都记为 `ok: false`，因此 `done` 一定会 resolve。CLI 等 `done` 后以 `ok ? 0 : 1` 退出，SIGTERM 走「调 close、等 done、再退出」；退出码只反映清理结果，不反映任务成败（作者 2026-11-23 决定）。`idleTimeoutMs` 默认 30000，对应契约「空闲可配置」。CLI 提供对应 `--port`、`--models`、`--workdir`、`--sessions-root`、`--intercept-timeout-ms`、`--confirm-timeout-ms`、`--idle-timeout-ms`、`--record-pi-events`；`sessionsRoot`/`--sessions-root` 必填，原样传给 PiEngine（作者 2026-11-23 决定）；stdout 仅打印一行 `RUNNER_LISTENING <port>`，诊断到 stderr。
 
-- [ ] **Step 1：写失败测试**，用原生 ws 客户端（不依赖 Task 9B）验证 accepted/事件流、决定/确认往返、unsupported 不执行、重复连接/启动及格式错误；正常终止或断线后 close 可完成。
-- [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/runner-server.test.ts`。
-- [ ] **Step 3：实现服务与入口**，T1 绑定 loopback；空闲退出、终止及断线按 Task 4。SIGTERM 同样进入清理。引擎清理失败时只转发 8B 已发布的 run.failed，不另造终止事件；记录失败并让独立进程非零退出。启动者以独立进程组管理 runner 及其工具，在非零退出或停止超时后清理整个组；9C 测试与 10A2 脚本落实这一责任。正常终止只在清理成功后发出，再关闭连接，不另增 disposed 协议消息。
-- [ ] **Step 4：同命令通过并提交** `feat(step01): runner 服务与进程入口`。
+- [x] **Step 1：写失败测试**，用原生 ws 客户端（不依赖 Task 9B）验证 accepted/事件流、决定/确认往返、unsupported 不执行、重复连接/启动及格式错误；正常终止或断线后 close 可完成。 — 2026-11-23：新建 `tests/integration/runner-server.test.ts`，测试客户端用 Node 22 内置 WebSocket（根 package 无 ws 依赖）；覆盖 accepted/事件流、决定/确认往返、policy/resume 不执行、第二连接/第二次启动（requestId 关联）、格式错误、正常终止/断线/close 后 done、清理失败 ok:false、引擎不返回时兜底、空闲退出、CLI 缺参与 SIGTERM；返修补：关闭中迟到的 start_task、客户端不回 close 帧、端口占用、非法整数参数。
+- [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/runner-server.test.ts`。 — 2026-11-23：RED 为 runner-server 模块不存在；返修第 1 轮 RED：客户端不回 close 帧时 done 用时 30001 ms（期望 <3000）。
+- [x] **Step 3：实现服务与入口**，T1 绑定 loopback；空闲退出、终止及断线按 Task 4。SIGTERM 同样进入清理。引擎清理失败时只转发 8B 已发布的 run.failed，不另造终止事件；记录失败并让独立进程非零退出。启动者以独立进程组管理 runner 及其工具，在非零退出或停止超时后清理整个组；9C 测试与 10A2 脚本落实这一责任。正常终止只在清理成功后发出，再关闭连接，不另增 disposed 协议消息。 — 2026-11-23：`runner-server.ts` 单一收尾 finish()（终止/取消/断线/空闲/close/SIGTERM 共用），send 不抛错，引擎兜底 CLEANUP_LIMIT_MS+1s，等客户端关闭最多 1 s 后强制断开；`main.ts` 等 done 后按 ok 退出 0/1。接口按作者决定增加 done 与 idleTimeoutMs（5bd5aaa）。审查：SDD 与 ponytail-review 共 1 轮返修，复审 Approved。
+- [x] **Step 4：同命令通过并提交** `feat(step01): runner 服务与进程入口`。 — 2026-11-23：控制会话复跑 `pnpm test` 248/248，typecheck、build、check:pi 通过，测试后 git 干净；控制会话 7 项变异全部被测试抓到。提交 a2dd552、3d1699e。
 
 ### Task 9B：TypeScript 客户端
 
