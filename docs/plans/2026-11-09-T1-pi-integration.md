@@ -229,10 +229,10 @@
 
 **Interfaces:** `readGitContextFiles(sources: {repo: string; repoDir: string; baseRef: string; paths: string[]}[]): Promise<ContextFile[]>`。调用方明确指定基准引用，先解析为 commit 再读取对应 blob，`sourceCommit` 随文件传递；T1 约定本地 main 为测试基准，不声称本地 git 强制分支保护。
 
-- [ ] **Step 1：写失败测试**，临时仓库 main 含原规则，任务分支改成另一规则；读取仍返回 main 内容及其 commit。两仓库均有 AGENTS.md 时均保留；基准引用不存在、重复仓库标识/路径、路径不合法或 git 失败时报错。合法引用中缺少指定 AGENTS.md 时省略该文件，返回空列表也合法，不回退读取工作树。
-- [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/git-context.test.ts`。
-- [ ] **Step 3：实现读取**，以参数调用 git，不把引用/路径拼成 shell 代码；不把 repoDir/baseRef 交给运行器。默认使用场景传 `paths: ["AGENTS.md"]`，不自动扩大扫描范围。
-- [ ] **Step 4：同命令通过并提交** `feat(step01): 调用方读取 git 基准规则`。
+- [x] **Step 1：写失败测试**，临时仓库 main 含原规则，任务分支改成另一规则；读取仍返回 main 内容及其 commit。两仓库均有 AGENTS.md 时均保留；基准引用不存在、重复仓库标识/路径、路径不合法或 git 失败时报错。合法引用中缺少指定 AGENTS.md 时省略该文件，返回空列表也合法，不回退读取工作树。 — 2026-11-23：`tests/unit/git-context.test.ts` 19 个测试，覆盖 Step 1 全部情况；返修补上：规则文件是软链接或目录时报错，经过软链接目录的路径按缺失省略，基准引用为空白时报错，256 KiB 上限两侧边界，继承的 GIT_DIR 不影响读取，非 UTF-8 内容报错。
+- [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/git-context.test.ts`。 — 2026-11-23：首轮全部失败（模块未实现）；返修第 1 轮 3 个失败（大小上限、GIT_DIR、UTF-8）。软链接、目录、空白引用这几条在旧代码上已通过，属于把已有行为固定下来；控制会话做了变异检查：去掉软链接检查、去掉 blob 检查、把上限比较改成 `>=`，都各有一个测试失败。
+- [x] **Step 3：实现读取**，以参数调用 git，不把引用/路径拼成 shell 代码；不把 repoDir/baseRef 交给运行器。默认使用场景传 `paths: ["AGENTS.md"]`，不自动扩大扫描范围。 — 2026-11-23：`packages/engine-client/src/git-context.ts`，用 execFile 传参数数组，加 `--literal-pathspecs`；先 `rev-parse --verify --end-of-options <ref>^{commit}` 定下提交，再用 `ls-tree -z -l` 按这个提交查文件条目，最后 `cat-file blob` 读内容。作者决定（2026-11-23）：规则文件是软链接时报错拒绝；单个文件上限 256 KiB（`MAX_RULE_FILE_BYTES`，读内容之前就检查）。另外：调用 git 时去掉继承的 `GIT_*` 环境变量；内容严格按 UTF-8 解码；baseRef 注释建议写 `refs/heads/main` 这样的全称。
+- [x] **Step 4：同命令通过并提交** `feat(step01): 调用方读取 git 基准规则`。 — 2026-11-23：控制会话复跑，`pnpm test` 151/151，typecheck、build、check:pi 都通过；审查（规格+质量）Approved 但有 Important（缺少软链接和目录的测试），ponytail-review 没有 Must；1 轮返修后复审 7 条全部 addressed；提交 d7639be、bc91882。
 
 ### Task 6：拦截与确认协调模块
 
