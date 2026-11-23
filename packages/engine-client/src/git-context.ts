@@ -4,10 +4,15 @@ import { ContextFileSchema, type ContextFile } from "@forgepilot/engine-protocol
 
 const run = promisify(execFile);
 const MAX = 16 * 1024 * 1024;
+export const MAX_RULE_FILE_BYTES = 256 * 1024;
+// 继承的 GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE 等会让 git 读到别的仓库
+const gitEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
+const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 export interface GitContextSource {
   repo: string;
   repoDir: string;
+  /** 建议用全限定引用如 "refs/heads/main"（或 commit sha）；裸名 "main" 可能与 tag 歧义 */
   baseRef: string;
   paths: string[];
 }
@@ -18,6 +23,7 @@ async function git(repo: string, repoDir: string, args: string[]): Promise<Buffe
     const { stdout } = await run("git", ["--literal-pathspecs", "-C", repoDir, ...args], {
       encoding: "buffer",
       maxBuffer: MAX,
+      env: gitEnv(),
     });
     return stdout;
   } catch (e) {
@@ -51,11 +57,20 @@ export async function readGitContextFiles(sources: GitContextSource[]): Promise<
     }
     for (const path of s.paths) {
       // ls-tree on the resolved SHA: empty output = absent from that tree; non-zero exit = real failure
-      const entry = (await git(s.repo, s.repoDir, ["ls-tree", "-z", sha, "--", path])).toString("utf8");
+      const entry = (await git(s.repo, s.repoDir, ["ls-tree", "-z", "-l", sha, "--", path])).toString("utf8");
+      // ls-tree 不跟随软链接，经软链接目录的路径在树中不存在，按缺失省略
       if (entry === "") continue;
-      const m = /^(\d+) (\w+) ([0-9a-f]+)\t/.exec(entry);
+      const m = /^(\d+) (\w+) ([0-9a-f]+) +(\S+)\t/.exec(entry);
       if (!m || m[2] !== "blob" || m[1] === "120000") throw new Error(`[${s.repo}] ${path} is not a regular file at ${sha}`);
-      const content = (await git(s.repo, s.repoDir, ["cat-file", "blob", m[3]!])).toString("utf8");
+      const size = Number(m[4]);
+      if (size > MAX_RULE_FILE_BYTES) throw new Error(`[${s.repo}] ${path} is ${size} bytes, over the ${MAX_RULE_FILE_BYTES} byte limit`);
+      const raw = await git(s.repo, s.repoDir, ["cat-file", "blob", m[3]!]);
+      let content: string;
+      try {
+        content = utf8.decode(raw);
+      } catch {
+        throw new Error(`[${s.repo}] ${path} is not valid UTF-8`);
+      }
       out.push(ContextFileSchema.parse({ repo: s.repo, path, content, sourceCommit: sha }));
     }
   }

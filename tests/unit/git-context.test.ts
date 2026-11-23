@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,7 +23,7 @@ function makeRepo(files: Record<string, string>): string {
   git(d, "config", "commit.gpgsign", "false");
   for (const [p, c] of Object.entries(files)) writeFileSync(join(d, p), c);
   git(d, "add", "-A");
-  git(d, "commit", "-q", "-m", "init");
+  git(d, "commit", "-q", "--allow-empty", "-m", "init");
   return d;
 }
 const src = (repo: string, repoDir: string, over: Partial<{ baseRef: string; paths: string[] }> = {}) => ({
@@ -88,5 +88,65 @@ describe("readGitContextFiles", () => {
     const d = mkdtempSync(join(tmpdir(), "fp-notgit-"));
     dirs.push(d);
     await expect(readGitContextFiles([src("r", d)])).rejects.toThrow(/r/);
+  });
+
+  it("rejects a symlink rule file", async () => {
+    const d = makeRepo({ "CLAUDE.md": "x" });
+    symlinkSync("CLAUDE.md", join(d, "AGENTS.md"));
+    git(d, "add", "-A");
+    git(d, "commit", "-qm", "link");
+    await expect(readGitContextFiles([src("r", d)])).rejects.toThrow(/\[r\] AGENTS\.md is not a regular file/);
+  });
+
+  it("accepts exactly 256 KiB and rejects 256 KiB + 1", async () => {
+    const d = makeRepo({ "AGENTS.md": "a".repeat(256 * 1024) });
+    expect((await readGitContextFiles([src("r", d)]))[0]!.content.length).toBe(256 * 1024);
+    writeFileSync(join(d, "AGENTS.md"), "a".repeat(256 * 1024 + 1));
+    git(d, "commit", "-qam", "big");
+    await expect(readGitContextFiles([src("r", d)])).rejects.toThrow(/\[r\] AGENTS\.md.*262145/);
+  });
+
+  it("ignores inherited GIT_DIR", async () => {
+    const d = makeRepo({ "AGENTS.md": "a" });
+    const old = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(d, "bogus");
+    try {
+      expect(await readGitContextFiles([src("r", d)])).toHaveLength(1);
+    } finally {
+      if (old === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = old;
+    }
+  });
+
+  it("rejects non-UTF-8 content", async () => {
+    const d = makeRepo({});
+    writeFileSync(join(d, "AGENTS.md"), Buffer.from([0xff, 0xfe]));
+    git(d, "add", "-A");
+    git(d, "commit", "-qm", "bin");
+    await expect(readGitContextFiles([src("r", d)])).rejects.toThrow(/\[r\] AGENTS\.md.*UTF-8/);
+  });
+
+  it("rejects a directory path", async () => {
+    const d = makeRepo({});
+    mkdirSync(join(d, "AGENTS.md"));
+    writeFileSync(join(d, "AGENTS.md", "f"), "x");
+    git(d, "add", "-A");
+    git(d, "commit", "-qm", "dir");
+    await expect(readGitContextFiles([src("r", d)])).rejects.toThrow(/not a regular file/);
+  });
+
+  it("omits a path that goes through a symlinked directory", async () => {
+    const d = makeRepo({});
+    mkdirSync(join(d, "real"));
+    writeFileSync(join(d, "real", "AGENTS.md"), "x");
+    symlinkSync("real", join(d, "link"));
+    git(d, "add", "-A");
+    git(d, "commit", "-qm", "l");
+    expect(await readGitContextFiles([src("r", d, { paths: ["link/AGENTS.md"] })])).toEqual([]);
+  });
+
+  it.each(["", "   "])("rejects blank baseRef %j", async (ref) => {
+    const d = makeRepo({ "AGENTS.md": "a" });
+    await expect(readGitContextFiles([src("r", d, { baseRef: ref })])).rejects.toThrow(/baseRef/);
   });
 });
