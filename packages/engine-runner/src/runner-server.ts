@@ -34,7 +34,12 @@ export async function startRunnerServer(opts: {
   recordPiEventsPath?: string;
   idleTimeoutMs?: number;
 }): Promise<{ port: number; close(): Promise<void>; done: Promise<{ ok: boolean }> }> {
-  const wss = new WebSocketServer({ host: "127.0.0.1", port: opts.port });
+  const wss = new WebSocketServer({
+    host: "127.0.0.1",
+    port: opts.port,
+    // 浏览器页面一定带 Origin、启动者的进程客户端不带：握手时拒绝（403），不占唯一客户端位置（engine.md 连接来源）
+    verifyClient: ({ req }, done) => done(req.headers.origin === undefined, 403),
+  });
   await new Promise<void>((resolve, reject) => {
     wss.once("listening", resolve);
     wss.once("error", reject);

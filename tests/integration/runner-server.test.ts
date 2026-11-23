@@ -184,6 +184,23 @@ describe.sequential("runner 服务：启动前拒绝与协议错误", () => {
     expect(checkFlow(c).at(-1)).toBe("run.settled");
   }, 10_000);
 
+  it("带 Origin 头的连接在握手时被拒绝，且不占用唯一客户端位置", async () => {
+    const { runner } = await setup([{ kind: "text", chunks: ["ok"] }]);
+    const sock = tcpConnect(runner.port, "127.0.0.1");
+    let reply = "";
+    sock.on("data", (d) => (reply += d));
+    await new Promise((ok) => sock.once("connect", ok));
+    sock.write(["GET / HTTP/1.1", "Host: 127.0.0.1", "Origin: http://evil.example", "Upgrade: websocket", "Connection: Upgrade", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13", "", ""].join("\r\n"));
+    await new Promise((ok) => sock.once("close", ok));
+    expect(reply).toMatch(/^HTTP\/1\.1 403 /);
+    expect(reply).not.toMatch(/"type"/); // 没有任何 runner 消息
+    const c = await connect(runner.port);
+    c.send(start());
+    expect(await c.closed).toBe(1000);
+    expect(c.msgs[0]).toEqual({ type: "accepted", requestId: "A", sessionId: "s1" });
+    expect(checkFlow(c).at(-1)).toBe("run.settled");
+  }, 10_000);
+
   it("第二个连接被拒绝，原连接与任务不受影响", async () => {
     const { runner } = await setup(TOOL("echo hi > ok.marker"));
     const c = await connect(runner.port, allow);
