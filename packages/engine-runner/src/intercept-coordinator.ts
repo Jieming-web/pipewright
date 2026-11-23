@@ -31,7 +31,8 @@ export function createInterceptCoordinator(opts: {
       try {
         opts.send(message);
       } catch (e) {
-        settle({ failed: `send failed: ${e instanceof Error ? e.message : String(e)}` });
+        // fixed text: the reason is shown to the model, so no internal error text (addresses etc.)
+        settle({ failed: "send failed" });
       }
     });
   }

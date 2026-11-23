@@ -91,7 +91,7 @@ describe("createInterceptCoordinator", () => {
       throw new Error("ws closed");
     });
     const r = await co.decide(req, new AbortController().signal);
-    expect(r).toMatchObject({ decision: "block", reason: expect.stringContaining("ws closed") });
+    expect(r).toEqual({ decision: "block", reason: "send failed" });
   });
 
   it("abort -> block 并清理", async () => {
@@ -215,7 +215,9 @@ describe("清理、独立计时与重复 callId", () => {
       if (m.type === "intercept_request") queueMicrotask(() => co.respond(dec({ decision: "confirm", reason: "risky" })));
       if (m.type === "confirm_request") throw new Error("ws closed");
     });
-    expect(await co.decide(req, new AbortController().signal)).toEqual({ decision: "block", reason: "send failed: ws closed" });
+    const res = await co.decide(req, new AbortController().signal);
+    expect(res).toEqual({ decision: "block", reason: "send failed" });
+    expect(JSON.stringify(res)).not.toContain("ws closed");
   });
 
   it("确认阶段 abort -> block aborted", async () => {
