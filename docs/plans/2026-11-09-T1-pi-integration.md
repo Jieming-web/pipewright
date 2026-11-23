@@ -253,7 +253,7 @@
 
 **Files:** Create `packages/engine-runner/src/restricted-resource-loader.ts`、`tests/fixtures/hostile-repo/`、`tests/integration/restricted-loader.test.ts`。
 
-**Interfaces:** `createRestrictedResourceLoader(opts: {scratchDir: string; contextFiles: ContextFile[]; extensionFactories: ((pi: ExtensionAPI) => void)[]}): Promise<{loader: ResourceLoader; loadedContextFiles(): RunSnapshot["contextFiles"]}>`。`loadedContextFiles` 从 pi 加载器回读实际加载的规则文件（不照抄 opts），按内容计算 sha256，并映射回 repo、path、sourceCommit。使用 0A 确认的关闭设置，pi 接收的路径映射为 `/<repo>/<path>`；repo 为无斜杠的稳定标识；来源 commit 来自 ContextFile.sourceCommit，由 `loadedContextFiles()` 映射回运行快照。scratchDir 每次新建，清理责任归会话。
+**Interfaces:** `createRestrictedResourceLoader(opts: {scratchDir: string; contextFiles: ContextFile[]; extensionFactories: ((pi: ExtensionAPI) => void)[]}): Promise<{loader: ResourceLoader; settingsManager: SettingsManager; loadedContextFiles(): RunSnapshot["contextFiles"]}>`。返回的 `settingsManager` 就是加载器内部使用的那一份（内存设置、`projectTrusted: false`、`cacheWarming: "off"`），会话必须用同一份；pi 的 `createAgentSession` 只读自己拿到的 settingsManager，不传就回退到默认的 `SettingsManager.create`，而它默认信任项目（作者 2026-11-23 决定）。`loadedContextFiles` 从 pi 加载器回读实际加载的规则文件（不照抄 opts），按内容计算 sha256，并映射回 repo、path、sourceCommit。使用 0A 确认的关闭设置，pi 接收的路径映射为 `/<repo>/<path>`；repo 为无斜杠的稳定标识；来源 commit 来自 ContextFile.sourceCommit，由 `loadedContextFiles()` 映射回运行快照。scratchDir 每次新建，清理责任归会话。
 
 - [ ] **Step 1：写失败测试**，用 2A 假模型和真实 SDK 检查首个请求及资源加载结果：调用方规则出现，任务工作树/祖先/模拟用户目录中的 AGENTS.md、CLAUDE.md 不出现；多个仓库同名规则都有来源标签；`loadedContextFiles()` 的 sha256 与假服务首个请求中实际出现的规则内容一致，且不包含任何被禁止来源的文件（T1 验收 11）。
 - [ ] **Step 2：补资源污染用例并运行**，`pnpm vitest run tests/integration/restricted-loader.test.ts` 应因缺失加载器失败。样本含 `.pi/extensions/marker.ts` 的加载副作用、`.pi/settings.json` 引用外部 sentinel 扩展/提示词/skill、`.pi/APPEND_SYSTEM.md`、该版本支持的系统提示词覆盖入口、`.pi/skills/evil/SKILL.md`、`.agents/skills/evil/SKILL.md`；对上级与用户目录重复验证。断言 marker 不产生、提示词/skill 标记不注入、发现列表不含这些资源、settings 指定的可观察行为不生效。
@@ -266,9 +266,9 @@
 
 **Files:** Create `packages/engine-runner/src/model-config.ts`、`packages/engine-runner/src/pi-session.ts`、`config/models.example.json`、`tests/integration/pi-session.test.ts`。
 
-**Interfaces:** `loadModelRuntime(modelsPath: string): Promise<ModelRuntime>` 使用 0A 确认的 pi 类型；`createPiSession(opts: {task: StartTask; modelsPath: string; workDir: string; scratchDir: string; decide: ReturnType<typeof createInterceptCoordinator>["decide"]; signal: AbortSignal}): Promise<{session: AgentSession; snapshot: RunSnapshot}>`。内部只创建一个 Task 7 受限加载器，会话使用的就是这个加载器；snapshot 由同一加载器的 `loadedContextFiles()` 与实际注册的模型组成，保证快照描述的正是会话所用的资源。SDK 类型名与 0A 不符时先修订计划再实现，不以 unknown 掩盖。
+**Interfaces:** `loadModelRuntime(modelsPath: string): Promise<ModelRuntime>` 使用 0A 确认的 pi 类型；`createPiSession(opts: {task: StartTask; modelsPath: string; workDir: string; scratchDir: string; decide: ReturnType<typeof createInterceptCoordinator>["decide"]; signal: AbortSignal}): Promise<{session: AgentSession; snapshot: RunSnapshot}>`。内部只创建一个 Task 7 受限加载器，会话使用的就是这个加载器，以及这个加载器返回的 `settingsManager`。`createAgentSession` 的 settingsManager 必须显式传入，不允许回退到 pi 默认设置，项目设置信任必须显式关闭（作者 2026-11-23 决定）；snapshot 由同一加载器的 `loadedContextFiles()` 与实际注册的模型组成，保证快照描述的正是会话所用的资源。SDK 类型名与 0A 不符时先修订计划再实现，不以 unknown 掩盖。
 
-- [ ] **Step 1：写失败测试**，两份 fake provider 配置命中不同假服务，工作目录只影响工具；返回的 snapshot 中 model 等于实际注册的模型，contextFiles 的 sha256 与会话首个请求中实际出现的规则内容一致；API key 仅从环境引用获得。缺少模型/密钥报明确错误；默认内存会话，指定 sessionDir 使用 pi 持久化并在清理后保留文件。不自行重写会话格式。
+- [ ] **Step 1：写失败测试**，两份 fake provider 配置命中不同假服务，工作目录只影响工具；返回的 snapshot 中 model 等于实际注册的模型，contextFiles 的 sha256 与会话首个请求中实际出现的规则内容一致；API key 仅从环境引用获得。缺少模型/密钥报明确错误；端到端测试：仓库里放恶意 `.pi/settings.json`（例如 `defaultTools`、`shellCommandPrefix`），确认会话的工具列表和 bash 的 shell 前缀都没有被改，且 `isProjectTrusted()` 为 false（作者 2026-11-23 要求）；默认内存会话，指定 sessionDir 使用 pi 持久化并在清理后保留文件。不自行重写会话格式。
 - [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/pi-session.test.ts`。
 - [ ] **Step 3：实现配置与工厂**，模型注册、鉴权、settings、SessionManager 都复用核实后的 SDK API；不读取用户个人 auth/settings 文件，不存在暂时默认 allow 的阶段。示例包含 fake、qwen-api（百炼）、ollama，真实 ID 和版本采用 0C 结果。
 - [ ] **Step 4：同命令通过并提交** `feat(step01): 模型配置与受限 pi 会话`。
