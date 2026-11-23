@@ -296,7 +296,7 @@
 
 - [x] **Step 1：写失败测试**，用原生 ws 客户端（不依赖 Task 9B）验证 accepted/事件流、决定/确认往返、unsupported 不执行、重复连接/启动及格式错误；正常终止或断线后 close 可完成。 — 2026-11-23：新建 `tests/integration/runner-server.test.ts`，测试客户端用 Node 22 内置 WebSocket（根 package 无 ws 依赖）；覆盖 accepted/事件流、决定/确认往返、policy/resume 不执行、第二连接/第二次启动（requestId 关联）、格式错误、正常终止/断线/close 后 done、清理失败 ok:false、引擎不返回时兜底、空闲退出、CLI 缺参与 SIGTERM；返修补：关闭中迟到的 start_task、客户端不回 close 帧、端口占用、非法整数参数。
 - [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/runner-server.test.ts`。 — 2026-11-23：RED 为 runner-server 模块不存在；返修第 1 轮 RED：客户端不回 close 帧时 done 用时 30001 ms（期望 <3000）。
-- [x] **Step 3：实现服务与入口**，T1 绑定 loopback，握手时拒绝带 `Origin` 头的连接且不占用客户端位置（作者 2026-11-23 决定，2026-11-23 追加）；空闲退出、终止及断线按 Task 4。SIGTERM 同样进入清理。引擎清理失败时只转发 8B 已发布的 run.failed，不另造终止事件；记录失败并让独立进程非零退出。启动者以独立进程组管理 runner 及其工具，在非零退出或停止超时后清理整个组；9C 测试与 10A2 脚本落实这一责任。正常终止只在清理成功后发出，再关闭连接，不另增 disposed 协议消息。 — 2026-11-23：`runner-server.ts` 单一收尾 finish()（终止/取消/断线/空闲/close/SIGTERM 共用），send 不抛错，引擎兜底 CLEANUP_LIMIT_MS+1s，等客户端关闭最多 1 s 后强制断开；`main.ts` 等 done 后按 ok 退出 0/1。接口按作者决定增加 done 与 idleTimeoutMs（5bd5aaa）。审查：SDD 与 ponytail-review 共 1 轮返修，复审 Approved。
+- [x] **Step 3：实现服务与入口**，T1 绑定 loopback，握手时拒绝带 `Origin` 头的连接且不占用客户端位置（作者 2026-11-23 决定，2026-11-23 追加）；空闲退出、终止及断线按 Task 4。SIGTERM 同样进入清理。引擎清理失败时只转发 8B 已发布的 run.failed，不另造终止事件；记录失败并让独立进程非零退出。启动者以独立进程组管理 runner 及其工具，在非零退出或停止超时后清理整个组；9C 测试与 10A2 脚本落实这一责任。（2026-11-23 修订，作者决定：pi 的 bash 工具在独立会话里，不在 runner 组内；启动者只能强杀 runner 组，工具由 pi 的 abort/dispose 结束，runner 被强杀时工具可能残留，记为 T1 已知限制；停止时限默认 10 秒，见 engine.md 进程退出。）正常终止只在清理成功后发出，再关闭连接，不另增 disposed 协议消息。 — 2026-11-23：`runner-server.ts` 单一收尾 finish()（终止/取消/断线/空闲/close/SIGTERM 共用），send 不抛错，引擎兜底 CLEANUP_LIMIT_MS+1s，等客户端关闭最多 1 s 后强制断开；`main.ts` 等 done 后按 ok 退出 0/1。接口按作者决定增加 done 与 idleTimeoutMs（5bd5aaa）。审查：SDD 与 ponytail-review 共 1 轮返修，复审 Approved。
 - [x] **Step 4：同命令通过并提交** `feat(step01): runner 服务与进程入口`。 — 2026-11-23：控制会话复跑 `pnpm test` 248/248，typecheck、build、check:pi 通过，测试后 git 干净；控制会话 7 项变异全部被测试抓到。提交 a2dd552、3d1699e。作者追加 Origin 检查（返修第 2 轮，144183a）：带 Origin 头的握手回 403、不占客户端位置；复跑 `pnpm test` 249/249，typecheck、build、check:pi 通过；去掉检查的变异被抓到。
 
 ### Task 9B：TypeScript 客户端
@@ -321,7 +321,7 @@
 **Interfaces:** 通过 9A CLI 启动、9B 客户端调用；清理证据使用子进程退出码、监听端口关闭、工具子进程结束、延迟 marker 不出现，不增加产品诊断消息。
 
 - [ ] **Step 1：补充测试并先运行**，`pnpm vitest run tests/integration/runner-process.test.ts`；覆盖慢流/工具/等待决定/等待确认时取消和断线、重复取消、迟到批准、错误 JSON、第二次启动、正常结束关闭、无客户端空闲退出。新测试可能已通过；发现缺陷时保留失败证据再修复，不为制造红灯改坏代码。
-- [ ] **Step 2：验证退出边界**，正常任务终止后不再有事件、进程在 5 秒内退出；清理超时用故障注入验证非零退出与启动者兜底，不能留下工具子进程。测试失败也在 finally 清理所有创建的资源。
+- [ ] **Step 2：验证退出边界**，正常任务终止后不再有事件、进程在 5 秒内退出；清理超时用故障注入验证带原因的 run.failed、非零退出或卡死时启动者在停止时限后强杀 runner 进程组；工具子进程由 pi 在卡住之前结束，测试须如实归因，不把它算作启动者兜底的效果（2026-11-23 修订，作者决定，见 engine.md 进程退出与工具进程）。测试失败也在 finally 清理所有创建的资源。
 - [ ] **Step 3：必要修复后运行** `pnpm test && pnpm typecheck && pnpm build && pnpm check:pi`；全部通过后提交 `test(step01): 跨进程取消与异常验证`。
 
 ### Task 10A1：五题样例与判定
@@ -346,7 +346,7 @@
 **Interfaces:** 消费 10A1 的题集与 `gradeAnswer`、Task 5 的 `readGitContextFiles`、9A CLI 与 9B 客户端。CLI：`pnpm tsx scripts/t1-real-run.ts --models <配置> --model <provider/id> --record-dir <目录> --output <报告>`；env 在外层 Node 进程注入。
 
 - [ ] **Step 1：写失败测试并运行**，`pnpm vitest run tests/integration/t1-real-run.test.ts`。假模型验证五题各启动新 runner/内存会话和临时 git 仓库副本，从指定 main 引用加载规则；标准答案、完整性核对记录与其他题回答均未提供给引擎。所有源码、脚本和题集的版本证据可从报告核对。
-- [ ] **Step 2：实现只读运行与判分**，调用方只放行 0B 核实的 pi 内置只读工具（read/grep/find/ls 中实际存在者），拒绝 bash/edit/write 和所有未知工具；测试拒绝后无副作用。提示词同时提供样例文件路径清单，使只有 read 时也能遍历样例，清单不含答案。每题总时限默认 120 秒，超时取消并记失败；启动者按 9A 管理独立进程组，正常/异常退出均清理资源。
+- [ ] **Step 2：实现只读运行与判分**，调用方只放行 0B 核实的 pi 内置只读工具（read/grep/find/ls 中实际存在者），拒绝 bash/edit/write 和所有未知工具；测试拒绝后无副作用。提示词同时提供样例文件路径清单，使只有 read 时也能遍历样例，清单不含答案。每题总时限默认 120 秒，超时取消并记失败；启动者按 9A 管理独立进程组，停止时限默认 10 秒，到时强杀整个组，正常/异常退出均清理资源（2026-11-23 补充）。
 - [ ] **Step 3：实现记录并验证**，每题由 runner `--record-pi-events` 写独立原始事件文件，脚本不解析 pi 原始事件；报告保存回答、判分差异、工具拒绝、模型配置版本、样例/题集哈希、源码与脚本哈希、临时基准 commit、耗时及退出情况。脚本全部答对退出 0，否则非零；服务故障与答案错误分别记录。
 - [ ] **Step 4：同命令通过并提交** `test(step01): 只读验收运行与诊断采集`。
 
