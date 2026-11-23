@@ -5,3 +5,5 @@ export * from "./intercept-extension.js";
 export * from "./restricted-resource-loader.js";
 export * from "./model-config.js";
 export * from "./pi-session.js";
+export * from "./raw-event-recorder.js";
+export * from "./pi-engine.js";
