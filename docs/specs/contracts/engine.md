@@ -65,7 +65,7 @@
 ### 2.2 拦截与确认
 
 - `callback` 模式下，每个待执行工具先发 `intercept_request`，等待 `intercept_decision`，默认 30 秒。
-- 决定为 `confirm` 时发 `confirm_request`，等待 `confirm_response`，**另计**默认 30 分钟（等真人回复，作者 2026-11-23 决定）。
+- 决定为 `confirm` 时发 `confirm_request`，等待 `confirm_response`，**另计**默认 10 分钟（600 秒，等真人回复；与 Claude PreToolUse 钩子的默认上限一致；作者 2026-11-23 决定）。
 - 两个超时都可在 runner 配置。出错或超时一律按 `block`。
 - `Confirmation.by` 是调用方报告的测试身份，**不代表已完成 T4/T8 的鉴权**。
 - 迟到、重复、与等待项不匹配的决定或确认返回 `stale_response`，不改变已完成的决定。
@@ -100,7 +100,7 @@
 | 项 | 默认 | 可配置 |
 |---|---|---|
 | 拦截等待 | 30 秒，超时按 block | 是（runner 配置） |
-| 确认等待 | 30 分钟，另计，超时按 block | 是 |
+| 确认等待 | 10 分钟（600 秒），另计，超时按 block | 是 |
 | 空闲/未启动连接 | 30 秒后退出 | 是 |
 
 ## 4. 示例
@@ -129,7 +129,7 @@
 | 工具执行前放行 | 扩展 `tool_call` handler 返回 undefined | PreToolUse 钩子返回 `{}` / allow；`canUseTool` 返回 allow | 两边都能表达 `allow`。Claude 适配器应选 PreToolUse（canUseTool 会被 allow 规则绕过）。工具不存在/参数校验失败的 pi 调用不经过 `tool_call`，不发拦截请求 |
 | 阻止并让模型看到原因 | 返回 `{block:true, reason}`；handler 抛错也阻止（fail closed） | PreToolUse `deny` + 原因；回调抛错默认放行（fail open），须设 `onFailure:"block"` | 两边都能表达 `block`+reason。出错默认行为相反，将来 Claude 适配器必须设 `onFailure:"block"` |
 | 改写输入 | handler 中原地修改 `event.input`，修改后不再校验 | `updatedInput` | `Decision` 无改写字段，T1 不要求 |
-| 异步等待决定 | handler 可 async，无超时，不因 abort 放弃等待 | 回调有 `signal` 与 timeout（PreToolUse 默认 600 秒） | 拦截 30 秒、确认 30 分钟的超时，超时按 block，取消时释放等待，都由 runner 负责 |
+| 异步等待决定 | handler 可 async，无超时，不因 abort 放弃等待 | 回调有 `signal` 与 timeout（PreToolUse 默认 600 秒） | 拦截 30 秒、确认 600 秒的超时，超时按 block，取消时释放等待，都由 runner 负责 |
 | 确认 | 无内置“问用户”决定值；`ctx.ui.confirm` 无 UI 时返回 false | PreToolUse `ask` 转 canUseTool | 确认在拦截等待内部由 runner 完成（`confirm_request`/`confirm_response`），不用引擎原生 UI |
 | 取消 | `session.abort()` 返回时 `agent_settled{aborted:true}` 已发；`dispose()` 不等待 | `abortController`；`Query.interrupt()`/`close()` | 两边都能表达 `cancel`；`run.cancelled` 由 runner 在清理完成后判定。Claude 取消后结果形态未核实 |
 | 流式事件 | `session.subscribe`：`text_delta`、`message_end`、`tool_execution_start/end`、`agent_settled` | `stream_event`、`SDKAssistantMessage`、`tool_use`/tool_result、`SDKResultMessage` | 统一接口只要求 text.delta、message.completed、tool.started/finished 与唯一终止事件，终止事件由 runner 产生。Claude 的 `message.completed` 需按 message id 聚合 |

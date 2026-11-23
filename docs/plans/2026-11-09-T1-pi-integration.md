@@ -213,7 +213,7 @@
 - [x] **Step 3：实现 schema 并写契约**，附 0B 能力对照表，固定以下行为： — 2026-11-22：`engine-messages.ts`（分消息 schema；按 type 分派解析；ClientMessage/RunnerMessage 由这些 schema 推导）；`agent-events.ts` 新增 SequencedEventSchema（控制会话决定），工具 input/output 键必须存在；`docs/specs/contracts/engine.md`（全部消息、生命周期、Step 3 的全部行为、1.4 节 requestId 语义：只出现在调用方发出的消息里，是每条消息的编号，runner 回显；决定和确认分别用 callId/confirmId 配对；未知字段忽略；at 用 UTC Z；0B 能力对照表）。返修 2 轮：requestId 语义改回计划原意并删掉 runner 请求上的 requestId；路径规范化；契约与 schema 对齐；转换器把缺失的 args/result 归一为 null，避免 undefined 经 JSON 传输后丢掉键（控制会话把它提升为 Important）。
   - 一个 runner 接受一个客户端、一条成功启动的任务；第二连接拒绝。`idle → running → stopping → finished`；启动接受后先回 accepted，再发事件。运行中再启动返回 already_running，不影响原任务；结束后不复用，返回 run_finished 并关闭。五题各启动新 runner。
   - `policy` 和 `resume` 在 T1 返回 not_implemented，且不创建会话/执行工具；有效启动前的拒绝保持 idle，可修正后重试。Python 客户端 T2、策略直连 T3、恢复 T5 实现。
-  - callback 拦截等待默认 30 秒，确认另计默认 30 分钟（作者 2026-11-23 决定），均可在 runner 配置；错误/超时按 block。确认身份是调用方报告的测试身份，不声称已完成 T4/T8 鉴权。
+  - callback 拦截等待默认 30 秒，确认另计默认 600 秒（10 分钟，作者 2026-11-23 决定），均可在 runner 配置；错误/超时按 block。确认身份是调用方报告的测试身份，不声称已完成 T4/T8 鉴权。
   - 迟到、重复、不匹配的决定/确认返回 stale_response，不改变已完成决定。无法解析请求时 error 不必有 requestId；正常任务继续。
   - cancel 幂等；idle 时无操作。终止前的有效取消进入 stopping；已选定终止结果后不覆盖。清理过程中不再发布进度；最终只发一种终止。错误完成和取消竞态按引擎串行观察到的第一个终止原因选择；内部清理失败改为 run.failed。
   - 收到终止后服务关闭连接/监听并退出；无客户端或未启动的连接默认 30 秒空闲超时退出。客户端断线触发取消和退出，不等待重新连接。
