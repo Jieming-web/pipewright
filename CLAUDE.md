@@ -19,6 +19,7 @@ pi：<https://github.com/earendil-works/pi>。以未修改的依赖形式使用�
 | 架构可视图 | `docs/architecture/forgepilot-architecture.html` |
 | 当前任务的执行计划 | `docs/plans/` |
 | 实现说明 | `docs/reviews/` |
+| 阶段学习总结（project-logger 生成，给作者复习与面试准备） | `docs/project-log/` |
 | 评测报告 | `docs/evals/` |
 | 新建文档用的模版 | `docs/templates/` |
 
