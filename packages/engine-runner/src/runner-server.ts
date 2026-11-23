@@ -4,8 +4,10 @@ import { createInterceptCoordinator } from "./intercept-coordinator.js";
 import { CLEANUP_LIMIT_MS, PiEngine } from "./pi-engine.js";
 
 const TERMINAL = new Set(["run.settled", "run.failed", "run.cancelled"]);
-// 引擎自身清理限时之外的兜底：run/cancel 永不返回（如会话创建中挂起）时 done 也必须 resolve
+// 引擎自身清理限时之外的兜底：run/cancel 永不返回时 done 也必须 resolve。从 finish() 起算，会话创建很慢时的取消可能超过它而记 ok:false；残留进程由启动者按进程组清理（契约）
 const STOP_BACKSTOP_MS = CLEANUP_LIMIT_MS + 1000;
+// 等客户端回 close 帧的上限；超时就强制断开，退出不受客户端拖延（ws 默认要等 30 秒）
+const CLIENT_CLOSE_MS = 1000;
 const log = (s: string) => process.stderr.write(`runner: ${s}\n`);
 
 /** 非法消息若仍是带 requestId 的 JSON，就回显它（契约：无法解析时可缺） */
@@ -88,9 +90,12 @@ export async function startRunnerServer(opts: {
         clearTimeout(timer);
         if (!ok) log("engine cleanup failed or timed out");
       }
-      state = "finished";
+      state = "finished"; // 在等待关闭之前置位：此后到达的 start_task 走 run_finished，不会再启动引擎
       client?.close(1000);
-      await new Promise((r) => wss.close(r));
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([new Promise((r) => wss.close(r)), new Promise((r) => (timer = setTimeout(r, CLIENT_CLOSE_MS)))]);
+      clearTimeout(timer);
+      for (const ws of wss.clients) ws.terminate();
       resolveDone({ ok });
     })());
 

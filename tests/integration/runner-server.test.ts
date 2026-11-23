@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { connect as tcpConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -259,6 +260,36 @@ describe.sequential("runner 服务：取消、断线与退出", () => {
     expect(await r2.done).toEqual({ ok: true });
   }, 10_000);
 
+  it("收尾已开始（未启动时 close()）后到达的 start_task：不 accepted、不启动引擎", async () => {
+    const { s, runner } = await setup([{ kind: "text", chunks: ["ok"] }]);
+    const c = await connect(runner.port);
+    const closing = runner.close();
+    c.send(start());
+    await closing;
+    expect(await runner.done).toEqual({ ok: true });
+    await new Promise((r) => setTimeout(r, 500)); // 给可能被误启动的引擎留出建 scratchDir、请求模型的时间
+    expect(c.msgs.filter((m) => m.type === "accepted")).toEqual([]);
+    expect(s.requests.length).toBe(0);
+    expect(scratchLeft()).toEqual([]);
+  }, 10_000);
+
+  it("客户端不回 close 帧：done 仍在数秒内 resolve，不受 ws 30 秒握手超时拖延", async () => {
+    const { runner } = await setup([]);
+    // 手工完成 WebSocket 升级后不再读写任何帧，模拟不回 close 帧的客户端
+    const sock = tcpConnect(runner.port, "127.0.0.1");
+    await new Promise((ok) => sock.once("connect", ok));
+    sock.write(["GET / HTTP/1.1", "Host: 127.0.0.1", "Upgrade: websocket", "Connection: Upgrade", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13", "", ""].join("\r\n"));
+    await new Promise((ok) => sock.once("data", ok)); // 101 Switching Protocols
+    try {
+      const t0 = Date.now();
+      await runner.close();
+      expect(await runner.done).toEqual({ ok: true });
+      expect(Date.now() - t0).toBeLessThan(3000);
+    } finally {
+      sock.destroy();
+    }
+  }, 40_000);
+
   it("运行中外部 close()：客户端收到 run.cancelled 后连接关闭，close 与 done 都完成", async () => {
     const { runner } = await setup(TOOL("touch never.marker"));
     let closing: Promise<void> | undefined;
@@ -308,6 +339,26 @@ describe.sequential("runner 进程入口", () => {
     const exit = new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
     return { child, exit, out: () => out, err: () => err };
   };
+
+  it("端口已被占用：stderr 报 failed to listen，以 1 退出", async () => {
+    const busy = createServer();
+    const port = await new Promise<number>((ok) => busy.listen(0, "127.0.0.1", () => ok((busy.address() as { port: number }).port)));
+    try {
+      const r = run(["--port", String(port), "--models", p("m.json"), "--workdir", p("work"), "--sessions-root", p("sessions")]);
+      expect(await r.exit).toBe(1);
+      expect(r.err()).toMatch(/failed to listen/);
+      expect(r.out()).toBe("");
+    } finally {
+      busy.close();
+    }
+  }, 15_000);
+
+  it("整数参数非法（--idle-timeout-ms abc）：非零退出，不监听", async () => {
+    const r = run(["--port", "0", "--models", p("m.json"), "--workdir", p("work"), "--sessions-root", p("sessions"), "--idle-timeout-ms", "abc"]);
+    expect(await r.exit).not.toBe(0);
+    expect(r.err()).toMatch(/--idle-timeout-ms/);
+    expect(r.out()).toBe("");
+  }, 15_000);
 
   it("缺 --sessions-root：stderr 报错、非零退出、不监听", async () => {
     const r = run(["--port", "0", "--models", p("m.json"), "--workdir", p("work")]);
