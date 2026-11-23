@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseRunnerMessage, type RunnerMessage, type StartTask } from "../../packages/engine-protocol/src/index.js";
 import { PiEngine } from "../../packages/engine-runner/src/pi-engine.js";
 import { startRunnerServer } from "../../packages/engine-runner/src/runner-server.js";
-import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
+import { fakeModelsJson, startFakeOpenAIServer, TOOL, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
 const TERMINAL = new Set(["run.settled", "run.failed", "run.cancelled"]);
 type Runner = Awaited<ReturnType<typeof startRunnerServer>>;
@@ -87,7 +87,6 @@ function checkFlow(c: Client) {
   return ev.map((e) => e.type);
 }
 
-const TOOL = (cmd: string): ScriptedTurn[] => [{ kind: "toolCall", name: "bash", args: { command: cmd }, id: "c1" }, { kind: "text", chunks: ["done"] }];
 
 describe.sequential("runner 服务：正常流程", () => {
   it("accepted 回显 requestId → 事件流 → run.settled；之后关闭连接与监听，done ok", async () => {

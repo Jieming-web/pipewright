@@ -7,7 +7,7 @@ import type { WebSocket as WsSocket, WebSocketServer as WsServer } from "ws";
 import { EngineClient } from "../../packages/engine-client/src/index.js";
 import type { ProtocolError, SequencedEvent, StartTask } from "../../packages/engine-protocol/src/index.js";
 import { startRunnerServer } from "../../packages/engine-runner/src/runner-server.js";
-import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
+import { fakeModelsJson, startFakeOpenAIServer, TOOL, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
 // 根包不依赖 ws：桩服务端借用 engine-client 包的 ws
 const { WebSocketServer } = createRequire(join(import.meta.dirname, "../../packages/engine-client/package.json"))("ws") as typeof import("ws");
@@ -66,7 +66,6 @@ async function stub(onMessage: (m: { type: string; requestId: string }, ws: WsSo
 const task = (o: Partial<StartTask> = {}): Omit<StartTask, "type" | "requestId"> => ({
   sessionId: "s1", prompt: "go", model: { provider: "fake", id: "fake-model" }, contextFiles: [], interceptMode: "callback", ...o,
 });
-const TOOL = (cmd: string): ScriptedTurn[] => [{ kind: "toolCall", name: "bash", args: { command: cmd }, id: "c1" }, { kind: "text", chunks: ["done"] }];
 const lastReq = (s: FakeOpenAIServer) => JSON.stringify(s.requests.at(-1));
 const types = (ev: SequencedEvent[]) => ev.map((e) => e.type);
 

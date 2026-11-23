@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EngineClient } from "../../packages/engine-client/src/index.js";
 import { parseRunnerMessage, type ProtocolError, type RunnerMessage, type SequencedEvent, type StartTask } from "../../packages/engine-protocol/src/index.js";
-import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
+import { fakeModelsJson, startFakeOpenAIServer, TOOL, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
 // 跨真实子进程边界：9A CLI 启动 runner，9B 客户端调用。退出证据只用退出码、工具进程组、延迟 marker 与临时目录，不加产品诊断消息
 const MAIN = join(import.meta.dirname, "../../packages/engine-runner/src/main.ts");
@@ -15,7 +15,8 @@ const TOOL_SLEEP_S = 2;
 let root: string;
 let servers: FakeOpenAIServer[];
 let clients: EngineClient[];
-let groups: number[]; // 启动者负责的进程组：runner 自身，以及 pi 用 detached 放进独立会话、不在 runner 组里的工具
+// afterEach 强杀的进程组：runner 组（启动者职责）；工具组是测试独有的兜底（经 tool.pid 得知），真实启动者拿不到（engine.md 工具进程）
+let groups: number[];
 let exits: Promise<unknown>[];
 const p = (...s: string[]) => join(root, ...s);
 
@@ -100,7 +101,6 @@ async function connect(port: number) {
 const task = (o: Partial<StartTask> = {}): Omit<StartTask, "type" | "requestId"> => ({
   sessionId: "s1", prompt: "go", model: { provider: "fake", id: "fake-model" }, contextFiles: [], interceptMode: "callback", ...o,
 });
-const TOOL = (cmd: string): ScriptedTurn[] => [{ kind: "toolCall", name: "bash", args: { command: cmd }, id: "c1" }, { kind: "text", chunks: ["done"] }];
 // 工具先写下自己的 pid（pi 以 detached 启动，pid 即进程组号），睡眠后才写 marker：被正确终止时 marker 永不出现
 const SLOW_TOOL = TOOL(`echo $$ > tool.pid; sleep ${TOOL_SLEEP_S}; touch late.marker`);
 const SLOW_TEXT: ScriptedTurn[] = [{ kind: "text", chunks: Array.from({ length: 20 }, (_, i) => `t${i} `), chunkDelayMs: 200 }];
@@ -108,6 +108,14 @@ const allow = async () => ({ decision: "allow" as const });
 const confirm = async () => ({ decision: "confirm" as const, reason: "needs human" });
 const never = () => new Promise<never>(() => {});
 const scratchLeft = () => readdirSync(p("tmp")).filter((n) => n.startsWith("fp-run-"));
+// 断线后不等重连：取消清理 + 关闭连接（最多 1 秒）之后即退出
+const DISCONNECT_EXIT_MS = 2500;
+
+/** 工具不曾执行：runner 已退出，若退出前已派生了 detached 的 bash，touch 也会在毫秒级完成；等 500 ms 再看，避免它在断言之后才出现 */
+async function neverRan(marker: string) {
+  await new Promise((r) => setTimeout(r, 500));
+  expect(existsSync(p("work", marker))).toBe(false);
+}
 
 /** 唯一终止事件且在最后 */
 function checkFlow(events: SequencedEvent[]) {
@@ -162,6 +170,17 @@ describe.sequential("runner 进程：正常结束与空闲退出", () => {
     expect(exit.at - r.listeningAt).toBeLessThan(3000);
     expect(r.s.requests).toEqual([]);
   }, 20_000);
+
+  it("已连接但一直不启动：空闲超时后关闭连接并以 0 退出", async () => {
+    const r = await launch([], ["--idle-timeout-ms", "300"]);
+    const { client } = await connect(r.port);
+    const connectedAt = Date.now();
+    await expect(client.waitForEnd()).rejects.toThrow(/closed/);
+    const exit = await r.exit;
+    expect(exit.code).toBe(0);
+    expect(exit.at - connectedAt).toBeLessThan(3000);
+    expect(r.s.requests).toEqual([]);
+  }, 20_000);
 });
 
 describe.sequential("runner 进程：取消与断线", () => {
@@ -183,14 +202,17 @@ describe.sequential("runner 进程：取消与断线", () => {
   it("慢流时断线：客户端等待 reject（不伪造 run.cancelled），runner 取消并以 0 退出", async () => {
     const r = await launch(SLOW_TEXT);
     const { client, events } = await connect(r.port);
+    let closedAt = 0;
     client.onEvent((e) => {
       events.push(e);
-      if (e.type === "text.delta") void client.close();
+      if (e.type === "text.delta" && !closedAt) (closedAt = Date.now()), void client.close();
     });
     await client.start(task());
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
     expect(events.some((e) => TERMINAL.has(e.type))).toBe(false);
-    expect((await r.exit).code).toBe(0);
+    const exit = await r.exit;
+    expect(exit.code).toBe(0);
+    expect(exit.at - closedAt).toBeLessThan(DISCONNECT_EXIT_MS);
     expect(r.s.stats.writes).toBeLessThan(20); // 20 个文本块全部写完至少 22 次写入
     expect(scratchLeft()).toEqual([]);
   }, 20_000);
@@ -215,9 +237,13 @@ describe.sequential("runner 进程：取消与断线", () => {
     client.onIntercept(allow);
     await client.start(task());
     const tool = await toolRunning();
+    const closedAt = Date.now();
     await client.close();
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
-    expect((await r.exit).code).toBe(0);
+    const exit = await r.exit;
+    expect(exit.code).toBe(0);
+    expect(exit.at - closedAt).toBeLessThan(DISCONNECT_EXIT_MS);
+    expect(exit.at).toBeLessThan(tool.at + TOOL_SLEEP_S * 1000); // 没有等工具自然结束
     await toolGone(tool);
     expect(scratchLeft()).toEqual([]);
   }, 20_000);
@@ -235,7 +261,7 @@ describe.sequential("runner 进程：取消与断线", () => {
     expect(checkFlow(events).at(-1)).toBe("run.cancelled");
     expect((await r.exit).code).toBe(0);
     expect(errors).toEqual([]);
-    expect(existsSync(p("work/never.marker"))).toBe(false);
+    await neverRan("never.marker");
     expect(r.s.requests.length).toBe(1);
     expect(scratchLeft()).toEqual([]);
   }, 20_000);
@@ -243,12 +269,16 @@ describe.sequential("runner 进程：取消与断线", () => {
   it("等待决定时断线：以 0 退出，工具不执行", async () => {
     const r = await launch(TOOL("touch never.marker"));
     const { client } = await connect(r.port);
-    client.onIntercept(() => (void client.close(), never()));
+    let closedAt = 0;
+    client.onIntercept(() => ((closedAt = Date.now()), void client.close(), never()));
     await client.start(task());
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
-    expect((await r.exit).code).toBe(0);
-    expect(existsSync(p("work/never.marker"))).toBe(false);
+    const exit = await r.exit;
+    expect(exit.code).toBe(0);
+    expect(exit.at - closedAt).toBeLessThan(DISCONNECT_EXIT_MS);
+    await neverRan("never.marker");
     expect(r.s.requests.length).toBe(1);
+    expect(scratchLeft()).toEqual([]);
   }, 20_000);
 
   it("等待确认时取消：run.cancelled，工具不执行，以 0 退出", async () => {
@@ -260,18 +290,23 @@ describe.sequential("runner 进程：取消与断线", () => {
     expect(await client.waitForEnd()).toMatchObject({ type: "run.cancelled" });
     expect(checkFlow(events).at(-1)).toBe("run.cancelled");
     expect((await r.exit).code).toBe(0);
-    expect(existsSync(p("work/never.marker"))).toBe(false);
+    await neverRan("never.marker");
+    expect(scratchLeft()).toEqual([]);
   }, 20_000);
 
   it("等待确认时断线：以 0 退出，工具不执行", async () => {
     const r = await launch(TOOL("touch never.marker"));
     const { client } = await connect(r.port);
     client.onIntercept(confirm);
-    client.onConfirm(() => (void client.close(), never()));
+    let closedAt = 0;
+    client.onConfirm(() => ((closedAt = Date.now()), void client.close(), never()));
     await client.start(task());
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
-    expect((await r.exit).code).toBe(0);
-    expect(existsSync(p("work/never.marker"))).toBe(false);
+    const exit = await r.exit;
+    expect(exit.code).toBe(0);
+    expect(exit.at - closedAt).toBeLessThan(DISCONNECT_EXIT_MS);
+    await neverRan("never.marker");
+    expect(scratchLeft()).toEqual([]);
   }, 20_000);
 });
 
@@ -312,21 +347,24 @@ describe.sequential("runner 进程：协议异常不影响任务", () => {
     // 9B 客户端发送前会校验，发不出非法 JSON：这里用 Node 内置 WebSocket 直接发原始帧
     const r = await launch([{ kind: "text", chunks: ["ok"] }]);
     const ws = new WebSocket(`ws://127.0.0.1:${r.port}`);
-    const msgs: RunnerMessage[] = [];
+    const raw: string[] = [];
+    // 监听器里只收集，断言放到外面：监听器里抛出的断言错误不会让测试失败
+    const msgs = () =>
+      raw.map((d) => {
+        const parsed = parseRunnerMessage(d);
+        expect(parsed.ok, d).toBe(true);
+        return (parsed as { message: RunnerMessage }).message;
+      });
     const closed = new Promise<number>((ok) => ws.addEventListener("close", (e) => ok(e.code)));
-    ws.addEventListener("message", (e) => {
-      const parsed = parseRunnerMessage(String(e.data));
-      expect(parsed.ok, String(e.data)).toBe(true);
-      if (parsed.ok) msgs.push(parsed.message);
-    });
+    ws.addEventListener("message", (e) => raw.push(String(e.data)));
     try {
       await new Promise((ok, fail) => { ws.addEventListener("open", ok, { once: true }); ws.addEventListener("error", fail, { once: true }); });
       ws.send("{not json");
-      await vi.waitFor(() => expect(msgs).toEqual([expect.objectContaining({ type: "error", code: "invalid_message" })]));
-      expect(msgs[0]).not.toHaveProperty("requestId");
+      await vi.waitFor(() => expect(msgs()).toEqual([expect.objectContaining({ type: "error", code: "invalid_message" })]));
+      expect(msgs()[0]).not.toHaveProperty("requestId");
       ws.send(JSON.stringify({ ...task(), type: "start_task", requestId: "A" }));
       expect(await closed).toBe(1000);
-      const ev = msgs.flatMap((m) => (m.type === "event" ? [m.event] : []));
+      const ev = msgs().flatMap((m) => (m.type === "event" ? [m.event] : []));
       expect(checkFlow(ev).at(-1)).toBe("run.settled");
       expect((await r.exit).code).toBe(0);
     } finally {
@@ -370,7 +408,7 @@ describe.sequential("runner 进程：清理失败与超时（故障注入）", (
     expect(r.err()).toMatch(/cleanup failed/);
   }, 20_000);
 
-  it("清理超时且 runner 卡住退出：启动者在停止时限后按组强杀，runner 与工具进程都不留下", async () => {
+  it("清理超时且 runner 卡在退出：发出带原因的 run.failed；工具已由 pi 在卡住前结束；启动者到停止时限强杀 runner 组", async () => {
     execFileSync("mkfifo", [p("raw.fifo")]);
     const r = await launch(SLOW_TOOL, ["--record-pi-events", p("raw.fifo")]);
     const { client } = await connect(r.port);
@@ -380,12 +418,13 @@ describe.sequential("runner 进程：清理失败与超时（故障注入）", (
     const t0 = Date.now();
     client.cancel();
     expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed: timed out after 5000 ms/) });
-    // 启动者的停止时限：清理 5 秒 + runner 兜底 1 秒 + 关闭连接 1 秒，再留 1 秒余量；到时未退出就杀整个组
-    const exit = await Promise.race([r.exit, new Promise<undefined>((ok) => setTimeout(ok, 8000 - (Date.now() - t0)))]);
-    expect(exit?.code).not.toBe(0); // 只可能是自己以 1 退出，或仍卡着（undefined）
+    // 清理顺序是 session.abort/dispose 在前、关闭录制在后：工具在 FIFO 卡住之前就被 pi 结束，与启动者无关（组强杀也够不到工具组）
+    await toolGone(tool);
+    // 启动者的停止时限（engine.md 进程退出，默认 10 秒）：到时未退出就强杀 runner 的整个进程组，按非零退出处理
+    const exit = await Promise.race([r.exit, new Promise<undefined>((ok) => setTimeout(ok, 10_000 - (Date.now() - t0)))]);
+    expect([undefined, 1]).toContain(exit?.code); // 卡在退出（undefined）或自行以 1 退出
     kill(groups[0]);
     await r.exit;
     expect(groupAlive(groups[0])).toBe(false);
-    await toolGone(tool);
   }, 30_000);
 });

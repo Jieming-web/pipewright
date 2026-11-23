@@ -150,3 +150,6 @@ export function fakeModelsJson(baseUrl: string): object {
     },
   };
 }
+
+/** 两轮脚本：先让模型调用 bash 执行 cmd，再回一段文本结束 */
+export const TOOL = (cmd: string): ScriptedTurn[] => [{ kind: "toolCall", name: "bash", args: { command: cmd }, id: "c1" }, { kind: "text", chunks: ["done"] }];
