@@ -8,7 +8,7 @@
 
 ## 1. 接口
 
-每条消息是一个 JSON 文本帧，含与消息同名的 `type` 判别字段。所有 string 字段除特别说明外必须非空。校验实现为 `packages/engine-protocol/src/engine-messages.ts`；`parseClientMessage(raw)` / `parseRunnerMessage(raw)` 返回 `{ok:true, message}` 或 `{ok:false, error}`，**不抛异常**（非法 JSON 也返回 `ok:false`）。一个方向的消息会被另一方向的解析器拒绝。
+每条消息是一个 JSON 文本帧，含与消息同名的 `type` 判别字段。所有 string 字段除特别说明外必须非空（纯空白也算空）；例外：`ContextFile.content` 可为空串（空文件存在）。**未知字段被忽略**：不报错，也不出现在解析结果中。标为 `input` 的字段键必须存在，值可为任意 JSON（含 `null`）。事件的 `at` 是以 `Z` 结尾的 UTC ISO 时间（`z.string().datetime()`）。校验实现为 `packages/engine-protocol/src/engine-messages.ts`；`parseClientMessage(raw)` / `parseRunnerMessage(raw)` 返回 `{ok:true, message}` 或 `{ok:false, error}`，**不抛异常**（非法 JSON 也返回 `ok:false`）。一个方向的消息会被另一方向的解析器拒绝。
 
 ### 1.1 caller → runner（`ClientMessage`）
 
@@ -23,23 +23,30 @@
 
 | type | 字段 | 说明 |
 |---|---|---|
-| `accepted` | `requestId, sessionId` | 仅用于启动确认 |
+| `accepted` | `requestId, sessionId` | 仅用于启动确认；`requestId` 回显 `start_task` 的 |
 | `event` | `event: SequencedEvent` | 事件，见 `agent-events.md`；`sessionId` 非空，`seq` 正整数，`at` 为 ISO 时间 |
-| `intercept_request` | `requestId` + `ToolRequest` | 仅 `interceptMode: "callback"`，同一时刻最多一个在等待 |
-| `confirm_request` | `requestId` + `ConfirmRequest` | 决定为 `confirm` 后发出 |
-| `error` | `requestId?: string; code; message` | 协议错误，见第 3 节 |
+| `intercept_request` | `ToolRequest`（无 `requestId`） | 仅 `interceptMode: "callback"`，同一时刻最多一个在等待 |
+| `confirm_request` | `ConfirmRequest`（无 `requestId`） | 决定为 `confirm` 后发出 |
+| `error` | `requestId?: string; code; message` | 协议错误，见第 3 节；`requestId` 回显出错的那条客户端消息的，无法解析时可缺 |
 
 ### 1.3 辅助类型（无消息 `type`）
 
 | 类型 | 字段与规则 |
 |---|---|
-| `ContextFile` | `repo, path, content, sourceCommit`。`repo` 是稳定 id，不含 `/`；`path` 必须是相对路径：不以 `/` 开头、不含反斜杠、不含 `..` 段。同一 `(repo, path)` 不得重复；不同 repo 下同名 path 合法（多仓库同名文件） |
+| `ContextFile` | `repo, path, content, sourceCommit`。`repo` 是稳定 id，不含 `/`；`path` 必须是规范相对路径：不以 `/` 开头、无反斜杠、无 NUL、无盘符前缀（`C:`），且没有 `""`、`.`、`..` 段（即拒绝 `./a`、`a//b`、`a/`、`a/../b`）。路径不做 URL 解码，`%2e%2e` 按字面处理。同一 `(repo, path)` 不得重复；不同 repo 下同名 path 合法（多仓库同名文件） |
 | `ToolRequest` | `callId, toolName: string; input: unknown` |
 | `Decision` | `{decision:"allow"}` 或 `{decision:"block"\|"confirm", reason}`，`reason` 非空 |
 | `ConfirmRequest` | `confirmId, callId, toolName, reason: string; input: unknown` |
 | `Confirmation` | `approved: boolean; by: string; reason?: string`。`by` 必填；`approved:false` 时 `reason` 必填且非空 |
 
-`InterceptDecision`、`ConfirmResponse` 是对应完整消息类型；`ToolRequest`、`ConfirmRequest` 是去掉消息 `type` 与 `requestId` 后的载荷。
+`InterceptDecision`、`ConfirmResponse` 是对应完整消息类型；`ToolRequest`、`ConfirmRequest` 是去掉消息 `type` 后的载荷。
+
+### 1.4 requestId 与配对规则
+
+- `requestId` 只存在于 caller → runner 的消息（`start_task`、`intercept_decision`、`confirm_response`、`cancel`），是调用方给**这条消息**起的 id，在一个连接内唯一。
+- runner 在 `accepted` 和任何针对该消息的 `error` 中回显它。例如迟到的决定得到 `stale_response`，其 `requestId` 就是那条迟到决定自己的 id。
+- 决定与请求的配对用 `callId`；确认与请求的配对用 `confirmId`。`ProtocolError` 不另带 `callId`/`confirmId`。
+- runner 回显 `requestId` 的真实行为由 T1-9A 实现并测试；本契约的 schema 测试只校验消息形状。
 
 ## 2. 行为约定
 
@@ -102,12 +109,14 @@
 ```json
 {"type":"start_task","requestId":"A","sessionId":"s1","prompt":"fix","model":{"provider":"fake","id":"m"},"contextFiles":[{"repo":"r1","path":"AGENTS.md","content":"...","sourceCommit":"abc"},{"repo":"r2","path":"AGENTS.md","content":"...","sourceCommit":"def"}],"interceptMode":"callback"}
 {"type":"accepted","requestId":"A","sessionId":"s1"}
-{"type":"intercept_request","requestId":"A","callId":"c1","toolName":"bash","input":{"command":"ls"}}
-{"type":"intercept_decision","requestId":"A","callId":"c1","decision":"allow"}
+{"type":"intercept_request","callId":"c1","toolName":"bash","input":{"command":"ls"}}
+{"type":"intercept_decision","requestId":"D1","callId":"c1","decision":"allow"}
+{"type":"cancel","requestId":"C1"}
 ```
 
 错误：运行中第二次启动（requestId 为 B）
 ```json
+// 先前 start_task A 仍在运行；调用方又发了 requestId 为 B 的 start_task
 {"type":"error","requestId":"B","code":"already_running","message":"a task is already running"}
 ```
 

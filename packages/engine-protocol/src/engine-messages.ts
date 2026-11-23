@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { SequencedEventSchema, type SequencedEvent } from "./agent-events.js";
 
-const nes = z.string().min(1);
-const json: z.ZodType<unknown> = z.unknown();
+const nes = z.string().refine((s) => s.trim().length > 0, "must be non-empty");
+const json: z.ZodType<unknown> = z.unknown().refine((v) => v !== undefined, "required");
 
-// 相对路径：不能是绝对路径、不含反斜杠、不含 ".." 段
+// 规范相对路径：不绝对、无反斜杠/NUL/盘符，且没有 ""、"."、".." 段（不做 URL 解码）
 const RelPath = nes.refine(
-  (p) => !p.startsWith("/") && !p.includes("\\") && !/^[a-zA-Z]:/.test(p) && !p.split("/").includes(".."),
-  "path must be relative, use '/', and not contain '..'",
+  (p) => !p.includes("\\") && !p.includes("\0") && !/^[a-zA-Z]:/.test(p) && !p.split("/").some((s) => s === "" || s === "." || s === ".."),
+  "path must be a normalized relative path using '/'",
 );
 
 export const ContextFileSchema = z.object({
@@ -27,7 +27,7 @@ export type Decision = z.infer<typeof DecisionSchema>;
 
 export const ConfirmationSchema = z
   .object({ approved: z.boolean(), by: nes, reason: z.string().optional() })
-  .refine((c) => c.approved || (c.reason !== undefined && c.reason.length > 0), {
+  .refine((c) => c.approved || (c.reason !== undefined && c.reason.trim().length > 0), {
     message: "reason is required when approved is false",
     path: ["reason"],
   });
@@ -87,10 +87,10 @@ export const AcceptedSchema = z.object({ type: z.literal("accepted"), requestId:
 export type Accepted = z.infer<typeof AcceptedSchema>;
 export const EventMessageSchema = z.object({ type: z.literal("event"), event: SequencedEventSchema });
 export type EventMessage = { type: "event"; event: SequencedEvent };
-export const InterceptRequestSchema = ToolRequestSchema.extend({ type: z.literal("intercept_request"), requestId: nes });
-export type InterceptRequest = ToolRequest & { type: "intercept_request"; requestId: string };
-export const ConfirmRequestMessageSchema = ConfirmRequestSchema.extend({ type: z.literal("confirm_request"), requestId: nes });
-export type ConfirmRequestMessage = ConfirmRequest & { type: "confirm_request"; requestId: string };
+export const InterceptRequestSchema = ToolRequestSchema.extend({ type: z.literal("intercept_request") });
+export type InterceptRequest = ToolRequest & { type: "intercept_request" };
+export const ConfirmRequestMessageSchema = ConfirmRequestSchema.extend({ type: z.literal("confirm_request") });
+export type ConfirmRequestMessage = ConfirmRequest & { type: "confirm_request" };
 
 export const ProtocolErrorCodeSchema = z.enum([
   "invalid_message",
@@ -121,18 +121,36 @@ export type RunnerMessage = Accepted | EventMessage | InterceptRequest | Confirm
 
 export type ParseResult<T> = { ok: true; message: T } | { ok: false; error: string };
 
-function parse<T>(schema: z.ZodType<T>, raw: string): ParseResult<T> {
+// 按 type 分派到各消息 schema，使错误信息指向失败字段
+function parse<T>(schemas: Record<string, z.ZodTypeAny>, raw: string): ParseResult<T> {
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
     return { ok: false, error: "invalid JSON" };
   }
+  const t = typeof value === "object" && value !== null ? (value as { type?: unknown }).type : undefined;
+  const schema = typeof t === "string" && Object.hasOwn(schemas, t) ? schemas[t] : undefined;
+  if (!schema) return { ok: false, error: `unknown or missing type: ${JSON.stringify(t)}` };
   const r = schema.safeParse(value);
-  if (r.success) return { ok: true, message: r.data };
+  if (r.success) return { ok: true, message: r.data as T };
   const issues = r.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
   return { ok: false, error: issues.join("; ") };
 }
 
-export const parseClientMessage = (raw: string): ParseResult<ClientMessage> => parse(ClientMessageSchema, raw);
-export const parseRunnerMessage = (raw: string): ParseResult<RunnerMessage> => parse(RunnerMessageSchema, raw);
+const clientSchemas = {
+  start_task: StartTaskSchema,
+  intercept_decision: InterceptDecisionSchema,
+  confirm_response: ConfirmResponseSchema,
+  cancel: CancelSchema,
+};
+const runnerSchemas = {
+  accepted: AcceptedSchema,
+  event: EventMessageSchema,
+  intercept_request: InterceptRequestSchema,
+  confirm_request: ConfirmRequestMessageSchema,
+  error: ProtocolErrorSchema,
+};
+
+export const parseClientMessage = (raw: string): ParseResult<ClientMessage> => parse(clientSchemas, raw);
+export const parseRunnerMessage = (raw: string): ParseResult<RunnerMessage> => parse(runnerSchemas, raw);

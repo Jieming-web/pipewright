@@ -15,7 +15,8 @@ export const RunSnapshotSchema = z.object({
 export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 
 // JSON 可序列化的任意值（工具入参/结果不假定是字符串）
-const json: z.ZodType<unknown> = z.unknown();
+// 键必须存在（任意 JSON 值，含 null）；JSON 解析不会产生 undefined
+const json: z.ZodType<unknown> = z.unknown().refine((v) => v !== undefined, "required");
 
 export const ProgressEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.started"), snapshot: RunSnapshotSchema }),
