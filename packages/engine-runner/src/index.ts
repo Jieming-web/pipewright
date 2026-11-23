@@ -3,3 +3,5 @@ export * from "./run-events.js";
 export * from "./intercept-coordinator.js";
 export * from "./intercept-extension.js";
 export * from "./restricted-resource-loader.js";
+export * from "./model-config.js";
+export * from "./pi-session.js";

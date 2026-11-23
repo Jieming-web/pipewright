@@ -1,0 +1,24 @@
+{
+  "providers": {
+    "fake": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "fake-key",
+      "compat": { "supportsStore": false, "supportsDeveloperRole": false, "supportsReasoningEffort": false },
+      "models": [{ "id": "fake-model", "reasoning": false, "input": ["text"], "contextWindow": 32768, "maxTokens": 4096 }]
+    },
+    "qwen-api": {
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api": "openai-completions",
+      "apiKey": "$DASHSCOPE_API_KEY",
+      "compat": { "thinkingFormat": "qwen", "supportsDeveloperRole": false, "supportsStore": false, "supportsReasoningEffort": false },
+      "models": [{ "id": "qwen3.6-35b-a3b", "reasoning": true, "input": ["text"], "contextWindow": 262144, "maxTokens": 8192 }]
+    },
+    "ollama": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "models": [{ "id": "qwen3-4b-instruct-2507-ctx16k", "reasoning": false, "input": ["text"], "contextWindow": 16384, "maxTokens": 4096 }]
+    }
+  }
+}
