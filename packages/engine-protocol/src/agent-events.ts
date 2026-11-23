@@ -37,3 +37,8 @@ export const AgentEventSchema = z.union([ProgressEventSchema, TerminalEventSchem
 export type AgentEvent = ProgressEvent | TerminalEvent;
 
 export type SequencedEvent = AgentEvent & { sessionId: string; seq: number; at: string };
+
+export const SequencedEventSchema = z.intersection(
+  AgentEventSchema,
+  z.object({ sessionId: z.string().min(1), seq: z.number().int().positive(), at: z.string().datetime() }),
+);
