@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ const CALLER: ContextFile[] = [
 ];
 
 let root: string;
+const startCwd = process.cwd();
 const saved = { HOME: process.env.HOME, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, M: process.env.HOSTILE_MARKER_DIR };
 const restore = (k: string, v: string | undefined) => (v === undefined ? delete process.env[k] : (process.env[k] = v));
 const p = (...s: string[]) => join(root, ...s);
@@ -26,6 +28,7 @@ beforeEach(() => {
   process.env.HOSTILE_MARKER_DIR = p("markers");
 });
 afterEach(() => {
+  process.chdir(startCwd);
   restore("HOME", saved.HOME);
   restore("PI_CODING_AGENT_DIR", saved.PI_CODING_AGENT_DIR);
   restore("HOSTILE_MARKER_DIR", saved.M);
@@ -55,10 +58,9 @@ async function run(opts: { cwd: string; turns: ScriptedTurn[]; contextFiles?: Co
     });
     const modelRuntime = await pi.ModelRuntime.create({ authPath: p("model/auth.json"), modelsPath: p("model/models.json") });
     const model = modelRuntime.getModel("fake", "fake-model")!;
-    const settingsManager = pi.SettingsManager.inMemory({ cacheWarming: "off" }, { projectTrusted: false });
     const { session } = await pi.createAgentSession({
-      cwd: opts.cwd, agentDir: p("scratch"), modelRuntime, model, resourceLoader: restricted.loader, settingsManager,
-      sessionManager: pi.SessionManager.inMemory(opts.cwd), tools: ["read", "bash"],
+      cwd: opts.cwd, agentDir: p("scratch"), modelRuntime, model, resourceLoader: restricted.loader, settingsManager: restricted.settingsManager,
+      sessionManager: pi.SessionManager.inMemory(opts.cwd),
     });
     await session.bindExtensions({});
     await session.prompt("go");
@@ -72,25 +74,21 @@ async function run(opts: { cwd: string; turns: ScriptedTurn[]; contextFiles?: Co
 }
 const TEXT: ScriptedTurn[] = [{ kind: "text", chunks: ["ok"] }];
 
-describe("受限资源加载器", () => {
-  it("调用方规则出现在首个请求，同名规则带 /<repo>/<path> 来源标签", async () => {
-    const { requests } = await run({ cwd: p("repo"), turns: TEXT });
+describe.sequential("受限资源加载器", () => {
+  it("调用方规则出现在首个请求，同名规则带来源标签；loadedContextFiles 从 pi 回读且 sha256 与请求内容一致", async () => {
+    hostileProject(p("repo"));
+    const { restricted, requests } = await run({ cwd: p("repo"), turns: TEXT });
     const s = sysText(requests[0]);
     for (const f of CALLER) {
       expect(s).toContain(`/${f.repo}/${f.path}`);
-      expect(s).toContain(f.content);
+      expect(s).toContain(f.content); // 哈希对应的内容确实在请求里
     }
+    expect(restricted.loadedContextFiles()).toEqual(CALLER.map((f) => ({ repo: f.repo, path: f.path, sourceCommit: f.sourceCommit, sha256: sha(f.content) })));
+    expect(JSON.stringify(requests)).not.toContain("HOSTILE_");
   });
 
-  it("loadedContextFiles 从 pi 回读：sha256 与首个请求中的规则内容一致，且无禁止来源", async () => {
-    hostileProject(p("repo"));
-    const { restricted, requests } = await run({ cwd: p("repo"), turns: TEXT });
-    const loaded = restricted.loadedContextFiles();
-    expect(loaded).toEqual(CALLER.map((f) => ({ repo: f.repo, path: f.path, sourceCommit: f.sourceCommit, sha256: sha(f.content) })));
-    const s = sysText(requests[0]);
-    for (const f of CALLER) expect(s).toContain(f.content); // 哈希对应的内容确实在请求里
-    expect(loaded.map((f) => f.repo).sort()).toEqual(["alpha", "beta"]);
-    expect(JSON.stringify(requests)).not.toContain("HOSTILE_");
+  it("两个输入文件的来源标签相同时抛错", async () => {
+    await expect(createRestrictedResourceLoader({ scratchDir: p("scratch"), contextFiles: [CALLER[0], CALLER[0]], extensionFactories: [] })).rejects.toThrow(/duplicate/);
   });
 
   it("pi 持有的标签映射不回输入文件时抛错，不编造条目", async () => {
@@ -100,44 +98,63 @@ describe("受限资源加载器", () => {
     expect(() => restricted.loadedContextFiles()).toThrow(/ghost/);
   });
 
-  describe.each(["worktree", "ancestor", "user"] as const)("敌意资源位于 %s", (where) => {
-    beforeEach(() => {
-      if (where === "worktree") hostileProject(p("repo"));
-      if (where === "ancestor") hostileProject(root); // repo 的上级目录
-      if (where === "user") {
-        process.env.HOME = p("home");
-        process.env.PI_CODING_AGENT_DIR = p("envagent");
-        hostileUser(p("home"), p("home/.pi/agent"));
-        hostileUser(p("home"), p("envagent"));
-      }
-    });
+  const SCENARIOS: Record<string, () => void> = {
+    // 会话 cwd 本身是敌意仓库（同时把进程 cwd 切过去，抓 loader cwd: process.cwd()）
+    worktree: () => { hostileProject(p("repo")); process.chdir(p("repo")); },
+    ancestor: () => hostileProject(root),
+    user: () => {
+      process.env.HOME = p("home");
+      process.env.PI_CODING_AGENT_DIR = p("envagent");
+      hostileUser(p("home"), p("home/.pi/agent"));
+      hostileUser(p("home"), p("envagent"));
+    },
+    // 加载器自己的发现根：scratch 作为 cwd（项目布局）/ 作为 agentDir（用户布局）
+    "scratch-project": () => hostileProject(p("scratch")),
+    "scratch-agentdir": () => hostileUser(root, p("scratch")),
+    // scratch 上方是 git 仓库，里面有 .agents/skills
+    "git-above-scratch": () => {
+      cpSync(join(FIXTURE, ".agents"), p(".agents"), { recursive: true });
+      execFileSync("git", ["init", "-q"], { cwd: root });
+    },
+  };
 
-    it("不加载规则/扩展/skill/提示词/系统提示覆盖，settings 行为不生效", async () => {
-      writeFileSync(p("repo/cwd-marker.txt"), "CWD_MARKER_CONTENT\n");
-      const { restricted, requests } = await run({
-        cwd: p("repo"),
-        turns: [{ kind: "toolCall", name: "bash", args: { command: "pwd; cat cwd-marker.txt" }, id: "call_1" }, { kind: "text", chunks: ["done"] }],
-      });
+  describe.each(Object.keys(SCENARIOS))("敌意资源位于 %s", (where) => {
+    beforeEach(() => SCENARIOS[where]());
+
+    it("不加载规则/扩展/skill/提示词/系统提示覆盖", async () => {
+      const { restricted, requests } = await run({ cwd: p("repo"), turns: TEXT });
       const l = restricted.loader;
-      // 加载副作用没有发生
-      expect(readdirSync(p("markers"))).toEqual([]);
-      // 发现列表为空 / 只有平台来源
+      expect(readdirSync(p("markers"))).toEqual([]); // 加载副作用没有发生
       expect(l.getSkills().skills).toEqual([]);
       expect(l.getPrompts().prompts).toEqual([]);
       expect(l.getExtensions().extensions).toEqual([]);
       expect(l.getSystemPromptSource()).toBeUndefined();
+      expect(l.getSystemPrompt()).toBeUndefined();
       expect(l.getAppendSystemPrompt()).toEqual([]);
       expect(l.getAgentsFiles().agentsFiles.map((f) => f.path).sort()).toEqual(["/alpha/AGENTS.md", "/beta/AGENTS.md"]);
-      // 没有任何标记注入请求（含 AGENTS/CLAUDE/SYSTEM/APPEND/skill/prompt）
       expect(JSON.stringify(requests)).not.toContain("HOSTILE_");
-      // settings.defaultTools=["ls"] 不生效；shellCommandPrefix 不生效；工具 cwd 是会话的 cwd
-      const names = requests[0].tools.map((t: any) => t.function.name);
-      expect(names).not.toContain("ls");
-      expect(names).toContain("bash");
-      const toolMsg = requests[1].messages.find((m: any) => m.role === "tool");
-      expect(JSON.stringify(toolMsg)).toContain(p("repo"));
-      expect(JSON.stringify(toolMsg)).toContain("CWD_MARKER_CONTENT");
     });
+  });
+
+  it("settings 行为不生效：会话 cwd 与加载器发现根都敌意，且不传 tools", async () => {
+    hostileProject(p("repo"));
+    hostileProject(p("scratch"));
+    hostileUser(root, p("scratch"));
+    writeFileSync(p("repo/cwd-marker.txt"), "CWD_MARKER_CONTENT\n");
+    const { restricted, requests } = await run({
+      cwd: p("repo"),
+      turns: [{ kind: "toolCall", name: "bash", args: { command: "pwd; cat cwd-marker.txt" }, id: "call_1" }, { kind: "text", chunks: ["done"] }],
+    });
+    expect(restricted.settingsManager.isProjectTrusted()).toBe(false);
+    expect(restricted.settingsManager.getDefaultTools()).toBeUndefined();
+    const names = requests[0].tools.map((t: any) => t.function.name);
+    expect(names).not.toEqual(["ls"]);
+    expect(names).toContain("bash");
+    const toolMsg = JSON.stringify(requests[1].messages.find((m: any) => m.role === "tool"));
+    expect(toolMsg).toContain(p("repo")); // 内置工具 cwd 是会话 cwd
+    expect(toolMsg).toContain("CWD_MARKER_CONTENT");
+    expect(toolMsg).not.toContain("HOSTILE_SHELL_PREFIX");
+    expect(JSON.stringify(requests)).not.toContain("HOSTILE_");
   });
 
   it("显式平台扩展仍然运行，且能拦截 tool_call", async () => {
