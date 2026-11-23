@@ -9,7 +9,7 @@ import { createPiSession } from "./pi-session.js";
 import { createRawEventRecorder } from "./raw-event-recorder.js";
 import { createRunEvents } from "./run-events.js";
 
-const CLEANUP_LIMIT_MS = 5000;
+export const CLEANUP_LIMIT_MS = 5000;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
