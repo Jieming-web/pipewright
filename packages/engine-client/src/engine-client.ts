@@ -157,17 +157,26 @@ export class EngineClient {
         return;
       case "event":
         if (TERMINAL.has(m.event.type)) this.settleEnd?.(m.event);
-        return this.eventCb?.(m.event);
+        return this.notify("onEvent", () => this.eventCb?.(m.event));
       case "intercept_request":
         return void this.answerIntercept(m);
       case "confirm_request":
         return void this.answerConfirm(m);
       case "error": {
         const p = m.requestId === undefined ? undefined : this.starts.get(m.requestId);
-        if (!p) return this.errorCb?.(m);
+        if (!p) return this.notify("onError", () => this.errorCb?.(m));
         this.starts.delete(m.requestId!);
         return p.reject(new Error(`${m.code}: ${m.message}`, { cause: m }));
       }
+    }
+  }
+
+  /** 调用方回调抛错不能逃出 ws 的 message 监听（会让进程崩溃、打断后续消息）：捕获并写 stderr */
+  private notify(name: string, cb: () => void): void {
+    try {
+      cb();
+    } catch (e) {
+      process.stderr.write(`engine-client: ${name} callback threw: ${reasonOf(e)}\n`);
     }
   }
 

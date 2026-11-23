@@ -29,6 +29,7 @@ beforeEach(() => {
   stubs = [];
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(clients.map((c) => c.close()));
   await Promise.all(runners.map((r) => r.close()));
   await Promise.all(servers.map((s) => s.close()));
@@ -216,6 +217,26 @@ describe.sequential("engine-client：连接失败与关闭", () => {
     await second;
     expect(await early).toMatchObject({ type: "run.settled", sessionId: "s2" });
     expect(await client.waitForEnd()).toMatchObject({ type: "run.settled", sessionId: "s2" });
+  });
+
+  it("onEvent / onError 回调抛错：被客户端捕获并写 stderr，之后的事件照常送达，终止结果照常结算", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const client = await stub((m, ws) => {
+      ws.send(JSON.stringify({ type: "error", requestId: "unrelated", code: "stale_response", message: "late" }));
+      ws.send(JSON.stringify({ type: "accepted", requestId: m.requestId, sessionId: "s1" }));
+      const at = new Date().toISOString();
+      ws.send(JSON.stringify({ type: "event", event: { type: "text.delta", text: "hi", sessionId: "s1", seq: 1, at } }));
+      ws.send(JSON.stringify({ type: "event", event: { type: "run.settled", sessionId: "s1", seq: 2, at } }));
+    });
+    const seen: string[] = [];
+    client.onEvent((e) => { seen.push(e.type); throw new Error("EVENT_BOOM"); });
+    client.onError(() => { throw new Error("ERROR_BOOM"); });
+    await client.start(task());
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
+    expect(seen).toEqual(["text.delta", "run.settled"]);
+    const out = stderr.mock.calls.map((a) => String(a[0])).join("");
+    expect(out).toMatch(/onError.*ERROR_BOOM/);
+    expect(out.match(/onEvent.*EVENT_BOOM/g)).toHaveLength(2);
   });
 
   it("非法服务端消息：连接失败，挂起的 start 与 waitForEnd 都 reject，之后的 start 也 reject", async () => {
