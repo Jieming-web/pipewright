@@ -39,7 +39,7 @@ export class PiEngine {
   }
 
   run(task: StartTask): Promise<void> {
-    if (this.#run) throw new Error("PiEngine runs only one task");
+    if (this.#run) return Promise.reject(new Error("PiEngine runs only one task"));
     return (this.#run = this.#execute(task));
   }
 
@@ -65,19 +65,28 @@ export class PiEngine {
         try {
           await Promise.race([
             (async () => {
-              coordinator.cancelAll("cancelled");
-              abort.abort();
-              if (session) {
-                await session.abort(); // 0B：不先 abort 就 dispose，收不到 settled、工具也不停
-                session.dispose();
-              }
-              await recorder?.close();
-              if (scratchDir) await rm(scratchDir, { recursive: true, force: true });
+              // 按顺序逐步尽力执行：某步失败也继续后面的步骤（scratchDir 里有 pi 的状态文件，必须删除），最后抛出第一个错误
+              let first: { e: unknown } | undefined;
+              for (const step of [
+                () => coordinator.cancelAll("cancelled"),
+                () => abort.abort(),
+                () => session?.abort(), // 0B：不先 abort 就 dispose，收不到 settled、工具也不停
+                () => session?.dispose(),
+                () => recorder?.close(),
+                () => scratchDir && rm(scratchDir, { recursive: true, force: true }),
+              ])
+                try {
+                  await step();
+                } catch (e) {
+                  first ??= { e };
+                }
+              if (first) throw first.e;
             })(),
             new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`timed out after ${CLEANUP_LIMIT_MS} ms`)), CLEANUP_LIMIT_MS))),
           ]);
         } catch (e) {
-          const reason = `cleanup failed: ${message(e)}`;
+          const original = this.#outcome?.type === "run.failed" ? `; run failed: ${this.#outcome.reason}` : "";
+          const reason = `cleanup failed: ${message(e)}${original}`;
           events.finish({ type: "run.failed", reason });
           throw new Error(reason);
         } finally {
@@ -91,6 +100,7 @@ export class PiEngine {
       recorder?.record(raw);
       if (raw.type === "agent_end") lastAssistant = raw.messages.findLast((m) => m.role === "assistant") as typeof lastAssistant;
       // 0B.2：agent_settled 是唯一的最终静止信号；agent_end 与单次模型错误都可能被重试
+      // 自然结束后不会再来一个 agent_settled{aborted} 翻转结果：_startRun 的 finally 先 await _emitAgentSettled，prompt() 才 resolve（0B.2），之后才进入 stop
       if (raw.type === "agent_settled")
         this.#outcome ??= raw.aborted
           ? { type: "run.cancelled" }

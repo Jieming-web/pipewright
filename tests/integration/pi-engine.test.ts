@@ -210,7 +210,7 @@ describe.sequential("PiEngine 运行", () => {
     const emitted = JSON.stringify(events);
     expect(emitted).not.toMatch(/assistantMessageEvent|agent_settled|message_update|toolCallId/);
     expect(emitted).not.toContain(SECRET);
-    expect(JSON.stringify(s.requests)).not.toContain(SECRET); // 密钥只在 HTTP 头里
+    expect(readFileSync(p("diag/raw.jsonl"), "utf8")).not.toContain(SECRET);
   }, 10_000);
 });
 
@@ -325,11 +325,58 @@ describe.sequential("PiEngine 清理失败", () => {
   it("录制关闭失败：同一发布器发一次带清理原因的 run.failed，run 拒绝，disposed=false", async () => {
     const s = await serve([{ kind: "text", chunks: ["ok"] }]);
     writeModels(s.baseUrl);
+    const dispose = vi.spyOn(AgentSession.prototype, "dispose");
     const { engine, events } = makeEngine({ recordPiEventsPath: p("no-such-dir/raw.jsonl") });
     await expect(engine.run(task())).rejects.toThrow(/cleanup/);
     expect(checkStream(events).at(-1)).toBe("run.failed");
     expect(terminal(events).reason).toMatch(/cleanup.*no-such-dir|cleanup.*ENOENT/);
     expect(engine.disposed).toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(scratchLeft()).toEqual([]); // 录制失败也照样删除 scratchDir
+  }, 10_000);
+
+  it("abort 抛错：后续步骤照常执行（dispose 停掉工具、删除 scratchDir），run.failed 带第一个错误", async () => {
+    const s = await serve([{ kind: "toolCall", name: "bash", args: { command: "sleep 1 && touch late.marker" }, id: "call_1" }, { kind: "text", chunks: ["never"] }]);
+    writeModels(s.baseUrl);
+    vi.spyOn(AgentSession.prototype, "abort").mockRejectedValue(new Error("ABORT_BOOM"));
+    const dispose = vi.spyOn(AgentSession.prototype, "dispose");
+    let cancel: Promise<void> | undefined;
+    let started = 0;
+    const { engine, events } = makeEngine({
+      onEvent: (e, en) => { if (e.type === "tool.started") { started = Date.now(); setTimeout(() => (cancel = en.cancel()), 300); } },
+    });
+    await expect(engine.run(task())).rejects.toThrow(/cleanup failed: ABORT_BOOM/);
+    await expect(cancel).rejects.toThrow(/ABORT_BOOM/);
+    expect(checkStream(events).at(-1)).toBe("run.failed");
+    expect(terminal(events).reason).toBe("cleanup failed: ABORT_BOOM");
+    expect(engine.disposed).toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(scratchLeft()).toEqual([]);
+    await new Promise((r) => setTimeout(r, Math.max(0, started + 1600 - Date.now())));
+    expect(existsSync(p("work/late.marker"))).toBe(false); // dispose 停掉了工具
+  }, 10_000);
+
+  it("启动失败后清理也失败：reason 同时保留清理原因与原失败原因", async () => {
+    const s = await serve([]);
+    writeModels(s.baseUrl);
+    const { engine, events } = makeEngine({ recordPiEventsPath: p("no-such-dir/raw.jsonl") });
+    await expect(engine.run(task({ model: { provider: "fake", id: "nope" } }))).rejects.toThrow(/cleanup failed/);
+    expect(checkStream(events)).toEqual(["run.failed"]);
+    expect(terminal(events).reason).toMatch(/^cleanup failed: .*ENOENT.*; run failed: model not found: fake\/nope$/);
+    expect(engine.disposed).toBe(false);
+    expect(scratchLeft()).toEqual([]);
+  }, 10_000);
+
+  it("第二次 run 返回被拒绝的 promise，不同步抛错，也不影响第一次", async () => {
+    const s = await serve([{ kind: "text", chunks: ["ok"] }]);
+    writeModels(s.baseUrl);
+    const { engine, events } = makeEngine();
+    const first = engine.run(task());
+    let second: Promise<void> | undefined;
+    expect(() => (second = engine.run(task()))).not.toThrow();
+    await expect(second).rejects.toThrow(/only one task/);
+    await first;
+    expect(checkStream(events).at(-1)).toBe("run.settled");
   }, 10_000);
 
   it("清理超过 5 秒：run.failed 带超时原因，cancel 与 run 都拒绝，disposed=false", async () => {
