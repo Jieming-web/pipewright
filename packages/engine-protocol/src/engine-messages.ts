@@ -108,36 +108,6 @@ export const ProtocolErrorSchema = z.object({
 });
 export type ProtocolError = z.infer<typeof ProtocolErrorSchema>;
 
-export const ClientMessageSchema = z.union([StartTaskSchema, InterceptDecisionSchema, ConfirmResponseSchema, CancelSchema]);
-export type ClientMessage = StartTask | InterceptDecision | ConfirmResponse | Cancel;
-export const RunnerMessageSchema = z.union([
-  AcceptedSchema,
-  EventMessageSchema,
-  InterceptRequestSchema,
-  ConfirmRequestMessageSchema,
-  ProtocolErrorSchema,
-]);
-export type RunnerMessage = Accepted | EventMessage | InterceptRequest | ConfirmRequestMessage | ProtocolError;
-
-export type ParseResult<T> = { ok: true; message: T } | { ok: false; error: string };
-
-// 按 type 分派到各消息 schema，使错误信息指向失败字段
-function parse<T>(schemas: Record<string, z.ZodTypeAny>, raw: string): ParseResult<T> {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "invalid JSON" };
-  }
-  const t = typeof value === "object" && value !== null ? (value as { type?: unknown }).type : undefined;
-  const schema = typeof t === "string" && Object.hasOwn(schemas, t) ? schemas[t] : undefined;
-  if (!schema) return { ok: false, error: `unknown or missing type: ${JSON.stringify(t)}` };
-  const r = schema.safeParse(value);
-  if (r.success) return { ok: true, message: r.data as T };
-  const issues = r.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
-  return { ok: false, error: issues.join("; ") };
-}
-
 const clientSchemas = {
   start_task: StartTaskSchema,
   intercept_decision: InterceptDecisionSchema,
@@ -151,6 +121,31 @@ const runnerSchemas = {
   confirm_request: ConfirmRequestMessageSchema,
   error: ProtocolErrorSchema,
 };
+
+export type ClientMessage = z.infer<(typeof clientSchemas)[keyof typeof clientSchemas]>;
+export type RunnerMessage = z.infer<(typeof runnerSchemas)[keyof typeof runnerSchemas]>;
+
+export type ParseResult<T> = { ok: true; message: T } | { ok: false; error: string };
+
+// 按 type 分派到各消息 schema，使错误信息指向失败字段
+function parse<S extends Record<string, z.ZodTypeAny>>(
+  schemas: S,
+  raw: string,
+): ParseResult<z.infer<S[keyof S]>> {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "invalid JSON" };
+  }
+  const t = typeof value === "object" && value !== null ? (value as { type?: unknown }).type : undefined;
+  const schema = typeof t === "string" && Object.hasOwn(schemas, t) ? schemas[t] : undefined;
+  if (!schema) return { ok: false, error: `unknown or missing type: ${JSON.stringify(t)}` };
+  const r = schema.safeParse(value);
+  if (r.success) return { ok: true, message: r.data };
+  const issues = r.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
+  return { ok: false, error: issues.join("; ") };
+}
 
 export const parseClientMessage = (raw: string): ParseResult<ClientMessage> => parse(clientSchemas, raw);
 export const parseRunnerMessage = (raw: string): ParseResult<RunnerMessage> => parse(runnerSchemas, raw);

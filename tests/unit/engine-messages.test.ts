@@ -148,6 +148,7 @@ describe("runner 消息", () => {
     expect(okRunner({ type: "event", event: { ...ev, seq: 0 } })).toBe(false);
     expect(okRunner({ type: "event", event: { ...ev, sessionId: "" } })).toBe(false);
     expect(okRunner({ type: "event", event: { ...ev, at: "yesterday" } })).toBe(false);
+    expect(okRunner({ type: "event", event: { ...ev, at: "2026-11-09T08:00:00+08:00" } })).toBe(false);
     expect(okRunner({ type: "event", event: { type: "run.settled" } })).toBe(false);
     expect(okRunner({ type: "intercept_request", callId: "c", toolName: "bash", input: { command: "ls" } })).toBe(true);
     expect(okRunner({ type: "intercept_request", callId: "c", toolName: "" })).toBe(false);

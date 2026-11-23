@@ -26,10 +26,10 @@ export function convertPiEvent(raw: unknown): ProgressEvent[] {
     }
     case "tool_execution_start":
       if (typeof raw.toolCallId !== "string" || typeof raw.toolName !== "string") return [];
-      return [{ type: "tool.started", callId: raw.toolCallId, toolName: raw.toolName, input: raw.args }];
+      return [{ type: "tool.started", callId: raw.toolCallId, toolName: raw.toolName, input: raw.args ?? null }];
     case "tool_execution_end":
       if (typeof raw.toolCallId !== "string" || typeof raw.toolName !== "string") return [];
-      return [{ type: "tool.finished", callId: raw.toolCallId, toolName: raw.toolName, isError: raw.isError === true, output: raw.result }];
+      return [{ type: "tool.finished", callId: raw.toolCallId, toolName: raw.toolName, isError: raw.isError === true, output: raw.result ?? null }];
     default:
       return [];
   }

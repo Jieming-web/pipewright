@@ -24,7 +24,7 @@
 | type | 字段 | 说明 |
 |---|---|---|
 | `accepted` | `requestId, sessionId` | 仅用于启动确认；`requestId` 回显 `start_task` 的 |
-| `event` | `event: SequencedEvent` | 事件，见 `agent-events.md`；`sessionId` 非空，`seq` 正整数，`at` 为 ISO 时间 |
+| `event` | `event: SequencedEvent` | 事件，见 `agent-events.md`；`sessionId` 非空，`seq` 正整数，`at` 为 UTC ISO 时间，以 Z 结尾 |
 | `intercept_request` | `ToolRequest`（无 `requestId`） | 仅 `interceptMode: "callback"`，同一时刻最多一个在等待 |
 | `confirm_request` | `ConfirmRequest`（无 `requestId`） | 决定为 `confirm` 后发出 |
 | `error` | `requestId?: string; code; message` | 协议错误，见第 3 节；`requestId` 回显出错的那条客户端消息的，无法解析时可缺 |

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { convertPiEvent } from "../../packages/engine-runner/src/pi-event-converter.js";
-import type { ProgressEvent } from "../../packages/engine-protocol/src/index.js";
+import { ProgressEventSchema, type ProgressEvent } from "../../packages/engine-protocol/src/index.js";
 
 const FIX = join(import.meta.dirname, "../fixtures/pi-events");
 const replay = (name: string): ProgressEvent[] =>
@@ -68,5 +68,20 @@ describe("convertPiEvent 重放 2B 样本", () => {
   it("全部样本都不产生终止事件", () => {
     for (const n of ["text-only", "tool-call-then-text", "retry", "retry-drop"])
       expect(replay(n).some((e) => TERMINAL.includes(e.type))).toBe(false);
+  });
+});
+
+describe("工具事件空值归一", () => {
+  it("缺 args / result 时输出 null，且经 JSON 往返后仍通过 schema", () => {
+    const es = [
+      ...convertPiEvent({ type: "tool_execution_start", toolCallId: "c", toolName: "t" } as never),
+      ...convertPiEvent({ type: "tool_execution_end", toolCallId: "c", toolName: "t", isError: false } as never),
+    ];
+    expect(es).toHaveLength(2);
+    expect(es[0]).toMatchObject({ type: "tool.started", input: null });
+    expect(es[1]).toMatchObject({ type: "tool.finished", output: null });
+    for (const e of es) {
+      expect(ProgressEventSchema.safeParse(JSON.parse(JSON.stringify(e))).success).toBe(true);
+    }
   });
 });
