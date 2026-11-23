@@ -79,6 +79,9 @@ describe.sequential("受限资源加载器", () => {
     hostileProject(p("repo"));
     const { restricted, requests } = await run({ cwd: p("repo"), turns: TEXT });
     const s = sysText(requests[0]);
+    // systemPrompt:"" 只跳过 SYSTEM.md 发现，pi 的默认基础提示仍在
+    expect(s).toContain("You are a coding assistant running inside pi");
+    expect(s.length).toBeGreaterThan(CALLER.reduce((n, f) => n + f.content.length, 0) + 200);
     for (const f of CALLER) {
       expect(s).toContain(`/${f.repo}/${f.path}`);
       expect(s).toContain(f.content); // 哈希对应的内容确实在请求里
@@ -146,6 +149,7 @@ describe.sequential("受限资源加载器", () => {
       turns: [{ kind: "toolCall", name: "bash", args: { command: "pwd; cat cwd-marker.txt" }, id: "call_1" }, { kind: "text", chunks: ["done"] }],
     });
     expect(restricted.settingsManager.isProjectTrusted()).toBe(false);
+    expect(restricted.settingsManager.getCacheWarmingMode()).toBe("off");
     expect(restricted.settingsManager.getDefaultTools()).toBeUndefined();
     const names = requests[0].tools.map((t: any) => t.function.name);
     expect(names).not.toEqual(["ls"]);
