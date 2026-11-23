@@ -208,9 +208,9 @@
 
 `ClientMessage`、`RunnerMessage` 是各方向消息联合；消息含同名 `type` 判别字段（辅助类型除外）。`InterceptDecision`、`ConfirmResponse` 分别是 intercept_decision、confirm_response 的完整消息类型；ToolRequest/ConfirmRequest 是去掉消息 type 后的载荷。`parseClientMessage(raw: string)` 与 `parseRunnerMessage(raw: string)` 返回 `{ok: true; message}` 或 `{ok: false; error: string}`，不抛解析异常。字段非空、上下文列表必传（可空），非法决策、重复 repo/path、越界相对路径拒绝。
 
-- [ ] **Step 1：写失败测试**，覆盖多仓库同名文件、缺字段、非法 JSON/类型/路径、拒绝无原因、确认无身份以及消息双向校验；`requestId` 能关联第二次启动的错误与首次启动。
-- [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/engine-messages.test.ts`。
-- [ ] **Step 3：实现 schema 并写契约**，附 0B 能力对照表，固定以下行为：
+- [x] **Step 1：写失败测试**，覆盖多仓库同名文件、缺字段、非法 JSON/类型/路径、拒绝无原因、确认无身份以及消息双向校验；`requestId` 能关联第二次启动的错误与首次启动。 — 2026-11-22：新建 `tests/unit/engine-messages.test.ts`，覆盖以下情况：多个仓库有同名文件、同一仓库内路径重复、缺字段、非法 JSON 或类型、越界路径（`..`、`./`、`//`、末尾 `/`、NUL、盘符）、block/confirm 没给原因、拒绝确认时没给原因或没给 by、两个方向的消息互相拒收、requestId 形状检查（真正的关联测试放到 T1-9A），以及 at 带时区偏移时拒收。
+- [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/engine-messages.test.ts`。 — 2026-11-22：首轮 36 个失败（parseClientMessage 未实现）；返修第 1 轮 13 个失败，第 2 轮 1 个失败。
+- [x] **Step 3：实现 schema 并写契约**，附 0B 能力对照表，固定以下行为： — 2026-11-22：`engine-messages.ts`（分消息 schema；按 type 分派解析；ClientMessage/RunnerMessage 由这些 schema 推导）；`agent-events.ts` 新增 SequencedEventSchema（控制会话决定），工具 input/output 键必须存在；`docs/specs/contracts/engine.md`（全部消息、生命周期、Step 3 的全部行为、1.4 节 requestId 语义：只出现在调用方发出的消息里，是每条消息的编号，runner 回显；决定和确认分别用 callId/confirmId 配对；未知字段忽略；at 用 UTC Z；0B 能力对照表）。返修 2 轮：requestId 语义改回计划原意并删掉 runner 请求上的 requestId；路径规范化；契约与 schema 对齐；转换器把缺失的 args/result 归一为 null，避免 undefined 经 JSON 传输后丢掉键（控制会话把它提升为 Important）。
   - 一个 runner 接受一个客户端、一条成功启动的任务；第二连接拒绝。`idle → running → stopping → finished`；启动接受后先回 accepted，再发事件。运行中再启动返回 already_running，不影响原任务；结束后不复用，返回 run_finished 并关闭。五题各启动新 runner。
   - `policy` 和 `resume` 在 T1 返回 not_implemented，且不创建会话/执行工具；有效启动前的拒绝保持 idle，可修正后重试。Python 客户端 T2、策略直连 T3、恢复 T5 实现。
   - callback 拦截等待默认 30 秒，确认另计默认 30 秒，均可在 runner 配置；错误/超时按 block。确认身份是调用方报告的测试身份，不声称已完成 T4/T8 鉴权。
@@ -219,7 +219,7 @@
   - 收到终止后服务关闭连接/监听并退出；无客户端或未启动的连接默认 30 秒空闲超时退出。客户端断线触发取消和退出，不等待重新连接。
   - 协议校验错误与任务失败区分：前者 error，已接受任务的运行异常用 run.failed；原始 pi 录制只写运行器本地诊断文件，不加入协议。
   - accepted 之后的第一个事件是 `run.started` 或 `run.failed`：加载器或会话创建失败时只发布带原因的 `run.failed`（没有 run.started）；契约写明这一点，客户端不得假设第一个事件一定是 run.started。
-- [ ] **Step 4：同命令通过并提交** `feat(step01): 引擎消息与生命周期契约`。
+- [x] **Step 4：同命令通过并提交** `feat(step01): 引擎消息与生命周期契约`。 — 2026-11-22：控制会话复跑，`pnpm test` 132/132，typecheck、build、check:pi 都通过；审查 Needs fixes，2 轮返修后复审全部 addressed；提交 6408626 `feat(step01): 引擎消息与生命周期契约`、8b4056b、d863ad6。
 
 ### Task 5：调用方从本地 git 基准引用读取规则
 
