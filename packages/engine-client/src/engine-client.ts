@@ -3,8 +3,10 @@ import {
   parseRunnerMessage,
   type ClientMessage,
   type ConfirmRequest,
+  type ConfirmRequestMessage,
   type Confirmation,
   type Decision,
+  type InterceptRequest,
   type ProtocolError,
   type SequencedEvent,
   type StartTask,
@@ -13,8 +15,15 @@ import {
 import { WebSocket } from "ws";
 
 const TERMINAL = new Set(["run.settled", "run.failed", "run.cancelled"]);
-// 拒绝理由必须非空，否则兜底拒绝本身也会是非法消息
-const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e)).trim() || "handler failed without a message";
+const NO_REASON = "handler failed without a message";
+// 拒绝理由必须非空，否则兜底拒绝本身也会是非法消息；String(e) 可能抛错（如 Object.create(null)），所以兜住
+const reasonOf = (e: unknown) => {
+  try {
+    return (e instanceof Error ? e.message : String(e)).trim() || NO_REASON;
+  } catch {
+    return NO_REASON;
+  }
+};
 
 /**
  * runner 协议（engine.md）的调用方客户端：一个连接对应一个 runner、一次任务。
@@ -71,7 +80,8 @@ export class EngineClient {
     return new Promise<void>((resolve, reject) => {
       const fail = (e: Error) => {
         reject(e);
-        if (!this.accepted) this.settleEnd?.(e);
+        // 还有别的 start 挂起时不结算：它可能随后被接受，其终止结果不能丢
+        if (!this.accepted && this.starts.size === 0) this.settleEnd?.(e);
       };
       this.starts.set(requestId, { resolve, reject: fail });
       try {
@@ -148,28 +158,10 @@ export class EngineClient {
       case "event":
         if (TERMINAL.has(m.event.type)) this.settleEnd?.(m.event);
         return this.eventCb?.(m.event);
-      case "intercept_request": {
-        const { type: _, ...req } = m;
-        const reply = (d: Decision): ClientMessage => ({ ...d, type: "intercept_decision", requestId: this.id(), callId: req.callId });
-        return void this.reply(
-          async () => {
-            if (!this.interceptCb) throw new Error("no onIntercept handler registered");
-            return reply(await this.interceptCb(req));
-          },
-          (why) => reply({ decision: "block", reason: `engine-client: ${why}` }),
-        );
-      }
-      case "confirm_request": {
-        const { type: _, ...req } = m;
-        const reply = (c: Confirmation): ClientMessage => ({ ...c, type: "confirm_response", requestId: this.id(), confirmId: req.confirmId });
-        return void this.reply(
-          async () => {
-            if (!this.confirmCb) throw new Error("no onConfirm handler registered");
-            return reply(await this.confirmCb(req));
-          },
-          (why) => reply({ approved: false, by: "engine-client", reason: why }),
-        );
-      }
+      case "intercept_request":
+        return void this.answerIntercept(m);
+      case "confirm_request":
+        return void this.answerConfirm(m);
       case "error": {
         const p = m.requestId === undefined ? undefined : this.starts.get(m.requestId);
         if (!p) return this.errorCb?.(m);
@@ -179,12 +171,24 @@ export class EngineClient {
     }
   }
 
-  /** 处理器缺失、抛错或返回非法应答时，改发带原因的拒绝（fail closed） */
-  private async reply(build: () => Promise<ClientMessage>, refuse: (why: string) => ClientMessage): Promise<void> {
+  // 以下两个应答都 fail closed：处理器缺失、抛错或返回非法应答（send 校验抛错）时，改发带原因的拒绝
+  private async answerIntercept({ type: _, ...req }: InterceptRequest): Promise<void> {
+    const send = (d: Decision) => this.send({ ...d, type: "intercept_decision", requestId: this.id(), callId: req.callId });
     try {
-      this.send(await build());
+      if (!this.interceptCb) throw new Error("no onIntercept handler registered");
+      send(await this.interceptCb(req));
     } catch (e) {
-      this.send(refuse(reasonOf(e)));
+      send({ decision: "block", reason: `engine-client: ${reasonOf(e)}` });
+    }
+  }
+
+  private async answerConfirm({ type: _, ...req }: ConfirmRequestMessage): Promise<void> {
+    const send = (c: Confirmation) => this.send({ ...c, type: "confirm_response", requestId: this.id(), confirmId: req.confirmId });
+    try {
+      if (!this.confirmCb) throw new Error("no onConfirm handler registered");
+      send(await this.confirmCb(req));
+    } catch (e) {
+      send({ approved: false, by: "engine-client", reason: reasonOf(e) });
     }
   }
 }

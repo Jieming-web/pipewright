@@ -77,8 +77,8 @@ describe.sequential("engine-client：启动与终止", () => {
     expect(end).toMatchObject({ type: "run.settled", sessionId: "s1" });
     expect(types(events)).toEqual(["run.started", "text.delta", "text.delta", "message.completed", "run.settled"]);
     expect(events.at(-1)).toBe(end);
-    expect(await runner.done).toEqual({ ok: true }); // runner 已关闭连接
-    await new Promise((r) => setTimeout(r, 50));
+    expect(await runner.done).toEqual({ ok: true });
+    await client.close(); // 确保客户端已处理完 close 事件
     expect(await client.waitForEnd()).toBe(end);
     expect(errors).toEqual([]);
   }, 10_000);
@@ -163,6 +163,7 @@ describe.sequential("engine-client：拦截与确认", () => {
     ["没有 onConfirm", (c) => c.onIntercept(confirm), /rejected by engine-client: .*onConfirm/],
     ["onConfirm 抛错", (c) => { c.onIntercept(confirm); c.onConfirm(() => { throw new Error("BOOM_C"); }); }, /rejected by engine-client: .*BOOM_C/],
     ["onConfirm 抛出空消息的错误", (c) => { c.onIntercept(confirm); c.onConfirm(async () => { throw new Error(""); }); }, /rejected by engine-client: handler failed/],
+    ["onConfirm 抛出无法转成字符串的值", (c) => { c.onIntercept(confirm); c.onConfirm(async () => { throw Object.create(null); }); }, /rejected by engine-client: handler failed/],
     ["onConfirm 返回非法 Confirmation（拒绝无理由）", (c) => { c.onIntercept(confirm); c.onConfirm(async () => ({ approved: false, by: "tester" })); }, /rejected by engine-client: .*invalid/],
   ])("%s：发送带原因的拒绝，工具不执行", async (_n, register, reason) => {
     const { s, client, errors } = await setup(TOOL("touch denied.marker"));
@@ -197,6 +198,24 @@ describe.sequential("engine-client：连接失败与关闭", () => {
     await client.start(task());
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
     expect(events).toEqual([]);
+  });
+
+  it("两个 start 同时挂起：第一个在 accepted 前被拒绝、第二个被接受时，waitForEnd（早拿的与晚拿的）都得到第二个任务的终止事件", async () => {
+    const got: { requestId: string }[] = [];
+    const client = await stub((m, ws) => {
+      got.push(m);
+      if (got.length < 2) return;
+      ws.send(JSON.stringify({ type: "error", requestId: got[0].requestId, code: "not_implemented", message: "no" }));
+      ws.send(JSON.stringify({ type: "accepted", requestId: got[1].requestId, sessionId: "s2" }));
+      ws.send(JSON.stringify({ type: "event", event: { type: "run.settled", sessionId: "s2", seq: 1, at: new Date().toISOString() } }));
+    });
+    const early = client.waitForEnd();
+    const first = client.start(task({ interceptMode: "policy" }));
+    const second = client.start(task({ sessionId: "s2" }));
+    await expect(first).rejects.toThrow(/not_implemented/);
+    await second;
+    expect(await early).toMatchObject({ type: "run.settled", sessionId: "s2" });
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.settled", sessionId: "s2" });
   });
 
   it("非法服务端消息：连接失败，挂起的 start 与 waitForEnd 都 reject，之后的 start 也 reject", async () => {
