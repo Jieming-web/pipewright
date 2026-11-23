@@ -178,10 +178,10 @@
 - **重试残留的文字片段（2026-11-22 作者决定 ①）**：失败那次尝试已经发出的 `text_delta` 照常转换成 `text.delta`，不撤回、不加标记；契约写明“`text.delta` 可能含失败尝试的文字，最终文本以 `message.completed` 为准”。为保证这一点，`message.completed` 只由 `stopReason` 不是 `error`/`aborted` 的助手消息结束事件产生（失败尝试的半截消息不产生 `message.completed`）。转换只读事件中的 `delta` 与 `message_end` 的消息内容，不读会继续变化的 `partial` 字段（2B 样本 README）。
 - `createRunEvents(sessionId: string, emit: (event: SequencedEvent) => void): { publish(event: ProgressEvent): void; finish(event: TerminalEvent): void }` 是唯一序号分配方；从 1 连续递增，finish 后忽略后续发布及重复 finish。
 
-- [ ] **Step 1：写失败测试**，重放 2B 样本验证文本、工具关联、未知事件、重试中间结束不产生终止；发布器验证 started/工具/文本/终止共享序号、只发一次终止且终止后无事件；protocol 校验 `run.started` 的 snapshot 字段（缺字段或 sha256 格式不对时拒绝）。
-- [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/pi-event-converter.test.ts tests/unit/run-events.test.ts`。
-- [ ] **Step 3：实现并写契约**，记录每种事件字段、与原始 pi 事件的对应、会话内编号规则及宿主/存储负责的全局编号边界；settled/cancelled 只在清理成功后发布，failed 若因清理失败须明确原因并由进程退出兜底。不在服务层解析 pi 事件。
-- [ ] **Step 4：同命令通过并提交** `feat(step01): 事件协议与统一终止发布`。
+- [x] **Step 1：写失败测试**，重放 2B 样本验证文本、工具关联、未知事件、重试中间结束不产生终止；发布器验证 started/工具/文本/终止共享序号、只发一次终止且终止后无事件；protocol 校验 `run.started` 的 snapshot 字段（缺字段或 sha256 格式不对时拒绝）。 — 2026-11-22：新增 `tests/unit/pi-event-converter.test.ts`（8 项测试，用 2B 样本回放：文本、工具 callId 关联、未知或畸形事件返回 []、重试中途的 agent_end 不产生终止、retry-drop 的增量拼起来是 "partial-recovered"，而唯一的 message.completed 是 "recovered"）、`run-events.test.ts`（4 项）、`agent-events.test.ts`（10 项，按控制会话的决定新增：snapshot 缺字段或 sha256 不合格时拒绝）。
+- [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/pi-event-converter.test.ts tests/unit/run-events.test.ts`。 — 2026-11-22：3 个文件都失败，原因是缺少模块或 schema，说明功能尚未实现。
+- [x] **Step 3：实现并写契约**，记录每种事件字段、与原始 pi 事件的对应、会话内编号规则及宿主/存储负责的全局编号边界；settled/cancelled 只在清理成功后发布，failed 若因清理失败须明确原因并由进程退出兜底。不在服务层解析 pi 事件。 — 2026-11-22：新增 `docs/specs/contracts/agent-events.md`（字段、pi 事件对应表含刻意丢弃的事件、重试残留规则 ①、会话内序号与全局编号的边界、终止规则）。实现者另加了三处，均已写进契约：只有工具调用、没有文字的助手消息不产生 message.completed（待作者确认）；createRunEvents 可选的 now 参数；sha256 只接受小写 64 位十六进制。
+- [x] **Step 4：同命令通过并提交** `feat(step01): 事件协议与统一终止发布`。 — 2026-11-22：控制会话复跑：3 个文件 22/22 通过，`pnpm test` 80/80 通过，typecheck、build、check:pi 都通过；审查结论 Approved（没有 Critical/Important 问题）；提交 02e716e `feat(step01): 事件协议与统一终止发布`。
 
 ### Task 4：引擎消息与跨进程契约
 
