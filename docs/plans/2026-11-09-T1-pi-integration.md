@@ -242,10 +242,10 @@
 
 **Interfaces:** `createInterceptCoordinator(opts: {send: (message: RunnerMessage) => void; interceptTimeoutMs: number; confirmTimeoutMs: number})` 返回 `decide(req: ToolRequest, signal: AbortSignal): Promise<{decision: "allow"} | {decision: "block"; reason: string}>`、`respond(message: InterceptDecision | ConfirmResponse): {ok: true} | {ok: false; code: "stale_response"}`、`cancelAll(reason: string): void`、只读 `pendingCount: number`。`createInterceptExtension(decide: ReturnType<typeof createInterceptCoordinator>["decide"], signal: AbortSignal): (pi: ExtensionAPI) => void` 将最终 allow/block 交给 pi。
 
-- [ ] **Step 1：写失败测试**，fake send 收集消息并送回决定；覆盖 allow/block、confirm 同意/拒绝及原因/身份、各自超时、send 抛错、abort、重复/错误 ID、迟到同意。超时用测试配置 200ms；结束后 pendingCount 为 0，迟到同意不会放行工具。
-- [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/intercept-coordinator.test.ts`。
-- [ ] **Step 3：实现模块与扩展**，按 0B 核实的钩子绑定；扩展只调用 decide 并返回阻止原因。cancelAll 必须结算所有等待并清理计时器，不能只等待 pi abort 自行处理。真实工具副作用测试留在 8B。
-- [ ] **Step 4：同命令通过并提交** `feat(step01): 拦截与确认协调`。
+- [x] **Step 1：写失败测试**，fake send 收集消息并送回决定；覆盖 allow/block、confirm 同意/拒绝及原因/身份、各自超时、send 抛错、abort、重复/错误 ID、迟到同意。超时用测试配置 200ms；结束后 pendingCount 为 0，迟到同意不会放行工具。 — 2026-11-23：`tests/unit/intercept-coordinator.test.ts` 共 22 个测试。Step 1 列出的每一项都有测试，另外还补了这些：信号在调用前已被取消、确认阶段发送失败、确认阶段被取消、同一个 callId 重复提交。清理方面用模拟时钟和 `getEventListeners` 断言：结束后没有残留的计时器，也没有残留的 abort 监听。还有一个测试证明确认超时从发出确认请求时重新计时，不和拦截共用截止时间。
+- [x] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/intercept-coordinator.test.ts`。 — 2026-11-23：首轮失败原因是模块还不存在。返修第 1 轮新增 8 个测试，旧代码上 1 个失败（重复 callId）；另外 7 个补覆盖的测试，用变异检查证明它们有效。控制会话做的变异检查：删 clearTimeout 有 4 个测试失败，删 removeEventListener 有 2 个失败，把确认超时改成和拦截共用截止时间有 1 个失败。首轮另做了 4 个变异（cancelAll 改成空操作、去掉 pending.delete、忽略 approved、去掉调用前已取消的检查），每个都至少让 1 个测试失败。
+- [x] **Step 3：实现模块与扩展**，按 0B 核实的钩子绑定；扩展只调用 decide 并返回阻止原因。cancelAll 必须结算所有等待并清理计时器，不能只等待 pi abort 自行处理。真实工具副作用测试留在 8B。 — 2026-11-23：`intercept-coordinator.ts` 用一个 Map 登记等待项，键是 `intercept:<callId>` 或 `confirm:<confirmId>`。不管以哪种方式结束（收到应答、超时、发送失败、被取消、调用 cancelAll），都会清掉计时器、摘掉 abort 监听、删掉自己的那一条。之后再到的应答返回 stale_response，同一个 callId 重复提交直接 block。决定为 confirm 时，在 decide 里发出 confirm_request（confirmId 用 randomUUID 生成），单独计时等待确认；拒绝时的原因写成 `rejected by <by>: <reason>`。`intercept-extension.ts` 用 pi 1.5.1 的 `pi.on("tool_call")` 绑定：放行返回 undefined，阻止返回 `{block:true, reason}`。
+- [x] **Step 4：同命令通过并提交** `feat(step01): 拦截与确认协调`。 — 2026-11-23：控制会话复跑，`pnpm test` 173/173 通过，typecheck、build、check:pi 都通过。规格与质量审查要求返修（两条 Important：计时器和监听没有被清理却没有测试能发现；没有测试证明确认超时是单独计时的），ponytail-review 结论 Ship。返修 1 轮后复审 Approved。提交 57649e4、3c10fe6。
 
 ### Task 7：受限资源加载器
 
