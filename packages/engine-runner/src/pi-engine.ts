@@ -58,9 +58,11 @@ export class PiEngine {
     let scratchDir: string | undefined;
     let session: AgentSession | undefined;
     let lastAssistant: { stopReason?: string; errorMessage?: string } | undefined;
+    let stopBegun!: () => void;
+    const stopping = new Promise<void>((r) => (stopBegun = r)); // pi 的 prompt 可能永不返回：一旦开始清理，run 就跟随清理结果
 
     const stop = () =>
-      (this.#stop ??= (async () => {
+      (this.#stop ??= (stopBegun(), (async () => {
         let timer: NodeJS.Timeout | undefined;
         try {
           await Promise.race([
@@ -94,7 +96,7 @@ export class PiEngine {
         }
         this.#disposed = true;
         events.finish(this.#outcome ?? { type: "run.failed", reason: "pi finished without agent_settled" });
-      })());
+      })()));
 
     const onPiEvent = (raw: AgentSessionEvent) => {
       recorder?.record(raw);
@@ -127,7 +129,7 @@ export class PiEngine {
     this.#startStop = stop;
     if (!this.#outcome) {
       try {
-        await session.prompt(task.prompt); // 模型最终失败也 resolve；reject 只发生在运行没有开始时
+        await Promise.race([session.prompt(task.prompt), stopping]); // 模型最终失败也 resolve；reject 只发生在运行没有开始时
       } catch (e) {
         this.#outcome ??= { type: "run.failed", reason: message(e) };
       }

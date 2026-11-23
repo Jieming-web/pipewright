@@ -396,6 +396,40 @@ describe.sequential("PiEngine 清理失败", () => {
     expect(terminal(events).reason).toMatch(/cleanup.*timed out/);
     expect(engine.disposed).toBe(false);
   }, 15_000);
+
+  it("prompt 永不返回且 abort 挂起：cancel 后仍在时限内 run.failed，run 与 cancel 都拒绝", async () => {
+    const s = await serve([]);
+    writeModels(s.baseUrl);
+    let cancel: Promise<void> | undefined;
+    // prompt 已开始、永不返回时再取消（在 run.started 处取消会跳过 prompt，测不到这条路径）
+    vi.spyOn(AgentSession.prototype, "prompt").mockImplementation(() => { setTimeout(() => (cancel = engine.cancel()), 50); return new Promise<void>(() => {}); });
+    vi.spyOn(AgentSession.prototype, "abort").mockImplementation(() => new Promise<void>(() => {}));
+    const { engine, events } = makeEngine();
+    const t0 = Date.now();
+    const run = engine.run(task());
+    await expect(run).rejects.toThrow(/timed out/);
+    await expect(cancel).rejects.toThrow(/timed out/);
+    expect(Date.now() - t0).toBeLessThan(7000);
+    expect(checkStream(events)).toEqual(["run.started", "run.failed"]);
+    expect(terminal(events).reason).toMatch(/cleanup.*timed out/);
+    expect(engine.disposed).toBe(false);
+  }, 15_000);
+
+  it("prompt 永不返回但清理成功：run 与 cancel 都 resolve，只有一个 run.cancelled", async () => {
+    const s = await serve([]);
+    writeModels(s.baseUrl);
+    let cancel: Promise<void> | undefined;
+    // prompt 已开始、永不返回时再取消（在 run.started 处取消会跳过 prompt，测不到这条路径）
+    vi.spyOn(AgentSession.prototype, "prompt").mockImplementation(() => { setTimeout(() => (cancel = engine.cancel()), 50); return new Promise<void>(() => {}); });
+    const { engine, events, coordinator } = makeEngine();
+    await engine.run(task());
+    await cancel;
+    expect(cancel).toBeDefined();
+    expect(checkStream(events)).toEqual(["run.started", "run.cancelled"]);
+    expect(engine.disposed).toBe(true);
+    expect(coordinator.pendingCount).toBe(0);
+    expect(scratchLeft()).toEqual([]);
+  }, 10_000);
 });
 
 describe.sequential("PiEngine 规则来源（T1 验收 11）", () => {
