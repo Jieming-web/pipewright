@@ -17,11 +17,12 @@ export function createInterceptCoordinator(opts: {
   function wait(key: string, ms: number, label: string, signal: AbortSignal, message: RunnerMessage): Promise<Settled> {
     return new Promise<Settled>((resolve) => {
       const onAbort = () => settle({ failed: "aborted" });
+      if (pending.has(key)) return resolve({ failed: "duplicate callId" });
       const timer = setTimeout(() => settle({ failed: `${label} timed out` }), ms);
       function settle(s: Settled) {
         clearTimeout(timer);
         signal.removeEventListener("abort", onAbort);
-        pending.delete(key);
+        if (pending.get(key) === settle) pending.delete(key);
         resolve(s);
       }
       if (signal.aborted) return settle({ failed: "aborted" });

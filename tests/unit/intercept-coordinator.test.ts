@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { getEventListeners } from "node:events";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInterceptCoordinator } from "../../packages/engine-runner/src/intercept-coordinator.js";
 import { createInterceptExtension } from "../../packages/engine-runner/src/intercept-extension.js";
 import type { ConfirmResponse, InterceptDecision, RunnerMessage } from "../../packages/engine-protocol/src/index.js";
@@ -22,7 +23,10 @@ function setup(send?: (m: RunnerMessage) => void) {
   });
   return sent;
 }
-afterEach(() => expect(co.pendingCount).toBe(0));
+afterEach(() => {
+  vi.useRealTimers();
+  expect(co.pendingCount).toBe(0);
+});
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe("createInterceptCoordinator", () => {
@@ -97,7 +101,7 @@ describe("createInterceptCoordinator", () => {
     await tick();
     expect(co.pendingCount).toBe(1);
     ac.abort();
-    expect(await p).toMatchObject({ decision: "block" });
+    expect(await p).toEqual({ decision: "block", reason: "aborted" });
   });
 
   it("已 abort 的 signal -> 直接 block，不发请求", async () => {
@@ -133,6 +137,96 @@ describe("createInterceptCoordinator", () => {
     expect(co.respond(dec({ decision: "block", reason: "no" }))).toEqual({ ok: true });
     expect(co.respond(dec({ decision: "allow" }))).toEqual({ ok: false, code: "stale_response" });
     expect(await p).toEqual({ decision: "block", reason: "no" });
+  });
+});
+
+describe("清理、独立计时与重复 callId", () => {
+  const confirmFlow = (m: RunnerMessage) => {
+    if (m.type === "intercept_request") queueMicrotask(() => co.respond(dec({ decision: "confirm", reason: "risky" })));
+  };
+
+  it("respond 结算后计时器与 abort 监听均已清理（长寿 signal）", async () => {
+    vi.useFakeTimers();
+    setup((m) => m.type === "intercept_request" && queueMicrotask(() => co.respond(dec({ decision: "allow" }))));
+    const ac = new AbortController();
+    await co.decide(req, ac.signal);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+  });
+
+  it("cancelAll 结算后计时器已清理", async () => {
+    vi.useFakeTimers();
+    setup();
+    const p = co.decide(req, new AbortController().signal);
+    expect(vi.getTimerCount()).toBe(1);
+    co.cancelAll("x");
+    await p;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("abort 结算后计时器已清理", async () => {
+    vi.useFakeTimers();
+    setup();
+    const ac = new AbortController();
+    const p = co.decide(req, ac.signal);
+    ac.abort();
+    await p;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("send 抛错结算后计时器与监听已清理", async () => {
+    vi.useFakeTimers();
+    setup(() => {
+      throw new Error("boom");
+    });
+    const ac = new AbortController();
+    await co.decide(req, ac.signal);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+  });
+
+  it("确认超时从确认请求发出时重新计时，不与拦截共用截止时间", async () => {
+    vi.useFakeTimers();
+    const sent = setup();
+    const p = co.decide(req, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(co.respond(dec({ decision: "confirm", reason: "risky" }))).toEqual({ ok: true });
+    await vi.advanceTimersByTimeAsync(150);
+    expect(sent.map((m) => m.type)).toEqual(["intercept_request", "confirm_request"]);
+    expect(co.pendingCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(60);
+    const r = await p;
+    expect(r).toMatchObject({ decision: "block", reason: expect.stringMatching(/confirm.*timed out/) });
+  });
+
+  it("重复 callId：第二个立即 block 且不发送，第一个仍可正常结算", async () => {
+    const sent = setup();
+    const p1 = co.decide(req, new AbortController().signal);
+    const r2 = await co.decide(req, new AbortController().signal);
+    expect(r2).toEqual({ decision: "block", reason: "duplicate callId" });
+    expect(sent).toHaveLength(1);
+    expect(co.pendingCount).toBe(1);
+    expect(co.respond(dec({ decision: "allow" }))).toEqual({ ok: true });
+    expect(await p1).toEqual({ decision: "allow" });
+  });
+
+  it("发送 confirm_request 时 send 抛错 -> block", async () => {
+    setup((m) => {
+      if (m.type === "intercept_request") queueMicrotask(() => co.respond(dec({ decision: "confirm", reason: "risky" })));
+      if (m.type === "confirm_request") throw new Error("ws closed");
+    });
+    expect(await co.decide(req, new AbortController().signal)).toEqual({ decision: "block", reason: "send failed: ws closed" });
+  });
+
+  it("确认阶段 abort -> block aborted", async () => {
+    setup(confirmFlow);
+    const ac = new AbortController();
+    const p = co.decide(req, ac.signal);
+    await tick();
+    await tick();
+    expect(co.pendingCount).toBe(1);
+    ac.abort();
+    expect(await p).toEqual({ decision: "block", reason: "aborted" });
   });
 });
 
