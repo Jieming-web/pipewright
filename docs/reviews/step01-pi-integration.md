@@ -1678,3 +1678,14 @@ process.exit(leaked ? 3 : 0);
 ```
 
 </details>
+
+
+### Task 7 补充（2026-11-23，追加）：0A.4 推荐组合需要再加 `systemPrompt: ""`
+
+Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：按 0A.4 的推荐组合，`agentDir` 下的 `SYSTEM.md` 仍会被加载（`getSystemPromptSource()` 非空）。这一级不需要项目信任。0A 探测时平台目录是空的，所以没有发现这个问题。
+
+修正：给 `DefaultResourceLoader` 加 `systemPrompt: ""`，做法和 `appendSystemPrompt: []` 相同。出处是 pi 1.5.1 的 `dist/core/resource-loader.js`：
+- 第 490 行：`systemPromptSource ?? discoverSystemPromptFile()`，空字符串不是 nullish，所以会跳过发现。
+- 第 114 行：`resolvePromptInput("")` 返回 undefined，于是 `system-prompt.js` 第 78 行不使用自定义前言，保留默认系统提示。
+
+`" "` 不行：它是 truthy，会把默认提示整个替换掉（已用测试确认）。测试见 `tests/integration/restricted-loader.test.ts` 的 scratch-agentdir 场景。另外，会话必须使用加载器返回的同一个 `settingsManager`：`createAgentSession` 只读取自己拿到的 settingsManager，不传就会回退到默认值，而默认值是 `SettingsManager.create`，项目信任默认为 true（`dist/core/sdk.js` 第 76 行）。
