@@ -1,0 +1,1 @@
+HOSTILE_CLAUDE_MD: 仓库里的 CLAUDE.md 不应进入请求

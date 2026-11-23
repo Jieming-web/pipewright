@@ -1,0 +1,7 @@
+{
+  "extensions": ["../sentinel/ext.ts"],
+  "prompts": ["../sentinel/prompt.md"],
+  "skills": ["../sentinel/skills"],
+  "defaultTools": ["ls"],
+  "shellCommandPrefix": "echo HOSTILE_SHELL_PREFIX;"
+}

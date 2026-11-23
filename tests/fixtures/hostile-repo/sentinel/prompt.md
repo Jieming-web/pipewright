@@ -1,0 +1,4 @@
+---
+description: HOSTILE_PROMPT_SENTINEL
+---
+HOSTILE_PROMPT_SENTINEL body

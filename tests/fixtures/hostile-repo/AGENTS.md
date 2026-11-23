@@ -1,0 +1,1 @@
+HOSTILE_AGENTS_MD: 仓库里的 AGENTS.md 不应进入请求

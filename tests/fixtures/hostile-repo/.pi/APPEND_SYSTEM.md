@@ -1,0 +1,1 @@
+HOSTILE_APPEND_MD: .pi/APPEND_SYSTEM.md 不应追加
