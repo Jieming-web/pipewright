@@ -10,7 +10,7 @@
 
 **Spec:**
 - `docs/workflow.md`：2.4–2.5、3.2–3.4、3.7.4、4.3–4.6。
-- `docs/specs/tasks.md`：T1，验收标准 1–10；五题运行是验收，不算正式评测。
+- `docs/specs/tasks.md`：T1，验收标准 1–11（第 11 条运行快照为 2026-11-21 按 `decisions/016-repair-loop-and-rsi-refinements.md` 新增，作者已同意修改本计划）；五题运行是验收，不算正式评测。
 - `docs/specs/design.md`：第 1 节原则 1、4、5、7；第 2 节 pi、统一引擎接口、模型客户端；3.6、3.14、3.15.3；8.1–8.3。
 - `docs/specs/proposal.md`：R1、R9、S3；第 5 节模型与硬件。
 - `docs/specs/decisions/001-reuse-pi-as-harness.md`、`003-typescript-as-main-language.md`、`005-engine-interface-and-2x2-eval.md`、`008-policy-rules-memory-layers.md`、`014-pi-package-choice.md`、`015-model-selection.md`；002 仅作历史背景。
@@ -69,13 +69,13 @@
 | 1 工作区与版本锁定 | 60 分钟 | 0A–0C 全部通过 | 6；其余测试基础 |
 | 2A 假模型服务 | 45 分钟 | 1 | 测试支撑 |
 | 2B 用真实 pi 录制测试样本 | 45 分钟 | 2A、0B | 2 |
-| 3 事件转换与终止发布 | 60 分钟 | 2B | 1、2、5 |
+| 3 事件转换与终止发布 | 60 分钟 | 2B | 1、2、5、11 |
 | 4 引擎消息与契约 | 60 分钟 | 3、0B | 1 |
 | 5 调用方读取基准规则 | 45 分钟 | 4 | 7、10 |
 | 6 拦截与确认协调 | 60 分钟 | 4 | 1、5 |
-| 7 受限资源加载器 | 60 分钟 | 5、6、2A | 7、8、10 |
-| 8A 模型配置与会话创建 | 45 分钟 | 7、3 | 3、6 |
-| 8B 引擎运行与取消 | 60 分钟 | 8A、6 | 1、2、5、7、10 |
+| 7 受限资源加载器 | 60 分钟 | 5、6、2A | 7、8、10、11 |
+| 8A 模型配置与会话创建 | 45 分钟 | 7、3 | 3、6、11 |
+| 8B 引擎运行与取消 | 60 分钟 | 8A、6 | 1、2、5、7、10、11 |
 | 9A runner 服务与进程入口 | 60 分钟 | 8B、4 | 1、5 |
 | 9B TS 客户端 | 60 分钟 | 9A | 1 |
 | 9C 跨进程异常与清理验证 | 60 分钟 | 9B | 1、5 |
@@ -83,7 +83,7 @@
 | 10A2 只读验收运行脚本 | 60 分钟 | 10A1、5、9B | 3、4 |
 | 10B API 验收与录制 | 45 分钟 | 10A2 | 2、3、4 |
 | 10C 本地验收与配置切换证据 | 45 分钟 | 10B | 2、3、4 |
-| 11 收尾关卡 | 60 分钟 | 以上全部 | 1–10 逐条核对 |
+| 11 收尾关卡 | 60 分钟 | 以上全部 | 1–11 逐条核对 |
 
 ---
 
@@ -171,12 +171,13 @@
 **Files:** Create `packages/engine-protocol/src/agent-events.ts`、`packages/engine-runner/src/pi-event-converter.ts`、`packages/engine-runner/src/run-events.ts`、`tests/unit/pi-event-converter.test.ts`、`tests/unit/run-events.test.ts`、`docs/specs/contracts/agent-events.md`。
 
 **Interfaces:**
-- `ProgressEvent`：`run.started`；`text.delta {text}`；`message.completed {role: "assistant", text}`；`tool.started {callId, toolName, input}`；`tool.finished {callId, toolName, isError, output}`。output 保留 JSON 可序列化的工具结果，不假定只有字符串。
+- `ProgressEvent`：`run.started {snapshot: RunSnapshot}`；`text.delta {text}`；`message.completed {role: "assistant", text}`；`tool.started {callId, toolName, input}`；`tool.finished {callId, toolName, isError, output}`。output 保留 JSON 可序列化的工具结果，不假定只有字符串。
 - `TerminalEvent`：`run.settled`、`run.failed {reason}`、`run.cancelled`。`AgentEvent = ProgressEvent | TerminalEvent`；`SequencedEvent = AgentEvent & {sessionId: string; seq: number; at: string}`，at 为 ISO 时间。
+- `RunSnapshot`：`{engine: {name: string; version: string}; model: {provider: string; id: string}; contextFiles: {repo: string; path: string; sourceCommit: string; sha256: string}[]}`。engine.name 用字符串（T12 起还有 Claude Code 适配器），pi 适配器填 `"pi"`，version 取运行器解析到的 pi 包版本；model 取 8A 实际注册并交给会话的模型（provider 与 id），不照抄 StartTask；contextFiles 来自 Task 7 加载器回读的实际加载内容，sha256 由运行器按实际加载的内容计算，不信任调用方传入的值（T1 验收 11）。
 - `convertPiEvent(raw: unknown): ProgressEvent[]` 只转换进度，不产生终止；未知事件返回空数组。错误与最终静止由引擎按 0B 的语义处理。
 - `createRunEvents(sessionId: string, emit: (event: SequencedEvent) => void): { publish(event: ProgressEvent): void; finish(event: TerminalEvent): void }` 是唯一序号分配方；从 1 连续递增，finish 后忽略后续发布及重复 finish。
 
-- [ ] **Step 1：写失败测试**，重放 2B 样本验证文本、工具关联、未知事件、重试中间结束不产生终止；发布器验证 started/工具/文本/终止共享序号、只发一次终止且终止后无事件。
+- [ ] **Step 1：写失败测试**，重放 2B 样本验证文本、工具关联、未知事件、重试中间结束不产生终止；发布器验证 started/工具/文本/终止共享序号、只发一次终止且终止后无事件；protocol 校验 `run.started` 的 snapshot 字段（缺字段或 sha256 格式不对时拒绝）。
 - [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/unit/pi-event-converter.test.ts tests/unit/run-events.test.ts`。
 - [ ] **Step 3：实现并写契约**，记录每种事件字段、与原始 pi 事件的对应、会话内编号规则及宿主/存储负责的全局编号边界；settled/cancelled 只在清理成功后发布，failed 若因清理失败须明确原因并由进程退出兜底。不在服务层解析 pi 事件。
 - [ ] **Step 4：同命令通过并提交** `feat(step01): 事件协议与统一终止发布`。
@@ -216,6 +217,7 @@
   - cancel 幂等；idle 时无操作。终止前的有效取消进入 stopping；已选定终止结果后不覆盖。清理过程中不再发布进度；最终只发一种终止。错误完成和取消竞态按引擎串行观察到的第一个终止原因选择；内部清理失败改为 run.failed。
   - 收到终止后服务关闭连接/监听并退出；无客户端或未启动的连接默认 30 秒空闲超时退出。客户端断线触发取消和退出，不等待重新连接。
   - 协议校验错误与任务失败区分：前者 error，已接受任务的运行异常用 run.failed；原始 pi 录制只写运行器本地诊断文件，不加入协议。
+  - accepted 之后的第一个事件是 `run.started` 或 `run.failed`：加载器或会话创建失败时只发布带原因的 `run.failed`（没有 run.started）；契约写明这一点，客户端不得假设第一个事件一定是 run.started。
 - [ ] **Step 4：同命令通过并提交** `feat(step01): 引擎消息与生命周期契约`。
 
 ### Task 5：调用方从本地 git 基准引用读取规则
@@ -250,9 +252,9 @@
 
 **Files:** Create `packages/engine-runner/src/restricted-resource-loader.ts`、`tests/fixtures/hostile-repo/`、`tests/integration/restricted-loader.test.ts`。
 
-**Interfaces:** `createRestrictedResourceLoader(opts: {scratchDir: string; contextFiles: ContextFile[]; extensionFactories: ((pi: ExtensionAPI) => void)[]}): Promise<ResourceLoader>`。使用 0A 确认的关闭设置，pi 接收的路径映射为 `/<repo>/<path>`；repo 为无斜杠的稳定标识，来源 commit 保留在调用方协议记录中。scratchDir 每次新建，清理责任归会话。
+**Interfaces:** `createRestrictedResourceLoader(opts: {scratchDir: string; contextFiles: ContextFile[]; extensionFactories: ((pi: ExtensionAPI) => void)[]}): Promise<{loader: ResourceLoader; loadedContextFiles(): RunSnapshot["contextFiles"]}>`。`loadedContextFiles` 从 pi 加载器回读实际加载的规则文件（不照抄 opts），按内容计算 sha256，并映射回 repo、path、sourceCommit。使用 0A 确认的关闭设置，pi 接收的路径映射为 `/<repo>/<path>`；repo 为无斜杠的稳定标识；来源 commit 来自 ContextFile.sourceCommit，由 `loadedContextFiles()` 映射回运行快照。scratchDir 每次新建，清理责任归会话。
 
-- [ ] **Step 1：写失败测试**，用 2A 假模型和真实 SDK 检查首个请求及资源加载结果：调用方规则出现，任务工作树/祖先/模拟用户目录中的 AGENTS.md、CLAUDE.md 不出现；多个仓库同名规则都有来源标签。
+- [ ] **Step 1：写失败测试**，用 2A 假模型和真实 SDK 检查首个请求及资源加载结果：调用方规则出现，任务工作树/祖先/模拟用户目录中的 AGENTS.md、CLAUDE.md 不出现；多个仓库同名规则都有来源标签；`loadedContextFiles()` 的 sha256 与假服务首个请求中实际出现的规则内容一致，且不包含任何被禁止来源的文件（T1 验收 11）。
 - [ ] **Step 2：补资源污染用例并运行**，`pnpm vitest run tests/integration/restricted-loader.test.ts` 应因缺失加载器失败。样本含 `.pi/extensions/marker.ts` 的加载副作用、`.pi/settings.json` 引用外部 sentinel 扩展/提示词/skill、`.pi/APPEND_SYSTEM.md`、该版本支持的系统提示词覆盖入口、`.pi/skills/evil/SKILL.md`、`.agents/skills/evil/SKILL.md`；对上级与用户目录重复验证。断言 marker 不产生、提示词/skill 标记不注入、发现列表不含这些资源、settings 指定的可观察行为不生效。
 - [ ] **Step 3：实现并复核**，调用真实 SDK 创建会话触发加载，验证仓库工具 cwd 仍正确、显式平台扩展仍可运行。不能只检查返回对象；正确设置后仍加载仓库资源则停止报告。
 - [ ] **Step 4：同命令通过并提交** `feat(step01): 限制 pi 资源来源`。
@@ -263,9 +265,9 @@
 
 **Files:** Create `packages/engine-runner/src/model-config.ts`、`packages/engine-runner/src/pi-session.ts`、`config/models.example.json`、`tests/integration/pi-session.test.ts`。
 
-**Interfaces:** `loadModelRuntime(modelsPath: string): Promise<ModelRuntime>` 使用 0A 确认的 pi 类型；`createPiSession(opts: {task: StartTask; modelsPath: string; workDir: string; scratchDir: string; decide: ReturnType<typeof createInterceptCoordinator>["decide"]; signal: AbortSignal}): Promise<AgentSession>`。SDK 类型名与 0A 不符时先修订计划再实现，不以 unknown 掩盖。
+**Interfaces:** `loadModelRuntime(modelsPath: string): Promise<ModelRuntime>` 使用 0A 确认的 pi 类型；`createPiSession(opts: {task: StartTask; modelsPath: string; workDir: string; scratchDir: string; decide: ReturnType<typeof createInterceptCoordinator>["decide"]; signal: AbortSignal}): Promise<{session: AgentSession; snapshot: RunSnapshot}>`。内部只创建一个 Task 7 受限加载器，会话使用的就是这个加载器；snapshot 由同一加载器的 `loadedContextFiles()` 与实际注册的模型组成，保证快照描述的正是会话所用的资源。SDK 类型名与 0A 不符时先修订计划再实现，不以 unknown 掩盖。
 
-- [ ] **Step 1：写失败测试**，两份 fake provider 配置命中不同假服务，工作目录只影响工具；API key 仅从环境引用获得。缺少模型/密钥报明确错误；默认内存会话，指定 sessionDir 使用 pi 持久化并在清理后保留文件。不自行重写会话格式。
+- [ ] **Step 1：写失败测试**，两份 fake provider 配置命中不同假服务，工作目录只影响工具；返回的 snapshot 中 model 等于实际注册的模型，contextFiles 的 sha256 与会话首个请求中实际出现的规则内容一致；API key 仅从环境引用获得。缺少模型/密钥报明确错误；默认内存会话，指定 sessionDir 使用 pi 持久化并在清理后保留文件。不自行重写会话格式。
 - [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/pi-session.test.ts`。
 - [ ] **Step 3：实现配置与工厂**，模型注册、鉴权、settings、SessionManager 都复用核实后的 SDK API；不读取用户个人 auth/settings 文件，不存在暂时默认 allow 的阶段。示例包含 fake、qwen-api（百炼）、ollama，真实 ID 和版本采用 0C 结果。
 - [ ] **Step 4：同命令通过并提交** `feat(step01): 模型配置与受限 pi 会话`。
@@ -278,9 +280,9 @@
 
 **Interfaces:** `PiEngine` 构造参数 `{modelsPath: string; workDir: string; coordinator: ReturnType<typeof createInterceptCoordinator>; emit: (event: SequencedEvent) => void; recordPiEventsPath?: string}`；`run(task: StartTask): Promise<void>`、幂等 `cancel(): Promise<void>`、只读 `disposed: boolean`。记录器 `createRawEventRecorder(path: string): {record(raw: unknown): void; close(): Promise<void>}` 只由运行器调用，关闭完成才认为录制完整。
 
-- [ ] **Step 1：写失败测试**，覆盖纯文本、工具后继续回答、重试后最终结束、重试耗尽、不可达、初始化失败；使用 0B 允许的测试重试配置，给每个错误用例明确总时限。事件必须有唯一最后终止、序号连续。真实 bash 在临时目录产生 marker 验证 allow；block、确认拒绝、超时均无 marker，模型收到原因。
-- [ ] **Step 2：补取消与来源测试并运行**，`pnpm vitest run tests/integration/pi-engine.test.ts`：慢流、等待决定、等待确认、正在运行的延迟 marker 工具均可取消；重复 cancel 和结束竞态；disposed=true、pendingCount=0、工具停止且观察到原定 marker 时间后仍无副作用。调用 Task 5 读取规则，修改任务分支后启动两次独立引擎，验证规则不变。
-- [ ] **Step 3：实现运行及清理**，启动后先发布 run.started，再创建会话；正常结束仅在 0B 确认的最终静止且无未完成工作时选择 settled，不能把每个模型错误事件直接作为最终失败而跳过 pi 重试。停止时先取消协调等待、abort 工具/模型、dispose 会话、关闭录制并清理临时目录，再由 Task 3 发布一次终止。清理限时 5 秒；超时/失败仍由同一发布器发送一次带清理原因的 run.failed，然后让 run/cancel 拒绝以供 runner 非零退出，不假报 disposed=true。
+- [ ] **Step 1：写失败测试**，覆盖纯文本、工具后继续回答、重试后最终结束、重试耗尽、不可达、初始化失败（分两条路径：加载器失败与会话创建失败，两者都只有 run.failed、没有 run.started）；使用 0B 允许的测试重试配置，给每个错误用例明确总时限。事件必须有唯一最后终止、序号连续。真实 bash 在临时目录产生 marker 验证 allow；block、确认拒绝、超时均无 marker，模型收到原因。
+- [ ] **Step 2：补取消与来源测试并运行**，`pnpm vitest run tests/integration/pi-engine.test.ts`：慢流、等待决定、等待确认、正在运行的延迟 marker 工具均可取消；重复 cancel 和结束竞态；disposed=true、pendingCount=0、工具停止且观察到原定 marker 时间后仍无副作用。调用 Task 5 读取规则，修改任务分支后启动两次独立引擎，验证规则不变，且两次 `run.started` 的 snapshot.contextFiles 哈希相同，并等于基准引用中的文件内容哈希（T1 验收 11）。
+- [ ] **Step 3：实现运行及清理**，先调用 8A 的 createPiSession（创建受限加载器、回读并创建会话），成功后发布带 snapshot 的 run.started，再开始 prompt；加载器或会话创建失败时只发布带原因的 run.failed，不发布 run.started（与 Task 4 契约一致）；正常结束仅在 0B 确认的最终静止且无未完成工作时选择 settled，不能把每个模型错误事件直接作为最终失败而跳过 pi 重试。停止时先取消协调等待、abort 工具/模型、dispose 会话、关闭录制并清理临时目录，再由 Task 3 发布一次终止。清理限时 5 秒；超时/失败仍由同一发布器发送一次带清理原因的 run.failed，然后让 run/cancel 拒绝以供 runner 非零退出，不假报 disposed=true。
 - [ ] **Step 4：同命令通过并提交** `feat(step01): pi 引擎运行与取消清理`。验证诊断文件来自 SDK 原始订阅，且不会经 emit 泄漏原始事件或密钥。
 
 ### Task 9A：runner 服务与进程入口
@@ -304,7 +306,7 @@
 
 **Interfaces:** `EngineClient.connect(url: string): Promise<EngineClient>`；`start(task: Omit<StartTask, "type" | "requestId">): Promise<void>` 在 accepted 后 resolve，启动拒绝时 reject；`onEvent(cb)` 接收 SequencedEvent；`onError(cb)` 接收 ProtocolError；`onIntercept(cb: (req: ToolRequest) => Promise<Decision>)`；`onConfirm(cb: (req: ConfirmRequest) => Promise<Confirmation>)`；`cancel(): void`；`waitForEnd(): Promise<SequencedEvent>`；`close(): Promise<void>`。
 
-- [ ] **Step 1：写失败测试**，验证启动拒绝不挂起、文本/终止、拒绝原因透传、确认人的 by 与理由透传。初次启动拒绝时 waitForEnd 同样 reject；运行中第二次 start 被拒绝不破坏原有等待。终止前断线 reject（不是伪造 run.cancelled），终止后正常关闭不覆盖结果；重复 waitForEnd 得到缓存结果。callback 抛错或没有 handler 时发送带原因的拒绝。
+- [ ] **Step 1：写失败测试**，验证启动拒绝不挂起、文本/终止、拒绝原因透传、确认人的 by 与理由透传；accepted 后第一个事件就是 run.failed（没有 run.started）时，waitForEnd 正常返回该终止事件。初次启动拒绝时 waitForEnd 同样 reject；运行中第二次 start 被拒绝不破坏原有等待。终止前断线 reject（不是伪造 run.cancelled），终止后正常关闭不覆盖结果；重复 waitForEnd 得到缓存结果。callback 抛错或没有 handler 时发送带原因的拒绝。
 - [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/engine-client.test.ts`。
 - [ ] **Step 3：实现客户端**，使用双向校验及 requestId 关联。非致命错误仅通知对应调用或 onError，非法服务端消息使连接失败并结算等待；close 释放 listener/等待项。start 前注册回调，避免漏掉开始后的即时请求。
 - [ ] **Step 4：同命令通过并提交** `feat(step01): TS 引擎客户端与错误传播`。
@@ -382,7 +384,7 @@
 **Interfaces:** 输入全部小任务证据；输出整体审查结果、逐项验收表、实现说明和讲解自测结果。
 
 - [ ] **Step 1：全部检查与整体代码审查**，运行 `pnpm test && pnpm typecheck && pnpm build && pnpm check:pi`，实际读输出；请求整体代码审查。审查修复先补复现测试，验证修复并更新受影响记录；若改动影响真实验收结果，重跑对应验收。最终检查须针对修复后的代码，不能沿用过期证据。
-- [ ] **Step 2：逐条核对 T1 验收 1–10**，使用下表定位产物；每条记录测试名、命令结果、契约/说明位置及代码版本。额外检查锁文件、依赖来源、patch 和源码复用情况，不能只凭 check:pi。未执行项明确标注且不通过本关卡。
+- [ ] **Step 2：逐条核对 T1 验收 1–11**，使用下表定位产物；每条记录测试名、命令结果、契约/说明位置及代码版本。额外检查锁文件、依赖来源、patch 和源码复用情况，不能只凭 check:pi。未执行项明确标注且不通过本关卡。
 - [ ] **Step 3：确认评测关卡适用性**，引用 tasks.md 的 T1 说明：五题仅为验收，本任务不适用 workflow 3.4 第 3 项，不增加正式评测。
 - [ ] **Step 4：完成实现说明**，追加做了什么、设计意图、代码地图、计划偏差、验证与限制、3–5 道讲解自测题；删除执行账本前将裁决、修复及复现测试转存到实现说明。保留早期核实和失败尝试，不覆写历史记录。
 - [ ] **Step 5：收尾一致性检查**，核对 CLAUDE.md 索引、文档链接、契约/代码、任务路径和状态；T1 尚未获作者同意时保持 `[~]`。提交 `docs(step01): 实现说明与验收核对`。
@@ -405,3 +407,4 @@
 | 8 | 0A 开关核实；7 配置、提示词、扩展、skill 与父级/用户目录负向验证 |
 | 9 | 0A 内置 MCP 配置和工具发现探测记录 |
 | 10 | 4 上下文协议；5 调用方读取；7 多仓库注入；8B 完整链路与分支篡改测试 |
+| 11 | 3 `run.started` snapshot 契约；4 首个事件规则；7 加载器回读与哈希；8A 快照与会话使用同一加载器；8B 分支篡改后 snapshot 不变且等于基准内容；9B 客户端处理“先失败”的事件流 |
