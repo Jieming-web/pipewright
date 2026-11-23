@@ -279,7 +279,7 @@
 
 **Files:** Create `packages/engine-runner/src/pi-engine.ts`、`packages/engine-runner/src/raw-event-recorder.ts`、`tests/integration/pi-engine.test.ts`。
 
-**Interfaces:** `PiEngine` 构造参数 `{modelsPath: string; workDir: string; coordinator: ReturnType<typeof createInterceptCoordinator>; emit: (event: SequencedEvent) => void; recordPiEventsPath?: string}`；`run(task: StartTask): Promise<void>`、幂等 `cancel(): Promise<void>`、只读 `disposed: boolean`。记录器 `createRawEventRecorder(path: string): {record(raw: unknown): void; close(): Promise<void>}` 只由运行器调用，关闭完成才认为录制完整。
+**Interfaces:** `PiEngine` 构造参数 `{modelsPath: string; workDir: string; sessionsRoot: string; coordinator: ReturnType<typeof createInterceptCoordinator>; emit: (event: SequencedEvent) => void; recordPiEventsPath?: string}`；`run(task: StartTask): Promise<void>`、幂等 `cancel(): Promise<void>`、只读 `disposed: boolean`。`sessionsRoot` 为必填，原样传给 createPiSession，不提供缺省值（作者 2026-11-23 决定）；每次 run 新建自己的 scratchDir 并在清理时删除。记录器 `createRawEventRecorder(path: string): {record(raw: unknown): void; close(): Promise<void>}` 只由运行器调用，关闭完成才认为录制完整。
 
 - [ ] **Step 1：写失败测试**，覆盖纯文本、工具后继续回答、重试后最终结束、重试耗尽、不可达、初始化失败（分两条路径：加载器失败与会话创建失败，两者都只有 run.failed、没有 run.started）；使用 0B 允许的测试重试配置，给每个错误用例明确总时限。事件必须有唯一最后终止、序号连续。真实 bash 在临时目录产生 marker 验证 allow；block、确认拒绝、超时均无 marker，模型收到原因。
 - [ ] **Step 2：补取消与来源测试并运行**，`pnpm vitest run tests/integration/pi-engine.test.ts`：慢流、等待决定、等待确认、正在运行的延迟 marker 工具均可取消；重复 cancel 和结束竞态；disposed=true、pendingCount=0、工具停止且观察到原定 marker 时间后仍无副作用。调用 Task 5 读取规则，修改任务分支后启动两次独立引擎，验证规则不变，且两次 `run.started` 的 snapshot.contextFiles 哈希相同，并等于基准引用中的文件内容哈希（T1 验收 11）。
@@ -292,7 +292,7 @@
 
 **Files:** Create `packages/engine-runner/src/runner-server.ts`、`packages/engine-runner/src/main.ts`、`tests/integration/runner-server.test.ts`。
 
-**Interfaces:** `startRunnerServer(opts: {port: number; modelsPath: string; workDir: string; interceptTimeoutMs?: number; confirmTimeoutMs?: number; recordPiEventsPath?: string}): Promise<{port: number; close(): Promise<void>}>`。CLI 提供对应 `--port`、`--models`、`--workdir`、`--intercept-timeout-ms`、`--confirm-timeout-ms`、`--record-pi-events`；stdout 仅打印一行 `RUNNER_LISTENING <port>`，诊断到 stderr。
+**Interfaces:** `startRunnerServer(opts: {port: number; modelsPath: string; workDir: string; sessionsRoot: string; interceptTimeoutMs?: number; confirmTimeoutMs?: number; recordPiEventsPath?: string}): Promise<{port: number; close(): Promise<void>}>`。CLI 提供对应 `--port`、`--models`、`--workdir`、`--sessions-root`、`--intercept-timeout-ms`、`--confirm-timeout-ms`、`--record-pi-events`；`sessionsRoot`/`--sessions-root` 必填，原样传给 PiEngine（作者 2026-11-23 决定）；stdout 仅打印一行 `RUNNER_LISTENING <port>`，诊断到 stderr。
 
 - [ ] **Step 1：写失败测试**，用原生 ws 客户端（不依赖 Task 9B）验证 accepted/事件流、决定/确认往返、unsupported 不执行、重复连接/启动及格式错误；正常终止或断线后 close 可完成。
 - [ ] **Step 2：运行并确认失败**，`pnpm vitest run tests/integration/runner-server.test.ts`。
