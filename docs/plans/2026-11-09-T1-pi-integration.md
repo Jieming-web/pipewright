@@ -175,6 +175,7 @@
 - `TerminalEvent`：`run.settled`、`run.failed {reason}`、`run.cancelled`。`AgentEvent = ProgressEvent | TerminalEvent`；`SequencedEvent = AgentEvent & {sessionId: string; seq: number; at: string}`，at 为 ISO 时间。
 - `RunSnapshot`：`{engine: {name: string; version: string}; model: {provider: string; id: string}; contextFiles: {repo: string; path: string; sourceCommit: string; sha256: string}[]}`。engine.name 用字符串（T12 起还有 Claude Code 适配器），pi 适配器填 `"pi"`，version 取运行器解析到的 pi 包版本；model 取 8A 实际注册并交给会话的模型（provider 与 id），不照抄 StartTask；contextFiles 来自 Task 7 加载器回读的实际加载内容，sha256 由运行器按实际加载的内容计算，不信任调用方传入的值（T1 验收 11）。
 - `convertPiEvent(raw: unknown): ProgressEvent[]` 只转换进度，不产生终止；未知事件返回空数组。错误与最终静止由引擎按 0B 的语义处理。
+- **重试残留的文字片段（2026-11-22 作者决定 ①）**：失败那次尝试已经发出的 `text_delta` 照常转换成 `text.delta`，不撤回、不加标记；契约写明“`text.delta` 可能含失败尝试的文字，最终文本以 `message.completed` 为准”。为保证这一点，`message.completed` 只由 `stopReason` 不是 `error`/`aborted` 的助手消息结束事件产生（失败尝试的半截消息不产生 `message.completed`）。转换只读事件中的 `delta` 与 `message_end` 的消息内容，不读会继续变化的 `partial` 字段（2B 样本 README）。
 - `createRunEvents(sessionId: string, emit: (event: SequencedEvent) => void): { publish(event: ProgressEvent): void; finish(event: TerminalEvent): void }` 是唯一序号分配方；从 1 连续递增，finish 后忽略后续发布及重复 finish。
 
 - [ ] **Step 1：写失败测试**，重放 2B 样本验证文本、工具关联、未知事件、重试中间结束不产生终止；发布器验证 started/工具/文本/终止共享序号、只发一次终止且终止后无事件；protocol 校验 `run.started` 的 snapshot 字段（缺字段或 sha256 格式不对时拒绝）。
