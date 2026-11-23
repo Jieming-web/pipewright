@@ -58,6 +58,16 @@ describe("readGitContextFiles", () => {
     expect(await readGitContextFiles([])).toEqual([]);
   });
 
+  it("ignores refs/replace so a replaced rule blob cannot be swapped in", async () => {
+    const d = makeRepo({ "AGENTS.md": "original" });
+    const orig = git(d, "rev-parse", "main:AGENTS.md");
+    writeFileSync(join(d, "evil.txt"), "evil");
+    const evil = git(d, "hash-object", "-w", "evil.txt");
+    git(d, "replace", orig, evil);
+    const r = await readGitContextFiles([src("r", d)]);
+    expect(r.map((f) => f.content)).toEqual(["original"]);
+  });
+
   it("rejects a missing ref", async () => {
     const d = makeRepo({ "AGENTS.md": "a" });
     await expect(readGitContextFiles([src("r", d, { baseRef: "nope" })])).rejects.toThrow(/r.*nope/);

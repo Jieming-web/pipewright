@@ -20,7 +20,8 @@ export interface GitContextSource {
 async function git(repo: string, repoDir: string, args: string[]): Promise<Buffer> {
   try {
     // --literal-pathspecs: paths are file names, never globs/magic
-    const { stdout } = await run("git", ["--literal-pathspecs", "-C", repoDir, ...args], {
+    // --no-replace-objects: a refs/replace/* in repoDir must not swap the base-ref blob/commit (flag, not env: GIT_* is stripped)
+    const { stdout } = await run("git", ["--literal-pathspecs", "--no-replace-objects", "-C", repoDir, ...args], {
       encoding: "buffer",
       maxBuffer: MAX,
       env: gitEnv(),
