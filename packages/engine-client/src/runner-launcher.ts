@@ -4,8 +4,8 @@ import { EngineClient } from "./engine-client.js";
 /** engine.md 进程退出：须明显长于 runner 内部收尾上限（清理 5 + 兜底 1 + 等关闭 1 = 7 秒） */
 export const STOP_TIMEOUT_MS = 10_000;
 
-/** at：退出时刻，performance.now() */
-export type RunnerExit = { code: number | null; signal: NodeJS.Signals | null; at: number };
+/** at：退出时刻，performance.now()；error：进程未能启动（此时 code/signal 为 null） */
+export type RunnerExit = { code: number | null; signal: NodeJS.Signals | null; at: number; error?: Error };
 
 // macOS 上组内只剩未回收的僵尸时 kill(-pgid) 报 EPERM：视同没有存活进程
 const gone = (e: unknown) => ["ESRCH", "EPERM"].includes((e as NodeJS.ErrnoException).code!);
@@ -27,8 +27,8 @@ export function groupAlive(pgid: number): boolean {
 }
 
 export interface RunnerProcess {
-  /** 也是进程组号（detached） */
-  readonly pid: number;
+  /** 也是进程组号（detached）；进程未能启动时为 undefined */
+  readonly pid: number | undefined;
   /** stdout 的 RUNNER_LISTENING 端口；runner 先退出则 reject */
   readonly listening: Promise<number>;
   readonly exit: Promise<RunnerExit>;
@@ -53,7 +53,11 @@ export function spawnRunner(opts: { args: string[]; cwd?: string; env?: NodeJS.P
   const child = spawn(process.execPath, opts.args, { cwd: opts.cwd, env: opts.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let err = "";
   child.stderr.on("data", (d) => (err += d));
-  const exit = new Promise<RunnerExit>((ok) => child.on("exit", (code, signal) => ok({ code, signal, at: performance.now() })));
+  const exit = new Promise<RunnerExit>((ok) => {
+    child.on("exit", (code, signal) => ok({ code, signal, at: performance.now() }));
+    // 未能启动（如 ENOENT）只发 error、不发 exit；启动之后的 error（如 kill 失败）仍等 exit
+    child.on("error", (error) => child.pid === undefined && ok({ code: null, signal: null, at: performance.now(), error }));
+  });
   const listening = new Promise<number>((ok, fail) => {
     let out = "";
     child.stdout.on("data", (d) => {
@@ -61,7 +65,9 @@ export function spawnRunner(opts: { args: string[]; cwd?: string; env?: NodeJS.P
       const m = /^RUNNER_LISTENING (\d+)\n/.exec(out);
       if (m) ok(Number(m[1]));
     });
-    void exit.then(({ code, signal }) => fail(new Error(`runner exited with code ${code} (signal ${signal}) before listening`)));
+    void exit.then(({ code, signal, error }) =>
+      fail(new Error(error ? `runner failed to start: ${error.message}` : `runner exited with code ${code} (signal ${signal}) before listening`)),
+    );
   });
   listening.catch(() => {});
   let stopAt: number | undefined;
@@ -69,7 +75,7 @@ export function spawnRunner(opts: { args: string[]; cwd?: string; env?: NodeJS.P
   let client: EngineClient | undefined;
 
   return {
-    pid: child.pid!,
+    pid: child.pid,
     listening,
     exit,
     stderr: () => err,
@@ -93,7 +99,7 @@ export function spawnRunner(opts: { args: string[]; cwd?: string; env?: NodeJS.P
       let timer: NodeJS.Timeout | undefined;
       const exited = await Promise.race([exit, new Promise<undefined>((ok) => (timer = setTimeout(() => ok(undefined), Math.max(0, stopAt! + stopTimeoutMs - performance.now()))))]);
       clearTimeout(timer);
-      if (!exited) killGroup(child.pid!);
+      if (!exited && child.pid !== undefined) killGroup(child.pid);
       const e = await exit;
       return { ...e, forced: !exited, stopWaitMs: Math.max(0, Math.round(e.at - stopAt!)) };
     },

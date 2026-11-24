@@ -50,7 +50,7 @@ async function launch(turns: ScriptedTurn[], args: string[] = []) {
     // TMPDIR 指向测试根目录：引擎 scratchDir 建在 os.tmpdir() 下，便于断言跨进程清理
     env: { ...process.env, TMPDIR: p("tmp") },
   });
-  groups.push(runner.pid);
+  if (runner.pid !== undefined) groups.push(runner.pid);
   exits.push(runner.exit);
   const port = await runner.listening;
   return { s, port, runner, exit: runner.exit, err: runner.stderr, listeningAt: performance.now() };
@@ -395,4 +395,19 @@ describe.sequential("runner 进程：清理失败与超时（故障注入）", (
     expect(stopped.at - t0).toBeLessThan(10_000 + 1000);
     expect(groupAlive(groups[0]!)).toBe(false);
   }, 30_000);
+});
+
+describe.sequential("启动者：runner 进程未能启动", () => {
+  // 不存在的 cwd 让 spawn 发 error（ENOENT）而不发 exit，与找不到可执行文件同一路径
+  it("listening 带原因 reject、exit 结算、stop 立即返回且不强杀、connect reject，调用方进程不崩溃", async () => {
+    const runner = spawnRunner({ args: [MAIN], cwd: p("no-such-dir") });
+    expect(runner.pid).toBeUndefined();
+    await expect(runner.listening).rejects.toThrow(/ENOENT/);
+    expect(await runner.exit).toMatchObject({ code: null, signal: null, error: expect.objectContaining({ code: "ENOENT" }) });
+    await expect(runner.connect()).rejects.toThrow(/ENOENT/);
+    runner.terminate();
+    const t0 = performance.now();
+    expect(await runner.stop()).toMatchObject({ forced: false, code: null });
+    expect(performance.now() - t0).toBeLessThan(500);
+  }, 20_000);
 });
