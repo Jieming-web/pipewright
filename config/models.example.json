@@ -18,6 +18,7 @@
       "baseUrl": "http://127.0.0.1:11434/v1",
       "api": "openai-completions",
       "apiKey": "ollama",
+      "compat": { "maxTokensField": "max_tokens" },
       "models": [{ "id": "qwen3-4b-instruct-2507-ctx16k", "reasoning": false, "input": ["text"], "contextWindow": 16384, "maxTokens": 4096 }]
     }
   }

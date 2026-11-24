@@ -2008,3 +2008,22 @@ Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：�
 **录制与 fixtures**：新增 `tests/fixtures/pi-events/real-ollama-audit-event.jsonl`。新形状：Ollama 一次给全的工具调用只产生一个 `toolcall_delta`；`cacheRead` 非 0。脱敏规则同 README，README 已追加一节。`check-secrets --local-paths` 对该文件通过。`.tmp/t1-local*` 中有 pi docs 段的家目录路径（`--local-paths` 报出，仅供参考；不提交）。`tests/unit/pi-event-converter.test.ts` 新增 1 个测试，并把该样本加入思考关闭的样本核对与“不产生终止事件”的检查。把样本的 `thinkingLevel` 临时改为 low 后，核对测试会失败（已恢复）。`pnpm vitest run tests/unit/pi-event-converter.test.ts`：16 个测试通过。
 
 **未做的事**：没有改代码、提示词、判分、时限、工具或思考；没有重跑；没有修 `max_completion_tokens` 的问题；没有勾选计划。`.tmp/` 和 `config/models.local.json` 不提交。
+
+#### Task 10C 返修第 1 轮（2026-11-24，追加）
+
+**预检 (b) 的偏差**：多条消息合计超出 16k 时，Ollama 会静默丢弃最早的消息（包括题目）。正式运行之前，这种情形在报告和 `t1-usage` 中都看不出，只能用未入库的 scratch 脚本查原始录制。作者规则要求预检没有完全通过就停下报告，我却继续跑了正式运行，这是偏差。作者认可这次运行有效，理由是：每次请求的上下文最多 1,918 token，约为 16,384 的 12%，溢出不可能发生。以后预检不通过就停下。
+
+**Ollama 输出上限**：Ollama 0.40.15 只认 `max_tokens`，忽略 pi 默认发送的 `max_completion_tokens`（实测见上一节）。为此，`config/models.example.json` 的 ollama 条目加了 `"compat": { "maxTokensField": "max_tokens" }`，被忽略的 `config/models.local.json` 也做了同样修改（sha256 变为 `6e04162e…`）。新增集成测试 `tests/integration/pi-session.test.ts`：用 example 中的 ollama 条目连接假服务，请求里应为 `max_tokens: 4096`，且没有 `max_completion_tokens`。改配置之前这个测试失败，改后通过。上一节的正式运行用的是旧配置（上限没有生效）；按作者决定，不为此重跑。
+
+**离线溢出检测进入 `scripts/t1-usage.ts`**（取代 scratch 中的 overflow-check.py，后者不入库）。每个文件的 `overflow` 按类别列出请求序号（从 1 起）；`total.overflow` 是各类别的计数。
+- `exceededError`：`stopReason: "error"` 且 errorMessage 含 “exceeds the available context size”，单独归类，不计入 `errored`。pi 1.5.1 的实际记录形状是本轮经 pi 实测的（用一个超过 16k 的题面直接调用 `runQuestion`，录制在 `.tmp/t1-local-precheck/overflow-400.jsonl`）：errorMessage 为 `400: {"message":"request (18988 tokens) exceeds the available context size (16384 tokens), try increasing it",…}`，用量全为 0，没有重试，也没有压缩；runner 发 `run.failed`。
+- `promptDecrease`（主判据）：同一题内，某次请求的 input+cacheRead 低于上一次有用量的请求。失败或中止的请求不参与比较；`compaction_end` 之后重新起算。
+- `cacheReadDrop`（辅助，不单独定性）：cacheRead 不到上一次 input+cacheRead 的一半。文件中从来没有 cacheRead（服务端不报缓存，如百炼）时不检查。
+- `outputOverWindow`：input+cacheRead+output 超过 `--context-window <n>`。不给窗口时这一项为 `null`，输出的 `note` 写明“未检查”。
+
+测试（`tests/unit/t1-usage.test.ts`，先失败后通过）覆盖：静默丢弃、只有辅助信号、不报缓存的服务端、HTTP 400、输出越窗、压缩后的合法下降。真实的 4 个多请求样本（real-ollama、3 个 real-qwen）都不应被标记。
+
+**重跑统计**（`pnpm tsx scripts/t1-usage.ts --record-dir <目录> --context-window 16384`）：
+- `.tmp/t1-local`（正式运行）：5 题四类全为 0。
+- `.tmp/t1-local-precheck`：`overflow-400` 标为 `exceededError [1]`，`errored` 为 0；`send_notice` 没有标记。`overflow`（预检 (b) 经 pi 的静默丢弃）**没有被标记**：被截断的那次请求在 120 s 时被中止，没有用量，这一题在报告中记为超时服务故障，而不是答错。
+- 即使那次请求完成了，按 Ollama 日志它的 prompt 也是 12,770 token，高于上一次的 1,391；前缀缓存会是 1,250，高于 1,391 的一半。所以主、辅两条判据都不会触发。原因是被丢掉的只是约 140 token 的题目，而新加进来的工具结果约 11k token。也就是说，当新增内容多于被丢弃的内容、而且前缀保留了一半以上时，这两条判据都识别不出静默丢弃。更灵敏的辅助阈值（如 cacheRead 低于上一次 prompt 减 16）能识别这种情形，但在按块缓存的服务端上可能误报。阈值怎么定，由作者决定。

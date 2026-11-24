@@ -18,6 +18,7 @@ const RULES = [{ repo: "alpha", path: "AGENTS.md", content: "CALLER_RULE_ALPHA �
 const TEXT: ScriptedTurn[] = [{ kind: "text", chunks: ["ok"] }];
 const EXAMPLE = join(import.meta.dirname, "../../config/models.example.json");
 const QWEN = JSON.parse(readFileSync(EXAMPLE, "utf8")).providers["qwen-api"];
+const OLLAMA = JSON.parse(readFileSync(EXAMPLE, "utf8")).providers.ollama;
 
 let root: string;
 let servers: FakeOpenAIServer[];
@@ -145,6 +146,17 @@ describe.sequential("createPiSession", () => {
     session.dispose();
     expect(s.requests[0]).toMatchObject({ enable_thinking: true, thinking_budget: budget, max_completion_tokens: 8192 });
     expect(s.requests[0]).not.toHaveProperty("reasoning_effort"); // supportsReasoningEffort:false
+  });
+
+  // 10C：Ollama 0.40.15 只认 max_tokens、忽略 max_completion_tokens（实测见实现说明 Task 10C），ollama 条目须让 pi 发 max_tokens
+  it("ollama 条目（models.example.json）：输出上限以 max_tokens 发送，不发 max_completion_tokens", async () => {
+    const s = await serve(TEXT);
+    writeModels({ fake: fakeProvider(s.baseUrl, { compat: OLLAMA.compat, models: [{ ...OLLAMA.models[0], id: "fake-model" }] }) });
+    const { session } = await open();
+    await session.prompt("go");
+    session.dispose();
+    expect(s.requests[0]).toMatchObject({ max_tokens: 4096 });
+    expect(s.requests[0]).not.toHaveProperty("max_completion_tokens");
   });
 
   it("不支持思考的模型（reasoning:false）：pi 把任何级别降为 off，请求里没有思考字段", async () => {

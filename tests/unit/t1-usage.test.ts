@@ -6,8 +6,12 @@ import { countFile, summarizeDir } from "../../scripts/t1-usage.js";
 
 const FIX = join(import.meta.dirname, "../fixtures/pi-events");
 const count = (name: string) => countFile(name, readFileSync(join(FIX, `${name}.jsonl`), "utf8"));
-const end = (stopReason: string, usage?: object) =>
-  JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason, ...(usage ? { usage } : {}) } });
+const end = (stopReason: string, usage?: object, errorMessage?: string) =>
+  JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason, ...(usage ? { usage } : {}), ...(errorMessage ? { errorMessage } : {}) } });
+const req = (input: number, cacheRead: number, output: number, stopReason = "toolUse") =>
+  end(stopReason, { input, cacheRead, output, totalTokens: input + cacheRead + output });
+// pi 1.5.1 对 Ollama HTTP 400 的真实记录（10C 返修 1 经 pi 实测）：stopReason error、用量全 0
+const EXCEEDED = '400: {"message":"request (18988 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"invalid_request_error","param":null,"code":null}';
 
 describe("countFile: one request = one assistant message_end", () => {
   it("text-only: one request, usage summed", () => {
@@ -51,7 +55,49 @@ describe("countFile: one request = one assistant message_end", () => {
   });
 });
 
+describe("countFile: context overflow (10C)", () => {
+  it("normal multi-request real files are not flagged (prompt grows, cache prefix chain intact)", () => {
+    for (const n of ["real-ollama-audit-event", "real-qwen-api-send-notice", "real-qwen-api-run2-normalize-name", "real-qwen-api-run3-thinking-send-notice"])
+      expect(countFile(n, readFileSync(join(FIX, `${n}.jsonl`), "utf8"), 16384).overflow).toEqual({ exceededError: [], promptDecrease: [], cacheReadDrop: [], outputOverWindow: [] });
+  });
+  it("silent drop: a request whose input + cacheRead is lower than the previous one is flagged; cacheRead collapse is the supporting signal", () => {
+    const r = countFile("x", [req(1408, 0, 47), req(57, 1410, 43), req(600, 12, 30, "stop")].join("\n"));
+    expect(r.overflow).toMatchObject({ promptDecrease: [3], cacheReadDrop: [3] });
+  });
+  it("cacheRead collapse alone (prompt still grew) is reported only as the supporting signal", () => {
+    const r = countFile("x", [req(34, 0, 2), req(6633, 12, 4, "stop")].join("\n"));
+    expect(r.overflow).toMatchObject({ promptDecrease: [], cacheReadDrop: [2] });
+  });
+  it("cacheRead check is skipped for providers that never report cache (all cacheRead 0)", () => {
+    expect(countFile("x", [req(1900, 0, 30), req(2000, 0, 20, "stop")].join("\n")).overflow.cacheReadDrop).toEqual([]);
+  });
+  it("HTTP 400 exceeds the available context size: own category, not counted as errored, zero usage does not break the chain", () => {
+    const r = countFile("x", [req(1400, 0, 40), end("error", { input: 0, cacheRead: 0, output: 0, totalTokens: 0 }, EXCEEDED), req(10, 1440, 5, "stop")].join("\n"));
+    expect(r).toMatchObject({ requests: 3, errored: 0, overflow: { exceededError: [2], promptDecrease: [] } });
+    expect(countFile("y", end("error", undefined, "500: boom")).errored).toBe(1);
+  });
+  it("output crossing the window: input + cacheRead + output > --context-window; skipped (null) without a window", () => {
+    const text = [req(15478, 12, 2330, "stop")].join("\n");
+    expect(countFile("x", text, 16384).overflow.outputOverWindow).toEqual([1]);
+    expect(countFile("x", text).overflow.outputOverWindow).toBeNull();
+  });
+  it("a compaction between requests resets the prompt chain (a legitimate decrease is not flagged)", () => {
+    const r = countFile("x", [req(9000, 0, 40), JSON.stringify({ type: "compaction_end" }), req(2000, 0, 30, "stop")].join("\n"));
+    expect(r.overflow.promptDecrease).toEqual([]);
+  });
+});
+
 describe("summarizeDir", () => {
+  it("totals overflow counts per category; without a window the output says the crossing check was skipped", () => {
+    const d = mkdtempSync(join(tmpdir(), "t1-usage-"));
+    writeFileSync(join(d, "a.jsonl"), end("error", undefined, EXCEEDED));
+    writeFileSync(join(d, "b.jsonl"), [req(1408, 0, 47), req(600, 12, 30, "stop")].join("\n"));
+    const s = summarizeDir(d);
+    expect(s.total.overflow).toEqual({ exceededError: 1, promptDecrease: 1, cacheReadDrop: 1, outputOverWindow: null });
+    expect(s.contextWindow).toBeNull();
+    expect(s.note).toMatch(/--context-window/);
+    expect(summarizeDir(d, 16384)).toMatchObject({ contextWindow: 16384, total: { overflow: { outputOverWindow: 0 } } });
+  });
   it("throws when the directory holds no .jsonl files (typo'd path must not look like 0 requests)", () => {
     const d = mkdtempSync(join(tmpdir(), "t1-usage-"));
     writeFileSync(join(d, "note.txt"), "x");
