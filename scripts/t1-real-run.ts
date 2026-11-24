@@ -51,6 +51,8 @@ export type QuestionResult = {
   denials: { toolName: string; input: unknown }[];
   /** 未声明工具的调用：pi 直接回 "Tool X not found"，不经过拦截 */
   undeclaredCalls: { toolName: string; input: unknown }[];
+  /** 模型请求数、其中被中止的请求与用量：脚本只收统一运行事件，拿不到，如实写 null 与原因 */
+  modelRequests: { count: null; aborted: null; usage: null; note: string };
   durationMs: number;
   runner: { pid?: number; exitCode: number | null; signal: string | null; forced: boolean; stopWaitMs?: number; stderr: string };
 };
@@ -85,6 +87,8 @@ export type Report = {
   };
 };
 
+const MODEL_REQUESTS_NOTE =
+  "统一运行事件（agent-events.md）不含模型请求边界、stopReason（含 aborted）与用量；本脚本不解析 pi 原始事件，无法给出请求数、被中止的请求与费用，需从 runner 录制的原始事件另行统计";
 const sha = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const sampleFiles = (dir: string) => readdirSync(dir).filter((f) => /\.(py|md)$/.test(f)).sort();
@@ -159,9 +163,11 @@ function piResolve(input: string, cwd: string): string {
  */
 export function toolDecision({ toolName, input }: Pick<ToolRequest, "toolName" | "input">, copyDir: string): Decision {
   if (!(TOOLS as readonly string[]).includes(toolName)) return { decision: "block", reason: `此任务不提供 ${toolName}，可用工具：${TOOL_LIST}` };
-  const raw = (input as { path?: unknown } | null)?.path;
-  const path = toolName === "grep" && input !== null && raw === undefined ? "." : raw;
   try {
+    // 拿不准就拒绝：输入不是普通对象时不依赖 pi 在拦截之前的参数校验
+    if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("not an object");
+    const raw = (input as { path?: unknown }).path;
+    const path = toolName === "grep" && raw === undefined ? "." : raw;
     if (typeof path !== "string") throw new Error("no path");
     const root = realpathSync(copyDir);
     const rel = relative(root, realpathSync(piResolve(path, root)));
@@ -169,6 +175,28 @@ export function toolDecision({ toolName, input }: Pick<ToolRequest, "toolName" |
   } catch {} // 不存在或无法解析：拒绝
   return { decision: "block", reason: `只能访问仓库副本内已存在的路径，请用相对路径调用 ${TOOL_LIST}` };
 }
+
+/**
+ * 刹车计数：tool.started 事件（含 pi 直接回 not found 的未声明工具）与拦截共用一个计数，按 callId 去重，
+ * 两边谁先到都先计数，拦截判定时不依赖事件已到。越限时调用 onExceeded 一次；返回本次调用是否越限。
+ */
+export function createBrake(max: number, onExceeded: () => void) {
+  const order = new Map<string, number>();
+  let exceeded = false;
+  const count = (callId: string) => {
+    if (!order.has(callId)) order.set(callId, order.size + 1);
+    const over = order.get(callId)! > max;
+    if (over && !exceeded) {
+      exceeded = true;
+      onExceeded();
+    }
+    return over;
+  };
+  return { onToolStarted: count, onIntercept: count };
+}
+
+/** runner 子进程的环境；rg 版本也在同样的环境里探测 */
+const runnerEnv = (tmp: string): NodeJS.ProcessEnv => ({ ...process.env, TMPDIR: tmp });
 
 function buildPrompt(q: Question, files: string[]): string {
   return [
@@ -191,7 +219,7 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
   const root = realpathSync(mkdtempSync(join(tmpdir(), "fp-t1-")));
   const r: QuestionResult = {
     id: q.id, workDir: join(root, "repo"), recordFile: join(resolve(o.recordDir), `${q.id}.jsonl`),
-    answer: null, denials: [], undeclaredCalls: [], durationMs: 0, runner: { exitCode: null, signal: null, forced: false, stderr: "" },
+    answer: null, denials: [], undeclaredCalls: [], modelRequests: { count: null, aborted: null, usage: null, note: MODEL_REQUESTS_NOTE }, durationMs: 0, runner: { exitCode: null, signal: null, forced: false, stderr: "" },
   };
   const failures: string[] = [];
   const TIMEOUT = new Error(`timed out after ${timeoutMs} ms`);
@@ -214,32 +242,25 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
       args: ["--import", "tsx", MAIN, "--port", "0", "--models", resolve(o.modelsPath), "--workdir", r.workDir, "--sessions-root", join(root, "sessions"), "--record-pi-events", r.recordFile, "--tools", TOOLS.join(",")],
       cwd: ROOT,
       // runner 的 scratchDir 建在 TMPDIR 下：指向本题临时目录，强杀后也由下面的 finally 一并删除
-      env: { ...process.env, TMPDIR: join(root, "tmp") },
+      env: runnerEnv(join(root, "tmp")),
       stopTimeoutMs: o.stopTimeoutMs,
     });
     r.runner.pid = runner.pid;
     client = await within(runner.connect());
-    // 刹车：tool.started 事件（含 pi 直接回 not found 的未声明工具）与拦截共用一个计数，按 callId 去重；
-    // 拦截自己先计数，不依赖事件先到。越限即经启动者取消（停止时限照常从此刻计）
-    const callOrder = new Map<string, number>();
-    const count = (callId: string) => {
-      if (!callOrder.has(callId)) callOrder.set(callId, callOrder.size + 1);
-      const over = callOrder.get(callId)! > maxToolCalls;
-      if (over && !r.limitExceeded) {
-        r.limitExceeded = `tool calls exceeded --max-tool-calls ${maxToolCalls}`;
-        runner!.cancel();
-      }
-      return over;
-    };
+    // 越限即经启动者取消（停止时限照常从此刻计）。已声明工具越限时取消先于拒绝发出，pi 不再发模型请求（≤ 上限 + 1）；
+    // 未声明工具不经拦截，取消到达前 pi 可能已发出下一次请求，随后被中止（≤ 上限 + 2）
+    const brake = createBrake(maxToolCalls, () => {
+      r.limitExceeded = `tool calls exceeded --max-tool-calls ${maxToolCalls}`;
+      runner!.cancel();
+    });
     client.onEvent((e) => {
       events.push(e);
       if (e.type !== "tool.started") return;
       if (!(TOOLS as readonly string[]).includes(e.toolName)) r.undeclaredCalls.push({ toolName: e.toolName, input: e.input });
-      count(e.callId);
+      brake.onToolStarted(e.callId);
     });
     client.onIntercept(async (req) => {
-      // 越限的这次回拒绝（取消已先发出），runner 不再发下一次模型请求
-      const d: Decision = count(req.callId) ? { decision: "block", reason: `本题工具调用已超过上限 ${maxToolCalls}，任务取消` } : toolDecision(req, r.workDir);
+      const d: Decision = brake.onIntercept(req.callId) ? { decision: "block", reason: `本题工具调用已超过上限 ${maxToolCalls}，任务取消` } : toolDecision(req, r.workDir);
       if (d.decision !== "allow") r.denials.push({ toolName: req.toolName, input: req.input });
       return d;
     });
@@ -301,7 +322,7 @@ export async function runAll(o: RunOptions): Promise<Report> {
       maxToolCalls: o.maxToolCalls ?? MAX_TOOL_CALLS,
       questionTimeoutMs: o.questionTimeoutMs ?? QUESTION_TIMEOUT_MS,
       tools: TOOLS,
-      rg: spawnSync("rg", ["--version"], { encoding: "utf8" }).stdout?.split("\n")[0] || null,
+      rg: spawnSync("rg", ["--version"], { encoding: "utf8", env: runnerEnv(tmpdir()) }).stdout?.split("\n")[0] || null,
     },
     versions: {
       sampleRepoHash: sampleHash(o.sampleDir ?? join(FIXTURES, "sample-repo")),

@@ -161,6 +161,25 @@ describe("fake OpenAI server", () => {
     expect(s.errors).toEqual([]);
   });
 
+  it("hang：不回应，直到客户端中止；记入 aborted（按请求序号），服务关闭不算", async () => {
+    const s = await start([{ kind: "text", chunks: ["a"] }, { kind: "hang" }, { kind: "hang" }]);
+    await readSse(await post(s));
+    const before = s.stats.writes;
+    const ac = new AbortController();
+    const pending = post(s, { messages: [] }, ac.signal).catch((e: Error) => e.name);
+    await vi.waitFor(() => expect(s.requests).toHaveLength(2));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(s.stats.writes).toBe(before); // hang 不写任何块
+    ac.abort();
+    expect(await pending).toBe("AbortError");
+    await vi.waitFor(() => expect(s.aborted).toEqual([1]));
+    void post(s).catch(() => {});
+    await vi.waitFor(() => expect(s.requests).toHaveLength(3));
+    await s.close();
+    expect(s.aborted).toEqual([1]);
+    expect(s.errors).toEqual([]);
+  });
+
   it("意外请求（其它方法或路径）返回 404 并写入 errors", async () => {
     const s = await start([]);
     const res = await fetch(`${s.baseUrl}/models`);

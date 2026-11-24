@@ -15,12 +15,16 @@ export type ScriptedTurn =
       style?: "split" | "whole";
       chunkDelayMs?: number;
     }
-  | { kind: "error"; status: number; body?: unknown };
+  | { kind: "error"; status: number; body?: unknown }
+  /** 不回应，直到客户端中止（记入 aborted）或服务关闭：确定地观察“取消前已发出的请求被中止” */
+  | { kind: "hang" };
 
 export interface FakeOpenAIServer {
   baseUrl: string;
   requests: unknown[];
   errors: string[];
+  /** 被客户端中止的 hang 请求的序号（requests 下标） */
+  aborted: number[];
   /** 观测用：writes 为已写出的 SSE 块数，inFlight 为尚未结束的 POST 处理函数数 */
   stats: { writes: number; inFlight: number };
   close(): Promise<void>;
@@ -31,6 +35,7 @@ const FRAGMENTS = 8; // 与 0C.4 观测到的百炼切分段数一致
 export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<FakeOpenAIServer> {
   const requests: unknown[] = [];
   const errors: string[] = [];
+  const aborted: number[] = [];
   const stats = { writes: 0, inFlight: 0 };
   const closing = new AbortController(); // close() 时唤醒所有等待中的延迟
   let next = 0;
@@ -48,9 +53,9 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
   };
 
   const server = createServer((req, res) => {
-    const aborted = new AbortController(); // 客户端断线或服务关闭
-    res.on("close", () => aborted.abort());
-    closing.signal.addEventListener("abort", () => aborted.abort(), { once: true });
+    const gone = new AbortController(); // 客户端断线或服务关闭
+    res.on("close", () => gone.abort());
+    closing.signal.addEventListener("abort", () => gone.abort(), { once: true });
 
     let raw = "";
     req.on("data", (c) => (raw += c));
@@ -70,7 +75,13 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
           return sendJson(res, 500, { error: { message: msg } });
         }
         if (turn.kind === "error") return sendJson(res, turn.status, turn.body ?? { error: { message: "scripted error" } });
-        await stream(res, turn, aborted.signal);
+        if (turn.kind === "hang") {
+          const index = requests.length - 1;
+          await new Promise((done) => (gone.signal.aborted ? done(0) : gone.signal.addEventListener("abort", done, { once: true })));
+          if (!closing.signal.aborted) aborted.push(index);
+          return;
+        }
+        await stream(res, turn, gone.signal);
       } catch (e) {
         errors.push(`handler failed: ${e instanceof Error ? e.message : String(e)}`);
         if (!res.headersSent) sendJson(res, 500, { error: { message: "fake server failure" } });
@@ -81,7 +92,7 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     });
   });
 
-  async function stream(res: ServerResponse, turn: Exclude<ScriptedTurn, { kind: "error" }>, signal: AbortSignal) {
+  async function stream(res: ServerResponse, turn: Exclude<ScriptedTurn, { kind: "error" | "hang" }>, signal: AbortSignal) {
     const id = `chatcmpl-fake-${next}`;
     const base = { id, object: "chat.completion.chunk", created: 0, model: "fake-model", system_fingerprint: null };
     const choice = (delta: object, finish: string | null = null) => ({ ...base, usage: null, choices: [{ index: 0, delta, logprobs: null, finish_reason: finish }] });
@@ -126,6 +137,7 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     baseUrl: `http://127.0.0.1:${port}/v1`,
     requests,
     errors,
+    aborted,
     stats,
     close: () =>
       new Promise<void>((ok) => {

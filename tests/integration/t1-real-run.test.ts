@@ -123,6 +123,7 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
       expect(r.answer).toBe(JSON.stringify(q.answers));
       expect(r.denials).toEqual([]);
       expect(r.undeclaredCalls).toEqual([]);
+      expect(r.modelRequests).toEqual({ count: null, aborted: null, usage: null, note: expect.stringMatching(/统一运行事件.*不含/) });
       expect(r.serviceFailure).toBeUndefined();
       expect(r.terminal).toBe("run.settled");
       expect(r.baseCommit).toMatch(/^[0-9a-f]{40}$/);
@@ -230,8 +231,8 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     const rest = Qs.slice(0, -1);
     const q5 = Qs.at(-1)!;
     const bash = (id: string): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: "ls" }, id });
-    // 越限的是未声明的 bash：pi 不等拦截就回 not found，取消到达前可能已发出下一个请求，所以放在最后一题并留一轮备用
-    await fake([...rest.map((q): ScriptedTurn => ({ kind: "text", chunks: [JSON.stringify(q.answers)] })), bash("b1"), bash("b2"), bash("b3")]);
+    // 越限的是未声明的 bash：pi 不经拦截就回 not found 并发出下一个请求；假服务挂住它，直到取消把它中止
+    await fake([...rest.map((q): ScriptedTurn => ({ kind: "text", chunks: [JSON.stringify(q.answers)] })), bash("b1"), bash("b2"), { kind: "hang" }]);
     const { code, err } = await cli(["--models", p("model/models.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json"), "--max-tool-calls", "1"]);
     expect(code, err).toBe(1);
     const report: Report = JSON.parse(readFileSync(p("report.json"), "utf8"));
@@ -245,8 +246,9 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     });
     expect(report.conditions.maxToolCalls).toBe(1);
     expect(server!.errors).toEqual([]);
-    expect(server!.requests.length).toBeGreaterThanOrEqual(6);
-    expect(server!.requests.length).toBeLessThanOrEqual(7);
+    // 未声明工具：上限 1 + 2 = 3 个请求，最后一个（全局第 7 个）被中止
+    expect(server!.requests).toHaveLength(4 + 3);
+    expect(server!.aborted).toEqual([6]);
     expect(leftovers()).toEqual([]);
   }, 60_000);
 
@@ -270,37 +272,41 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
 });
 
 describe.sequential("t1-real-run：每题工具调用刹车（tool.started 与拦截共用计数，按 callId 去重）", () => {
-  it("一次已声明的 read 只计一次（上限 1 时放行）；越限的下一次 read 在拦截时就被拒绝并取消本题，记为超出上限、不判分", async () => {
+  it("已声明工具：一次 read 只计一次（上限 1 时放行）；越限的下一次 read 先取消再由拦截拒绝，请求数恰为上限 + 1，记为超出上限、不判分", async () => {
     const [q] = Qs as [Q];
     await fake([
       { kind: "toolCall", name: "read", args: { path: q.target.path }, id: "r0" },
       { kind: "toolCall", name: "read", args: { path: "notify.py" }, id: "r1" },
-      { kind: "text", chunks: ["[]"] },
+      { kind: "hang" }, // 若拒绝之后 pi 还发请求，会被挂住并记为中止
     ]);
     const r = await runQuestion(q, opts({ maxToolCalls: 1 }));
     expect(r.limitExceeded).toBe("tool calls exceeded --max-tool-calls 1");
     expect(r.serviceFailure).toBeUndefined();
     expect(r.grade).toBeUndefined();
     expect(r.terminal).toBe("run.cancelled");
-    // r0 若被事件与拦截各计一次，会在上限 1 时就被拒；r1 若只等事件计数，会被放行
+    // r0 若被事件与拦截各计一次，会在上限 1 时就被拒
     expect(r.denials).toEqual([{ toolName: "read", input: { path: "notify.py" } }]);
     expect(toolMessages(server!.requests[1])[0]).toContain(readFileSync(join(FX, "sample-repo", q.target.path), "utf8").split("\n")[0]);
-    expect(server!.requests.length).toBeLessThanOrEqual(2);
+    expect(server!.requests).toHaveLength(1 + 1);
+    expect(server!.aborted).toEqual([]);
     expect(server!.errors).toEqual([]);
     expect(r.runner).toMatchObject({ exitCode: 0, forced: false });
     expect(leftovers()).toEqual([]);
   }, 30_000);
 
-  it("反复调用未声明的 bash：每次都计数，越限取消本题，记为超出上限而不是服务故障", async () => {
-    await fake(Array.from({ length: 10 }, (_, i): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: `echo ${i + 1}` }, id: `b${i}` })));
+  it("反复调用未声明的 bash：每次都计数；越限后 pi 已发出的下一个请求被取消中止，请求数恰为上限 + 2，越限后没有工具执行，记为超出上限而不是服务故障", async () => {
+    const bash = (i: number): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: `echo ${i}` }, id: `b${i}` });
+    await fake([bash(1), bash(2), bash(3), { kind: "hang" }]);
     const r = await runQuestion(Qs[0]!, opts({ maxToolCalls: 2 }));
     expect(r.limitExceeded).toBe("tool calls exceeded --max-tool-calls 2");
     expect(r.serviceFailure).toBeUndefined();
     expect(r.grade).toBeUndefined();
     expect(r.terminal).toBe("run.cancelled");
     expect(r.denials).toEqual([]);
-    expect(r.undeclaredCalls.slice(0, 3).map((c) => c.input)).toEqual([1, 2, 3].map((i) => ({ command: `echo ${i}` })));
-    expect(server!.requests.length).toBeLessThanOrEqual(2 + 2); // 越限那次之后，取消到达前 pi 可能已发出下一个请求
+    expect(r.undeclaredCalls.map((c) => c.input)).toEqual([1, 2, 3].map((i) => ({ command: `echo ${i}` })));
+    expect(server!.requests).toHaveLength(2 + 2);
+    expect(server!.aborted).toEqual([3]);
+    expect(server!.errors).toEqual([]);
     expect(r.runner).toMatchObject({ exitCode: 0, forced: false });
     expect(leftovers()).toEqual([]);
   }, 30_000);

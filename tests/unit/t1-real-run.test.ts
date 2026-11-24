@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRepo, modelEntry, readRules, runAll, toolDecision, TOOLS } from "../../scripts/t1-real-run.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createBrake, makeRepo, modelEntry, readRules, runAll, toolDecision, TOOLS } from "../../scripts/t1-real-run.js";
 
 // 10A2/10A4 调用方拦截：只放行 read 与 grep，且路径须解析软链接后落在本题副本内、已存在（作者 2026-11-24 决定）
 let root: string;
@@ -57,9 +57,13 @@ describe("toolDecision：输入形状", () => {
   it("read 的 path 缺失或不是字符串 → 拒绝", () => {
     for (const input of [{}, { path: 1 }, null, "a.py"]) expect(toolDecision({ toolName: "read", input }, copy).decision).toBe("block");
   });
-  it("grep 不给 path 时按 pi 默认搜索副本根目录 → 放行；path 不是字符串 → 拒绝", () => {
+  it("grep 只给 pattern（不给 path）时按 pi 默认的 \".\" 即副本根目录处理 → 放行；path 不是字符串 → 拒绝", () => {
     expect(toolDecision({ toolName: "grep", input: { pattern: "x" } }, copy)).toEqual({ decision: "allow" });
-    for (const input of [{ pattern: "x", path: 1 }, null]) expect(toolDecision({ toolName: "grep", input }, copy).decision).toBe("block");
+    expect(toolDecision({ toolName: "grep", input: { pattern: "x", path: 1 } }, copy).decision).toBe("block");
+  });
+  // 拿不准就拒绝：不依赖 pi 在拦截之前的参数校验
+  it.each(["read", "grep"])("%s 的输入不是普通对象（null、字符串、数组、数字）→ 拒绝", (toolName) => {
+    for (const input of [null, undefined, "a.py", ".", ["a.py"], 1]) expect(toolDecision({ toolName, input }, copy).decision, JSON.stringify(input)).toBe("block");
   });
 });
 
@@ -70,6 +74,38 @@ describe("toolDecision：其他工具", () => {
       decision: "block",
       reason: `此任务不提供 ${toolName}，可用工具：read、grep`,
     });
+  });
+});
+
+describe("createBrake：tool.started 与拦截共用计数，按 callId 去重", () => {
+  const brake = (max: number) => {
+    const exceeded = vi.fn();
+    return { b: createBrake(max, exceeded), exceeded };
+  };
+  it("同一调用先到事件再到拦截：只计一次，拦截时按它的序号判定", () => {
+    const { b, exceeded } = brake(1);
+    b.onToolStarted("c1");
+    expect(b.onIntercept("c1")).toBe(false);
+    b.onToolStarted("c2");
+    expect(b.onIntercept("c2")).toBe(true);
+    expect(exceeded).toHaveBeenCalledTimes(1);
+  });
+  it("拦截先到、事件后到：拦截时计数已更新，越限的那次被判越限，不等事件", () => {
+    const { b, exceeded } = brake(1);
+    expect(b.onIntercept("c1")).toBe(false);
+    b.onToolStarted("c1");
+    expect(exceeded).not.toHaveBeenCalled();
+    expect(b.onIntercept("c2")).toBe(true);
+    expect(exceeded).toHaveBeenCalledTimes(1);
+    b.onToolStarted("c2");
+    expect(exceeded).toHaveBeenCalledTimes(1); // 只通知一次
+  });
+  it("只有事件（未声明工具）：越限时通知", () => {
+    const { b, exceeded } = brake(2);
+    for (const id of ["u1", "u2"]) b.onToolStarted(id);
+    expect(exceeded).not.toHaveBeenCalled();
+    b.onToolStarted("u3");
+    expect(exceeded).toHaveBeenCalledTimes(1);
   });
 });
 
