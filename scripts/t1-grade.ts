@@ -11,8 +11,11 @@ const validPath = (p: unknown): p is string =>
 export function gradeAnswer(answer: unknown, expected: CallSite[]): GradeResult {
   let value = answer;
   if (typeof answer === "string") {
+    const text = answer.trim();
+    // Not stripped or re-graded: only reported specifically so the failure reason is clear.
+    if (text.startsWith("```")) return fail("answer is wrapped in a markdown code fence; output a bare JSON array");
     try {
-      value = JSON.parse(answer.trim());
+      value = JSON.parse(text);
     } catch {
       return fail("answer is not valid JSON");
     }

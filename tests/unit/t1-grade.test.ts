@@ -11,6 +11,17 @@ describe("gradeAnswer", () => {
     expect(gradeAnswer(exp, exp).passed).toBe(true);
     expect(gradeAnswer(`  ${JSON.stringify(exp)}\n`, exp)).toEqual({ passed: true, missing: [], extra: [] });
   });
+  it("tolerates surrounding whitespace and newlines", () => {
+    expect(gradeAnswer(`\n  ${JSON.stringify(exp)} \t\n\n`, exp).passed).toBe(true);
+  });
+  it.each(["```json\n[]\n```", "```\n" + JSON.stringify(exp) + "\n```", "\n  ```json\n[]\n```\n"])(
+    "fenced answer fails with an explicit code-fence error: %j",
+    (input) => {
+      const r = gradeAnswer(input, exp);
+      expect(r.passed).toBe(false);
+      expect(r.error).toBe("answer is wrapped in a markdown code fence; output a bare JSON array");
+    },
+  );
   it("ignores order and duplicates", () => {
     expect(gradeAnswer([exp[1], exp[0], exp[1]], exp).passed).toBe(true);
   });
