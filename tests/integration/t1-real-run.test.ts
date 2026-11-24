@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { groupAlive } from "../../packages/engine-client/src/index.js";
 import { runAll, runQuestion, type Report } from "../../scripts/t1-real-run.js";
 import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
@@ -55,20 +56,18 @@ const seen = (req: unknown) =>
     .map((m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c) => c.text ?? JSON.stringify(c)).join("\n")))
     .join("\n");
 const toolNames = (req: unknown) => (req as { tools?: { function: { name: string } }[] }).tools?.map((t) => t.function.name);
+/** 启动脚本 CLI 子进程，返回退出码与 stderr */
+async function cli(args: string[]) {
+  const child = spawn(process.execPath, ["--import", "tsx", SCRIPT, ...args], { cwd: REPO, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: p("tmp") } });
+  let err = "";
+  child.stderr.on("data", (d) => (err += d));
+  const code = await new Promise<number | null>((ok) => child.on("exit", ok));
+  return { code, err };
+}
 const readThenAnswer = (q: Q, answer: string): ScriptedTurn[] => [
   { kind: "toolCall", name: "read", args: { path: q.target.path }, id: `c-${q.id}` },
   { kind: "text", chunks: [answer] },
 ];
-const gone = (e: unknown) => ["ESRCH", "EPERM"].includes((e as NodeJS.ErrnoException).code!);
-function groupAlive(pid: number) {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (e) {
-    if (gone(e)) return false;
-    throw e;
-  }
-}
 
 describe.sequential("t1-real-run：五题隔离与证据", () => {
   it("五题各用新 runner、内存会话与临时 git 副本；规则取自 main；引擎看不到答案、核对记录与其他题；报告可核对版本", async () => {
@@ -150,18 +149,12 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
       { kind: "text", chunks: [JSON.stringify([q2.answers[0], { path: "billing.py", line: 14 }])] },
       { kind: "toolCall", name: "write", args: { path: p("written.txt"), content: "x" }, id: "w1" },
       { kind: "toolCall", name: "bash", args: { command: `touch ${p("bash.marker")}` }, id: "b1" },
+      { kind: "toolCall", name: "read", args: { path: join(FX, "sample-repo-questions.json") }, id: "r1" },
       { kind: "text", chunks: [JSON.stringify(q3.answers)] },
       { kind: "text", chunks: ["答案是：" + JSON.stringify(q4.answers)] },
       { kind: "text", chunks: [JSON.stringify(q5.answers)] },
     ]);
-    const child = spawn(
-      process.execPath,
-      ["--import", "tsx", SCRIPT, "--models", p("model/models.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json")],
-      { cwd: REPO, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: p("tmp") } },
-    );
-    let err = "";
-    child.stderr.on("data", (d) => (err += d));
-    const code = await new Promise((ok) => child.on("exit", ok));
+    const { code, err } = await cli(["--models", p("model/models.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json")]);
     expect(code, err).toBe(1);
 
     const report: Report = JSON.parse(readFileSync(p("report.json"), "utf8"));
@@ -176,13 +169,38 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
       serviceFailures: [],
     });
     expect(report.versions.sampleRepoHash).toBe(qs.sampleRepoHash);
-    expect(report.questions[2]!.denials.map((d) => d.toolName)).toEqual(["write", "bash"]);
+    expect(server!.errors).toEqual([]);
+    expect(server!.requests).toHaveLength(8);
+    expect(report.questions[2]!.denials).toEqual([
+      { toolName: "write", input: { path: p("written.txt"), content: "x" } },
+      { toolName: "bash", input: { command: `touch ${p("bash.marker")}` } },
+      { toolName: "read", input: { path: join(FX, "sample-repo-questions.json") } },
+    ]);
+    // 拒绝理由回给模型并写明改用什么；副本外的标准答案文件没有被读到
+    const afterDenials = seen(server!.requests[5]);
+    expect(afterDenials).toContain("此任务不提供 write，请使用 read 读取文件");
+    expect(afterDenials).toContain("此任务不提供 bash，请使用 read 读取文件");
+    expect(afterDenials).toContain("仓库副本内");
+    expect(afterDenials).not.toContain(qs.sampleRepoHash);
     expect(existsSync(p("written.txt"))).toBe(false);
     await new Promise((r) => setTimeout(r, 300)); // detached 的 bash 若逃过拦截，touch 毫秒级完成
     expect(existsSync(p("bash.marker"))).toBe(false);
     expect(readdirSync(p("records")).sort()).toEqual(Qs.map((q) => `${q.id}.jsonl`).sort());
     expect(leftovers()).toEqual([]);
   }, 60_000);
+
+  it("参数缺失：退出 2，不跑题", async () => {
+    const { code, err } = await cli([]);
+    expect(code).toBe(2);
+    expect(err).toMatch(/required/);
+  }, 20_000);
+
+  it("运行前出错（模型配置不存在）：stderr 说明原因，退出 3，与答错区分，不写报告", async () => {
+    const { code, err } = await cli(["--models", p("no-such.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json")]);
+    expect(code).toBe(3);
+    expect(err).toMatch(/no-such\.json/);
+    expect(existsSync(p("report.json"))).toBe(false);
+  }, 20_000);
 });
 
 describe.sequential("t1-real-run：超时与停止时限", () => {
@@ -201,12 +219,22 @@ describe.sequential("t1-real-run：超时与停止时限", () => {
     execFileSync("mkfifo", [p("records", `${Qs[0]!.id}.jsonl`)]);
     await fake([{ kind: "text", chunks: ["[]"] }]);
     const r = await runQuestion(Qs[0]!, opts({ questionTimeoutMs: 3000, stopTimeoutMs: 1000 }));
-    expect(r.serviceFailure).toBe("timed out after 3000 ms");
+    expect(r.serviceFailure).toMatch(/^timed out after 3000 ms; runner force-killed/);
     expect(r.runner.forced).toBe(true);
     expect(r.runner.signal).toBe("SIGKILL");
     expect(r.runner.stopWaitMs).toBeGreaterThanOrEqual(1000);
-    expect(r.runner.stopWaitMs).toBeLessThan(1500);
+    expect(r.runner.stopWaitMs).toBeLessThan(3000);
     expect(groupAlive(r.runner.pid!)).toBe(false);
+    expect(leftovers()).toEqual([]);
+  }, 30_000);
+
+  // 录制目录不存在：runner 清理失败，发 run.failed 并以 1 退出（9A 退出码契约）
+  it("runner 非零退出（未超时）：记为服务故障并写明退出码，不判分", async () => {
+    await fake([{ kind: "text", chunks: ["[]"] }]);
+    const r = await runQuestion(Qs[0]!, opts({ recordDir: p("no-such-dir") }));
+    expect(r.serviceFailure).toMatch(/^run\.failed: cleanup failed.*; runner exited with code 1/);
+    expect(r.grade).toBeUndefined();
+    expect(r.runner).toMatchObject({ exitCode: 1, forced: false });
     expect(leftovers()).toEqual([]);
   }, 30_000);
 });

@@ -1,9 +1,9 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EngineClient } from "../../packages/engine-client/src/index.js";
+import { groupAlive, killGroup, spawnRunner, type EngineClient, type RunnerProcess } from "../../packages/engine-client/src/index.js";
 import { parseRunnerMessage, type ProtocolError, type RunnerMessage, type SequencedEvent, type StartTask } from "../../packages/engine-protocol/src/index.js";
 import { fakeModelsJson, startFakeOpenAIServer, TOOL, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
@@ -31,7 +31,7 @@ beforeEach(() => {
 // 测试失败也执行：先按进程组兜底杀掉 runner 与工具并等 runner 被回收，再关客户端、假模型服务、删临时目录
 afterEach(async () => {
   try {
-    for (const g of groups) kill(g);
+    for (const g of groups) killGroup(g);
     await Promise.all(exits);
     await Promise.all(clients.map((c) => c.close()));
     await Promise.all(servers.map((s) => s.close()));
@@ -40,56 +40,24 @@ afterEach(async () => {
   }
 });
 
-// macOS 上组内只剩未回收的僵尸时 kill(-pgid) 报 EPERM：视同没有存活进程
-const gone = (e: unknown) => ["ESRCH", "EPERM"].includes((e as NodeJS.ErrnoException).code!);
-function kill(group: number) {
-  try {
-    process.kill(-group, "SIGKILL");
-  } catch (e) {
-    if (!gone(e)) throw e;
-  }
-}
-function groupAlive(group: number) {
-  try {
-    process.kill(-group, 0);
-    return true;
-  } catch (e) {
-    if (gone(e)) return false;
-    throw e;
-  }
-}
-
-/** 启动者：runner 放进独立进程组（detached），等 stdout 的 RUNNER_LISTENING 行 */
+/** 启动者（engine-client 的 spawnRunner，与 t1-real-run 共用）：runner 放进独立进程组，等 stdout 的 RUNNER_LISTENING 行 */
 async function launch(turns: ScriptedTurn[], args: string[] = []) {
   const s = await startFakeOpenAIServer(turns);
   servers.push(s);
   writeFileSync(p("model/models.json"), JSON.stringify(fakeModelsJson(s.baseUrl)));
-  const child = spawn(
-    process.execPath,
-    ["--import", "tsx", MAIN, "--port", "0", "--models", p("model/models.json"), "--workdir", p("work"), "--sessions-root", p("sessions"), "--idle-timeout-ms", "10000", ...args],
+  const runner = spawnRunner({
+    args: ["--import", "tsx", MAIN, "--port", "0", "--models", p("model/models.json"), "--workdir", p("work"), "--sessions-root", p("sessions"), "--idle-timeout-ms", "10000", ...args],
     // TMPDIR 指向测试根目录：引擎 scratchDir 建在 os.tmpdir() 下，便于断言跨进程清理
-    { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: p("tmp") } },
-  );
-  groups.push(child.pid!);
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (d) => (out += d));
-  child.stderr.on("data", (d) => (err += d));
-  const exit = new Promise<{ code: number | null; at: number }>((r) => child.on("exit", (code) => r({ code, at: Date.now() })));
-  exits.push(exit);
-  const port = await vi.waitFor(
-    () => {
-      const m = /^RUNNER_LISTENING (\d+)\n$/.exec(out);
-      expect(m, err).not.toBeNull();
-      return Number(m![1]);
-    },
-    { timeout: 10_000, interval: 20 },
-  );
-  return { s, port, exit, err: () => err, listeningAt: Date.now() };
+    env: { ...process.env, TMPDIR: p("tmp") },
+  });
+  groups.push(runner.pid);
+  exits.push(runner.exit);
+  const port = await runner.listening;
+  return { s, port, runner, exit: runner.exit, err: runner.stderr, listeningAt: performance.now() };
 }
 
-async function connect(port: number) {
-  const client = await EngineClient.connect(`ws://127.0.0.1:${port}`);
+async function connect(r: { runner: RunnerProcess }) {
+  const client = await r.runner.connect();
   clients.push(client);
   const events: SequencedEvent[] = [];
   const errors: ProtocolError[] = [];
@@ -136,14 +104,14 @@ async function toolRunning() {
   );
   groups.push(pid);
   expect(groupAlive(pid)).toBe(true);
-  return { pid, at: Date.now() };
+  return { pid, at: performance.now() };
 }
 
 /** 工具没有存活：进程组已消失；等过工具的睡眠时长后 marker 仍未出现 */
 async function toolGone(tool: { pid: number; at: number }) {
   await vi.waitFor(() => expect(groupAlive(tool.pid)).toBe(false), { timeout: 3000, interval: 20 });
   // 负断言必须等：若 sleep 逃过终止，marker 会在工具启动约 TOOL_SLEEP_S 秒后出现
-  const wait = tool.at + TOOL_SLEEP_S * 1000 + 700 - Date.now();
+  const wait = tool.at + TOOL_SLEEP_S * 1000 + 700 - performance.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   expect(existsSync(p("work/late.marker"))).toBe(false);
 }
@@ -151,10 +119,10 @@ async function toolGone(tool: { pid: number; at: number }) {
 describe.sequential("runner 进程：正常结束与空闲退出", () => {
   it("正常结束：唯一 run.settled 在最后，此后无事件，进程 5 秒内以 0 退出，scratchDir 已清理", async () => {
     const r = await launch([{ kind: "text", chunks: ["Hel", "lo"] }]);
-    const { client, events, errors } = await connect(r.port);
+    const { client, events, errors } = await connect(r);
     await client.start(task());
     expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
-    const endAt = Date.now();
+    const endAt = performance.now();
     const exit = await r.exit;
     expect(exit.code).toBe(0);
     expect(exit.at - endAt).toBeLessThan(5000);
@@ -173,8 +141,8 @@ describe.sequential("runner 进程：正常结束与空闲退出", () => {
 
   it("已连接但一直不启动：空闲超时后关闭连接并以 0 退出", async () => {
     const r = await launch([], ["--idle-timeout-ms", "300"]);
-    const { client } = await connect(r.port);
-    const connectedAt = Date.now();
+    const { client } = await connect(r);
+    const connectedAt = performance.now();
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
     const exit = await r.exit;
     expect(exit.code).toBe(0);
@@ -186,7 +154,7 @@ describe.sequential("runner 进程：正常结束与空闲退出", () => {
 describe.sequential("runner 进程：取消与断线", () => {
   it("慢流时取消：run.cancelled，模型流未读完，以 0 退出", async () => {
     const r = await launch(SLOW_TEXT);
-    const { client, events } = await connect(r.port);
+    const { client, events } = await connect(r);
     client.onEvent((e) => {
       events.push(e);
       if (e.type === "text.delta" && events.filter((x) => x.type === "text.delta").length === 1) client.cancel();
@@ -201,11 +169,11 @@ describe.sequential("runner 进程：取消与断线", () => {
 
   it("慢流时断线：客户端等待 reject（不伪造 run.cancelled），runner 取消并以 0 退出", async () => {
     const r = await launch(SLOW_TEXT);
-    const { client, events } = await connect(r.port);
+    const { client, events } = await connect(r);
     let closedAt = 0;
     client.onEvent((e) => {
       events.push(e);
-      if (e.type === "text.delta" && !closedAt) (closedAt = Date.now()), void client.close();
+      if (e.type === "text.delta" && !closedAt) (closedAt = performance.now()), void client.close();
     });
     await client.start(task());
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
@@ -219,7 +187,7 @@ describe.sequential("runner 进程：取消与断线", () => {
 
   it("工具运行时取消：run.cancelled，工具进程组被终止、延迟 marker 不出现，以 0 退出", async () => {
     const r = await launch(SLOW_TOOL);
-    const { client, events } = await connect(r.port);
+    const { client, events } = await connect(r);
     client.onIntercept(allow);
     await client.start(task());
     const tool = await toolRunning();
@@ -233,11 +201,11 @@ describe.sequential("runner 进程：取消与断线", () => {
 
   it("工具运行时断线：runner 取消并以 0 退出，工具进程组被终止、延迟 marker 不出现", async () => {
     const r = await launch(SLOW_TOOL);
-    const { client } = await connect(r.port);
+    const { client } = await connect(r);
     client.onIntercept(allow);
     await client.start(task());
     const tool = await toolRunning();
-    const closedAt = Date.now();
+    const closedAt = performance.now();
     await client.close();
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
     const exit = await r.exit;
@@ -250,7 +218,7 @@ describe.sequential("runner 进程：取消与断线", () => {
 
   it("等待决定时重复取消：只有一个 run.cancelled、无协议错误，工具不执行，以 0 退出", async () => {
     const r = await launch(TOOL("touch never.marker"));
-    const { client, events, errors } = await connect(r.port);
+    const { client, events, errors } = await connect(r);
     client.onIntercept(() => {
       client.cancel();
       client.cancel();
@@ -268,9 +236,9 @@ describe.sequential("runner 进程：取消与断线", () => {
 
   it("等待决定时断线：以 0 退出，工具不执行", async () => {
     const r = await launch(TOOL("touch never.marker"));
-    const { client } = await connect(r.port);
+    const { client } = await connect(r);
     let closedAt = 0;
-    client.onIntercept(() => ((closedAt = Date.now()), void client.close(), never()));
+    client.onIntercept(() => ((closedAt = performance.now()), void client.close(), never()));
     await client.start(task());
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
     const exit = await r.exit;
@@ -283,7 +251,7 @@ describe.sequential("runner 进程：取消与断线", () => {
 
   it("等待确认时取消：run.cancelled，工具不执行，以 0 退出", async () => {
     const r = await launch(TOOL("touch never.marker"));
-    const { client, events } = await connect(r.port);
+    const { client, events } = await connect(r);
     client.onIntercept(confirm);
     client.onConfirm(() => (client.cancel(), never()));
     await client.start(task());
@@ -296,10 +264,10 @@ describe.sequential("runner 进程：取消与断线", () => {
 
   it("等待确认时断线：以 0 退出，工具不执行", async () => {
     const r = await launch(TOOL("touch never.marker"));
-    const { client } = await connect(r.port);
+    const { client } = await connect(r);
     client.onIntercept(confirm);
     let closedAt = 0;
-    client.onConfirm(() => ((closedAt = Date.now()), void client.close(), never()));
+    client.onConfirm(() => ((closedAt = performance.now()), void client.close(), never()));
     await client.start(task());
     await expect(client.waitForEnd()).rejects.toThrow(/closed/);
     const exit = await r.exit;
@@ -314,7 +282,7 @@ describe.sequential("runner 进程：协议异常不影响任务", () => {
   it("迟到批准：确认超时按 block，之后到达的批准得到 stale_response，工具不执行，任务正常结束", async () => {
     // 第二轮模型回复放慢，保证迟到的批准到达时任务仍在运行
     const r = await launch([TOOL("touch denied.marker")[0], { kind: "text", chunks: ["a", "b", "c", "d", "e"], chunkDelayMs: 300 }], ["--confirm-timeout-ms", "200"]);
-    const { client, events, errors } = await connect(r.port);
+    const { client, events, errors } = await connect(r);
     client.onIntercept(confirm);
     client.onConfirm(() => new Promise((ok) => setTimeout(() => ok({ approved: true, by: "tester" }), 500)));
     await client.start(task());
@@ -327,7 +295,7 @@ describe.sequential("runner 进程：协议异常不影响任务", () => {
 
   it("运行中第二次启动：只拒绝第二次（already_running），原任务完成，以 0 退出", async () => {
     const r = await launch(TOOL("echo hi > ok.marker"));
-    const { client, events, errors } = await connect(r.port);
+    const { client, events, errors } = await connect(r);
     let second: Promise<string> | undefined;
     client.onIntercept(async () => {
       second = client.start(task({ sessionId: "s2" })).then(() => "accepted", (e: Error) => e.message);
@@ -376,7 +344,7 @@ describe.sequential("runner 进程：协议异常不影响任务", () => {
 describe.sequential("runner 进程：清理失败与超时（故障注入）", () => {
   it("清理失败（诊断文件目录不存在）：run.failed 带清理原因，以 1 退出", async () => {
     const r = await launch([{ kind: "text", chunks: ["ok"] }], ["--record-pi-events", p("no-such-dir/raw.jsonl")]);
-    const { client } = await connect(r.port);
+    const { client } = await connect(r);
     await client.start(task());
     expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed/) });
     expect((await r.exit).code).toBe(1);
@@ -387,7 +355,7 @@ describe.sequential("runner 进程：清理失败与超时（故障注入）", (
   it("清理超时：run.failed 带超时原因；卡住的打开被解除后 runner 以 1 退出", async () => {
     execFileSync("mkfifo", [p("raw.fifo")]);
     const r = await launch([{ kind: "text", chunks: ["ok"] }], ["--record-pi-events", p("raw.fifo")]);
-    const { client } = await connect(r.port);
+    const { client } = await connect(r);
     await client.start(task());
     expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed: timed out after 5000 ms/) });
     // 阻塞的系统调用会让 process.exit 卡在 libuv 线程池的回收上：以非阻塞方式打开读端解除阻塞并持续读空，才能观察到 runner 自己给出的退出码。
@@ -411,20 +379,20 @@ describe.sequential("runner 进程：清理失败与超时（故障注入）", (
   it("清理超时且 runner 卡在退出：发出带原因的 run.failed；工具已由 pi 在卡住前结束；启动者到停止时限强杀 runner 组", async () => {
     execFileSync("mkfifo", [p("raw.fifo")]);
     const r = await launch(SLOW_TOOL, ["--record-pi-events", p("raw.fifo")]);
-    const { client } = await connect(r.port);
+    const { client } = await connect(r);
     client.onIntercept(allow);
     await client.start(task());
     const tool = await toolRunning();
-    const t0 = Date.now();
-    client.cancel();
+    const t0 = performance.now();
+    r.runner.cancel();
     expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed: timed out after 5000 ms/) });
     // 清理顺序是 session.abort/dispose 在前、关闭录制在后：工具在 FIFO 卡住之前就被 pi 结束，与启动者无关（组强杀也够不到工具组）
     await toolGone(tool);
-    // 启动者的停止时限（engine.md 进程退出，默认 10 秒）：到时未退出就强杀 runner 的整个进程组，按非零退出处理
-    const exit = await Promise.race([r.exit, new Promise<undefined>((ok) => setTimeout(ok, 10_000 - (Date.now() - t0)))]);
-    expect([undefined, 1]).toContain(exit?.code); // 卡在退出（undefined）或自行以 1 退出
-    kill(groups[0]);
-    await r.exit;
-    expect(groupAlive(groups[0])).toBe(false);
+    // 启动者的停止时限（engine.md 进程退出，默认 10 秒，从发出取消起算）：到时未退出就强杀 runner 的整个进程组，按非零退出处理
+    const stopped = await r.runner.stop();
+    expect(stopped.forced || stopped.code === 1).toBe(true); // 卡在退出（强杀）或自行以 1 退出
+    // 外部计时：终止事件约 5 秒后才到、stop() 更晚才调用，时限仍须从取消起算
+    expect(stopped.at - t0).toBeLessThan(10_000 + 1000);
+    expect(groupAlive(groups[0]!)).toBe(false);
   }, 30_000);
 });
