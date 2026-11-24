@@ -123,13 +123,28 @@ describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b
     expect(thoughts).toHaveLength(3);
     for (const m of ends) expect(m).toMatchObject({ thinkingLevel: "low", usage: { reasoning: expect.any(Number) } });
     expect(ends.every((m) => m.usage.reasoning > 0)).toBe(true);
-    // 思考原文的任何部分都不进入文本事件：整段按 20 字符切片逐片检查（先于下面的精确比较，泄漏时由这里报出）
-    const texts = es.flatMap((e) => (e.type === "text.delta" || e.type === "message.completed" ? [e.text] : [])).join("\n");
+    // 思考原文的任何部分都不进入转换结果的任何事件、任何字段（先于下面的精确比较，泄漏时由这里报出）。
+    // 思考里会引用文件原文，这些原文本来就在工具结果里：只查不出现在“去掉思考后的原始事件”中的片，它们若出现在输出里只能来自思考
+    const strings = (v: unknown): string[] =>
+      typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(strings) : [];
+    const withoutThinking = (v: unknown): unknown =>
+      Array.isArray(v) ? v.map(withoutThinking).filter((x) => x !== undefined)
+      : v && typeof v === "object" ? (/^thinking/.test(String((v as any).type)) ? undefined : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, withoutThinking(x)])))
+      : v;
+    const all = es.flatMap(strings).join("\0"); // \0 分隔，切片不会跨两个值匹配
+    const legit = rawLines(n).map(withoutThinking).flatMap(strings).join("\0");
+    let checked = 0;
     for (const t of thoughts) {
-      const pieces = [...Array(Math.ceil(t.length / 20)).keys()].map((i) => t.slice(i * 20, i * 20 + 20)).concat(t.slice(-20)); // 末尾不足 20 的片段另用最后 20 字符覆盖
-      for (const piece of pieces)
-        if (piece.trim().length >= 10) expect(texts, `thinking leaked: ${JSON.stringify(piece)}`).not.toContain(piece);
+      expect(t.trim()).not.toBe("");
+      // 全文切成不重叠的 20 字符片，末尾不足一片时另取最后 20 字符；更短的片（如 "."）会与正常输出撞上，不用
+      const pieces = [...Array(Math.floor(t.length / 20)).keys()].map((i) => t.slice(i * 20, i * 20 + 20)).concat(t.slice(-20));
+      for (const piece of pieces) {
+        if (!piece.trim() || legit.includes(piece)) continue;
+        checked++;
+        expect(all, `thinking leaked: ${JSON.stringify(piece)}`).not.toContain(piece);
+      }
     }
+    expect(checked).toBeGreaterThan(50); // 三段思考共约 1.5k 字符、约 78 片，绝大多数是思考独有的
     expect(completed(es)).toEqual(['[{"path": "orders.py", "line": 8}]']);
     expect(deltas(es)).toBe('[{"path": "orders.py", "line": 8}]');
   });

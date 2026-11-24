@@ -80,7 +80,7 @@
 规则：家目录、仓库/工作树路径和用户名必须去掉；随机临时目录若无法一致替换（如被拆在流式增量里），可以保留，并在下面注明原因。
 
 **没有替换**的值：
-- 每题临时副本路径 `/private/var/folders/<标识>/T/fp-t1-<随机>/repo`。它出现在系统提示的工作目录中，`send-notice` 里模型生成的 `bash` 命令也带着它，而这条命令是按流式增量（`toolcall_delta`）和逐步增长的 `partial`/`message` 参数录下的，路径被拆在多个片段里；只替换完整路径会让增量拼接与最终参数对不上。`/private/var/folders/<标识>/T/` 是 macOS 为每个用户分配的**固定**临时目录，`<标识>` 不含用户名，但对同一账户长期不变；`fp-t1-<随机>` 每题随机，运行结束即删除。前两次运行的样本保留了该标识；第 3 次运行用 `TMPDIR=/tmp/fp-t1` 避开了它（见下文）。
+- 每题临时副本路径 `/private/var/folders/<标识>/T/fp-t1-<随机>/repo`。它出现在系统提示的工作目录中，`send-notice` 里模型生成的 `bash` 命令也带着它，而这条命令是按流式增量（`toolcall_delta`）和逐步增长的 `partial`/`message` 参数录下的，路径被拆在多个片段里；只替换完整路径会让增量拼接与最终参数对不上。`/private/var/folders/<标识>/T/` 是 macOS 为每个用户分配的**固定**临时目录，`<标识>` 不含用户名，但对同一账户长期不变；`fp-t1-<随机>` 每题随机，运行结束即删除。前两次运行的样本保留了该标识；第 3 次运行用 `TMPDIR=/tmp/fp-t1` 避开了它（见 `docs/reviews/step01-pi-integration.md` 的“Task 10B 第 3 次运行”一节）。
 - 百炼返回的 `responseId`、工具调用 id（`call_…`）：服务端生成，不含本机或账号信息。
 - 用量字段 `usage.cost` 为 0，因为模型条目没有写 `cost`；实际花费按 token 数估算，见实现说明 10B。
 
@@ -108,4 +108,4 @@
 
 取自 `.tmp/t1-api-run3/send_notice.jsonl`。运行条件（命令、时间、commit、思考级别与请求字段、`TMPDIR=/tmp/fp-t1`）见 `docs/reviews/step01-pi-integration.md` 的“Task 10B 第 3 次运行”一节。
 
-脱敏规则同上；替换后搜索家目录、工作树路径和用户名都没有结果，`check-secrets --env DASHSCOPE_API_KEY --local-paths` 通过，且不含 `var/folders`。临时副本路径为 `/private/tmp/fp-t1/fp-t1-<随机>/repo`（`/tmp` 的 realpath），不含用户名或账户标识，照旧保留（同样被拆在流式增量里）。转换器测试断言：thinking 不进入 `text.delta` 与 `message.completed`，每次请求的 `usage.reasoning` 都大于 0。
+脱敏规则同上；替换后搜索家目录、工作树路径和用户名都没有结果，`check-secrets --env DASHSCOPE_API_KEY --local-paths` 通过，且不含 `var/folders`。临时副本路径为 `/private/tmp/fp-t1/fp-t1-<随机>/repo`（`/tmp` 的 realpath），不含用户名或账户标识，照旧保留（同样被拆在流式增量里）。转换器测试断言：思考原文的任何片段都不出现在转换结果的任何事件、任何字段中（与工具结果等非思考内容重合的片段除外），每次请求的 `usage.reasoning` 都大于 0。
