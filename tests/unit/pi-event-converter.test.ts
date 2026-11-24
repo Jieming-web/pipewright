@@ -11,6 +11,11 @@ const replay = (name: string): ProgressEvent[] =>
 const deltas = (es: ProgressEvent[]) => es.flatMap((e) => (e.type === "text.delta" ? [e.text] : [])).join("");
 const completed = (es: ProgressEvent[]) => es.flatMap((e) => (e.type === "message.completed" ? [e.text] : []));
 const TERMINAL = ["run.settled", "run.failed", "run.cancelled"];
+// 10B 真实 API 样本：前两个思考关闭，run3 思考开启（low）
+const REAL_API_OFF = ["real-qwen-api-send-notice", "real-qwen-api-run2-normalize-name"];
+const REAL_API = [...REAL_API_OFF, "real-qwen-api-run3-thinking-send-notice"];
+const rawLines = (name: string): any[] =>
+  readFileSync(join(FIX, `${name}.jsonl`), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
 
 describe("convertPiEvent 重放 2B 样本", () => {
   it("text-only：增量拼接与完成消息一致", () => {
@@ -71,10 +76,6 @@ describe("convertPiEvent 重放 2B 样本", () => {
   });
 });
 
-const REAL_API = ["real-qwen-api-send-notice", "real-qwen-api-compute-total", "real-qwen-api-run2-normalize-name"];
-const rawLines = (name: string): any[] =>
-  readFileSync(join(FIX, `${name}.jsonl`), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
-
 describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b）", () => {
   it("send-notice：bash 被拒后改用 read，工具开始/结束按 callId 配对，完成消息与增量一致", () => {
     const es = replay("real-qwen-api-send-notice");
@@ -90,14 +91,6 @@ describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b
     for (const e of es) expect(ProgressEventSchema.safeParse(JSON.parse(JSON.stringify(e))).success).toBe(true);
     expect(completed(es)).toEqual(['[{"path":"orders.py","line":7}]']);
     expect(deltas(es)).toBe('[{"path":"orders.py","line":7}]');
-  });
-
-  it("compute-total：没有工具调用，只有一条文本（带代码块）", () => {
-    const es = replay("real-qwen-api-compute-total");
-    expect(es.some((e) => e.type === "tool.started" || e.type === "tool.finished")).toBe(false);
-    expect(completed(es)).toHaveLength(1);
-    expect(completed(es)[0].startsWith("```json")).toBe(true);
-    expect(deltas(es)).toBe(completed(es)[0]);
   });
 
   it("run2-normalize-name：grep 结果带行号；文本与工具调用同在一条消息时也产生 message.completed", () => {
@@ -117,8 +110,27 @@ describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b
     expect(deltas(es)).toBe(texts.join(""));
   });
 
-  it("思考模式关闭：没有 thinking 流事件，助手消息只有 text/toolCall，reasoning 用量为 0，thinkingLevel 为 off", () => {
-    for (const n of REAL_API) {
+  it("run3-thinking-send-notice：thinking 不进入 text.delta 与 message.completed，最终回答只有 JSON", () => {
+    const n = "real-qwen-api-run3-thinking-send-notice";
+    const es = replay(n);
+    const started = es.filter((e) => e.type === "tool.started");
+    expect(started.map((e) => e.toolName)).toEqual(["read", "grep", "read", "read"]);
+    for (const e of es) expect(ProgressEventSchema.safeParse(JSON.parse(JSON.stringify(e))).success).toBe(true);
+    expect(completed(es)).toEqual(['[{"path": "orders.py", "line": 8}]']);
+    expect(deltas(es)).toBe('[{"path": "orders.py", "line": 8}]');
+    // 样本内容：每次请求都有 thinking 内容项且 reasoning 用量 > 0；思考原文不出现在任何转换结果里
+    const ends = rawLines(n).filter((e) => e.type === "message_end" && e.message.role === "assistant").map((e) => e.message);
+    expect(ends).toHaveLength(3);
+    const thoughts = ends.flatMap((m) => m.content.filter((c: any) => c.type === "thinking").map((c: any) => c.thinking as string));
+    expect(thoughts).toHaveLength(3);
+    for (const m of ends) expect(m).toMatchObject({ thinkingLevel: "low", usage: { reasoning: expect.any(Number) } });
+    expect(ends.every((m) => m.usage.reasoning > 0)).toBe(true);
+    const out = JSON.stringify(es);
+    for (const t of thoughts) expect(out).not.toContain(t.trim().slice(0, 40));
+  });
+
+  it("样本内容核对（思考关闭的样本）：没有 thinking 流事件，助手消息只有 text/toolCall，reasoning 用量为 0，thinkingLevel 为 off", () => {
+    for (const n of REAL_API_OFF) {
       const raws = rawLines(n);
       const updates = raws.filter((e) => e.type === "message_update").map((e) => e.assistantMessageEvent.type);
       expect(updates.some((t: string) => /thinking/.test(t))).toBe(false);

@@ -1893,3 +1893,51 @@ Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：�
 **10B 推荐 `low`**：预算 2048，回答至少留 6144 token。第 2 次运行的失败是模型把推理写进正文，low 给回答的余量最大，不容易把截断和格式错误混在一起。medium/high 只给回答留 1024，而且每轮（包括工具调用轮）最多思考 7168，费用和耗时成倍增加，更容易碰到单题 120 秒的超时。
 
 **截断的归类**：统一事件不带结束原因，用 `scripts/t1-usage.ts` 的 `lastStopReason`。某题为 `"length"` 时记为截断，不记为格式错误。最后一轮在思考阶段就被截断、没有产生新的 `message.completed` 时（判卷拿到的是上一条回答或空），也按这条规则记为截断。
+
+### Task 10B 第 3 次运行（2026-11-24，追加）：5/5，开启思考 low
+
+**结论**：作者批准开启思考（low）后跑一次。结果 5/5，退出码 0。**一次全对只说明这一次通过**：采样未固定、模型 ID 不带日期，同样的命令再跑结果可能不同。
+
+**与第 2 次的差别**（其余条件同第 2 次，包括 `tools [read, grep]`、rg 16.0.0、先读后答提示词、每题 120 s、`maxToolCalls 30`、temperature/top_p 未设置）：
+- 思考 `--thinking low`（Task 10A6）。本地 compat 另加 `thinkingTokenBudgetField: "thinking_budget"`，按 pi 1.5.1 和 10A6 测试，请求中为 `enable_thinking: true`、`thinking_budget: 2048`、`max_completion_tokens: 8192`。真实请求体没有录到，但第 1 个请求没有被拒绝：没有服务故障，也没有 `error` 结束原因。单次请求的推理 token 最多 775，没有超过 2048。
+- `TMPDIR=/tmp/fp-t1`：运行前创建，代码没有改。录制和报告中的临时副本都在 `/private/tmp/fp-t1/fp-t1-<随机>/repo` 下，`grep -rl "var/folders" .tmp/t1-api-run3` 没有结果。运行后 `/tmp/fp-t1` 里还剩 tsx 的编译缓存 `tsx-501`，目录不为空，所以没有删。
+- 命令：`TMPDIR=/tmp/fp-t1 node --env-file=<项目根目录>/.env --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/qwen3.6-35b-a3b --thinking low --record-dir .tmp/t1-api-run3 --output .tmp/t1-api-run3-result.json`。
+- 运行条件：时间 `2026-11-24T12:17:41.489Z`，commit `c16278660c7a5deb9005b1ff121d7ea64ca7a59e`，`dirty: false`，`conditions.thinking: "low"`。
+- 运行前测试：`pnpm vitest run tests/integration/t1-real-run.test.ts tests/unit/t1-real-run.test.ts tests/unit/check-secrets.test.ts tests/unit/t1-usage.test.ts tests/unit/pi-event-converter.test.ts`，5 个文件 101 个测试全部通过。
+
+**按作者顺序的检查**：
+- a. check-secrets 先行：对 `.tmp/t1-api-run3` 和 `.tmp/t1-api-run3-result.json`，输出 `ok (… 2 path(s) …)`，退出 0。
+- b. 分类：5 题全部通过；formatErrors、contentErrors、limitExceeded、serviceFailures 均为空。按 `t1-usage`，每题的 `lastStopReason` 都是 `stop`，结束原因合计 `toolUse 11`、`stop 5`，**没有截断**（没有 `length`）。
+- c. 每题 `denials` 和 `undeclaredCalls` 都为 0。所有 read/grep 都在副本内：使用绝对路径，`normalize_name` 的 grep 省略了 path（默认 "."）。
+- d. 思考确实开启（以录制为准）：
+  - 16 个请求的助手消息都有 `thinking` 内容项，每个都有 `thinking_start/delta/end` 流事件，`usage.reasoning` 都大于 0，`thinkingLevel` 为 `low`；
+  - 推理 token 合计 4,315：normalize_name 1,492、compute_total 962、audit_event 865、load_config 601、send_notice 395；
+  - 交给判卷的回答就是最终消息的 text，5 题都只有 JSON 数组。用每段思考的开头 40 个字符在报告中搜索，没有命中。另有自动化测试覆盖这一点：`tests/integration/t1-real-run.test.ts:275`、`tests/unit/pi-event-converter.test.ts`。
+- e. 用量（`t1-usage`）：
+
+  | 题目 | 请求 | 输入 | 输出（含推理） | 推理 | 耗时（第 2 次） |
+  |---|---|---|---|---|---|
+  | normalize_name | 3 | 6,266 | 1,742 | 1,492 | 14.1 s（8.5 s） |
+  | compute_total | 4 | 8,520 | 1,320 | 962 | 12.4 s（5.5 s） |
+  | send_notice | 3 | 5,687 | 621 | 395 | 6.6 s（5.5 s） |
+  | load_config | 3 | 5,714 | 822 | 601 | 8.8 s（5.2 s） |
+  | audit_event | 3 | 5,608 | 1,089 | 865 | 9.7 s（6.3 s） |
+  | 合计 | 16 | 31,795 | 5,594 | 4,315 | 最长 14.1 s |
+
+  - 每题请求数都大于 0；aborted、errored、usageMissing 都是 0。
+  - pi 的 `output` 取 `completion_tokens`，已经包含推理 token（`openai-completions.js` 第 1175 行）。
+  - 按 0C.1 的原价估算：31,795×1.8/10⁶ + 5,594×10.8/10⁶ ≈ **0.118 元**；三次运行合计约 0.283 元。控制台账单待作者核对。
+  - 耗时：最长 14.1 s，是第 2 次最长值 8.5 s 的约 1.7 倍；各题放慢 1.2–2.3 倍；没有题超时（120 s）。
+
+**与第 2 次相比，逐题的变化**：
+- 第 2 次的问题这次都没有出现：最终回答里没有说明文字，`normalize_name` 包括了 text_utils.py:6，`compute_total` 的别名调用写对了 orders.py:7。
+- 从思考内容看，`compute_total` 自己数行时仍然数错：先写成 8，重数又得到 6（漏数了一个空行）。最后它以 `grep total_of` 给出的行号 7 为准，写在最终回答里。行号正确靠的是 grep，不是数行。
+
+**录制与 fixtures**：
+- 新增 `real-qwen-api-run3-thinking-send-notice.jsonl`。这是新的事件形状：思考内容加回答。脱敏规则同 README；`check-secrets --env DASHSCOPE_API_KEY --local-paths` 通过；不含 `var/folders`。
+- 转换器测试新增 1 个：thinking 不进入 `text.delta` 和 `message.completed`。
+- 按作者同意的精简：删除第 1 次运行的 `real-qwen-api-compute-total.jsonl` 及其测试，因为纯文本形状已由 `text-only.jsonl` 覆盖。本节之前的段落中提到这个文件的地方，以本条为准。
+- 测试中 `REAL_API` 常量移到首次使用之前；思考关闭的检查改名为“样本内容核对”。
+- README 写明：`/private/var/folders/<标识>/T/` 是 macOS 每个用户固定的临时目录标识，不含用户名；第 3 次运行用 TMPDIR 避开了它。
+
+**发给 API 提供方的内容**：同第 2 次。系统提示仍包含本机绝对路径：cwd 为 `/private/tmp/fp-t1/…`，pi docs 路径在家目录下、含用户名。

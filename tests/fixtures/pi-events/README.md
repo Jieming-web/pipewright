@@ -57,7 +57,6 @@
 | 文件 | 来源题目 | 内容 |
 |---|---|---|
 | `real-qwen-api-send-notice.jsonl` | `send_notice` | 第 1 轮调用 `bash` 被调用方拦截拒绝（`此任务不提供 bash，请使用 read 读取文件`）→ 改用 `read notify.py` → 一轮并行 7 个 `read` → 再读 `orders.py` → 文本 `[{"path":"orders.py","line":7}]`（行号判错，见实现说明 10B） |
-| `real-qwen-api-compute-total.jsonl` | `compute_total` | 没有工具调用，一条带 ```` ```json ```` 代码块的文本（格式错误，内容也是编造的，见实现说明 10B） |
 
 生成元数据：
 - 命令（仓库根目录）：`node --env-file=<项目根目录>/.env --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/qwen3.6-35b-a3b --record-dir .tmp/t1-api --output .tmp/t1-api-result.json`；本目录文件取自 `.tmp/t1-api/<题目>.jsonl`，即 runner `--record-pi-events` 的原始输出（`raw-event-recorder.ts`，收到即序列化）。
@@ -76,16 +75,18 @@
 | 工作树根目录 | `<repo>` |
 | 家目录 | `<home>` |
 
-替换后检查：两个文件中都不再含家目录、工作树路径和用户名（`grep` 无结果），`check-secrets --env DASHSCOPE_API_KEY` 通过。
+（同次运行另有 `real-qwen-api-compute-total.jsonl`，纯文本、无工具，与 `text-only.jsonl` 覆盖的形状相同，已在第 3 次运行的提交中删除。）
+
+替换后检查：样本中都不再含家目录、工作树路径和用户名（`grep` 无结果），`check-secrets --env DASHSCOPE_API_KEY` 通过。
 
 规则：家目录、仓库/工作树路径和用户名必须去掉；随机临时目录若无法一致替换（如被拆在流式增量里），可以保留，并在下面注明原因。
 
 **没有替换**的值：
-- 每题临时副本路径 `/private/var/folders/<随机>/T/fp-t1-<随机>/repo`。它出现在系统提示的工作目录中，`send-notice` 里模型生成的 `bash` 命令也带着它，而这条命令是按流式增量（`toolcall_delta`）和逐步增长的 `partial`/`message` 参数录下的，路径被拆在多个片段里；只替换完整路径会让增量拼接与最终参数对不上。这个路径不含用户名，是 macOS 的按用户随机临时目录，目录已在运行结束时删除。
+- 每题临时副本路径 `/private/var/folders/<标识>/T/fp-t1-<随机>/repo`。它出现在系统提示的工作目录中，`send-notice` 里模型生成的 `bash` 命令也带着它，而这条命令是按流式增量（`toolcall_delta`）和逐步增长的 `partial`/`message` 参数录下的，路径被拆在多个片段里；只替换完整路径会让增量拼接与最终参数对不上。`/private/var/folders/<标识>/T/` 是 macOS 为每个用户分配的**固定**临时目录，`<标识>` 不含用户名，但对同一账户长期不变；`fp-t1-<随机>` 每题随机，运行结束即删除。前两次运行的样本保留了该标识；第 3 次运行用 `TMPDIR=/tmp/fp-t1` 避开了它（见下文）。
 - 百炼返回的 `responseId`、工具调用 id（`call_…`）：服务端生成，不含本机或账号信息。
 - 用量字段 `usage.cost` 为 0，因为模型条目没有写 `cost`；实际花费按 token 数估算，见实现说明 10B。
 
-读样本时：`partial` 超前的问题同上文；转换器测试（`tests/unit/pi-event-converter.test.ts`）断言这两个样本没有思考内容（无 `thinking*` 流事件、助手消息只含 `text`/`toolCall`、`usage.reasoning` 为 0、`thinkingLevel` 为 `off`）。
+读样本时：`partial` 超前的问题同上文；转换器测试（`tests/unit/pi-event-converter.test.ts`）断言思考关闭的样本没有思考内容（无 `thinking*` 流事件、助手消息只含 `text`/`toolCall`、`usage.reasoning` 为 0、`thinkingLevel` 为 `off`）。
 
 ### 第 2 次运行样本（Task 10B 第 2 次运行，2026-11-24）
 
@@ -100,3 +101,16 @@
 - 提示词为“先用工具查看需要的文件，确认后再作答”。
 
 脱敏规则与检查同上：家目录、工作树路径和用户名都已去掉，`check-secrets` 通过。临时副本路径照旧保留：模型这次给 `grep`/`read` 传的是副本内的绝对路径，它被拆在流式增量里。
+
+### 第 3 次运行样本（Task 10B 第 3 次运行，思考开启，2026-11-24）
+
+| 文件 | 来源题目 | 内容 |
+|---|---|---|
+| `real-qwen-api-run3-thinking-send-notice.jsonl` | `send_notice` | 每次请求都先有 thinking（`thinking_start/delta/end`）：thinking + `read notify.py` 与 `grep` 并行 → thinking + 并行 `read orders.py`、`read legacy.py` → thinking + 最终文本 `[{"path": "orders.py", "line": 8}]`（正确） |
+
+生成元数据与第 2 次不同的地方：
+- 命令：`TMPDIR=/tmp/fp-t1 node --env-file=<项目根目录>/.env --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/qwen3.6-35b-a3b --thinking low --record-dir .tmp/t1-api-run3 --output .tmp/t1-api-run3-result.json`，取自 `.tmp/t1-api-run3/send_notice.jsonl`；
+- 时间 `2026-11-24T12:17:41.489Z`；源码 commit `c16278660c7a5deb9005b1ff121d7ea64ca7a59e`，工作区干净；
+- 思考 `low`：qwen-api 的 compat 另有 `thinkingTokenBudgetField: "thinking_budget"`，pi 发送 `enable_thinking: true`、`thinking_budget: 2048`、`max_completion_tokens: 8192`；助手消息的 `thinkingLevel` 为 `low`。
+
+脱敏规则同上；替换后搜索家目录、工作树路径和用户名都没有结果，`check-secrets --env DASHSCOPE_API_KEY --local-paths` 通过，且不含 `var/folders`。临时副本路径为 `/private/tmp/fp-t1/fp-t1-<随机>/repo`（`/tmp` 的 realpath），不含用户名或账户标识，照旧保留（同样被拆在流式增量里）。转换器测试断言：thinking 不进入 `text.delta` 与 `message.completed`，每次请求的 `usage.reasoning` 都大于 0。
