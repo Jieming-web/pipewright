@@ -11,7 +11,7 @@ const end = (stopReason: string, usage?: object) =>
 
 describe("countFile: one request = one assistant message_end", () => {
   it("text-only: one request, usage summed", () => {
-    expect(count("text-only")).toMatchObject({ requests: 1, aborted: 0, errored: 0 });
+    expect(count("text-only")).toMatchObject({ requests: 1, aborted: 0, errored: 0, usage: { input: 1, output: 1, total: 2 } });
   });
   it("tool-call-then-text: each tool round plus the final answer is a request; updates/turn_end/agent_end are not", () => {
     expect(count("tool-call-then-text").requests).toBe(2);
@@ -32,12 +32,20 @@ describe("countFile: one request = one assistant message_end", () => {
     const tr = JSON.stringify({ type: "message_end", message: { role: "toolResult" } });
     expect(countFile("x", `${tr}\n\n${end("stop")}\n`).requests).toBe(1);
   });
+  it("valid JSON that is not an object (null, 5, string): throws with file name and line number", () => {
+    for (const bad of ["null", "5", '"x"']) expect(() => countFile("bad", `${end("stop")}\n${bad}`)).toThrow(/bad.*line 2/);
+  });
   it("corrupted line: throws with file name and line number", () => {
     expect(() => countFile("bad", `${end("stop")}\n{oops`)).toThrow(/bad.*line 2/);
   });
 });
 
 describe("summarizeDir", () => {
+  it("throws when the directory holds no .jsonl files (typo'd path must not look like 0 requests)", () => {
+    const d = mkdtempSync(join(tmpdir(), "t1-usage-"));
+    writeFileSync(join(d, "note.txt"), "x");
+    expect(() => summarizeDir(d)).toThrow(/no \.jsonl/);
+  });
   it("reports per file (sorted) plus totals, without any message text", () => {
     const d = mkdtempSync(join(tmpdir(), "t1-usage-"));
     writeFileSync(join(d, "b.jsonl"), end("stop", { input: 1, output: 1, totalTokens: 2 }));

@@ -25,7 +25,8 @@ export function countFile(id: string, text: string): FileStats {
     } catch {
       throw new Error(`${id}: line ${i + 1}: not valid JSON`);
     }
-    if (e?.type !== "message_end" || e.message?.role !== "assistant") return;
+    if (typeof e !== "object" || e === null) throw new Error(`${id}: line ${i + 1}: not a JSON object`);
+    if (e.type !== "message_end" || e.message?.role !== "assistant") return;
     s.requests++;
     if (e.message.stopReason === "aborted") s.aborted++;
     if (e.message.stopReason === "error") s.errored++;
@@ -38,8 +39,9 @@ export function countFile(id: string, text: string): FileStats {
 }
 
 export function summarizeDir(dir: string) {
-  const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort()
-    .map((f) => countFile(f.slice(0, -".jsonl".length), readFileSync(join(dir, f), "utf8")));
+  const names = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
+  if (!names.length) throw new Error(`no .jsonl files in ${dir}`);
+  const files = names.map((f) => countFile(f.slice(0, -".jsonl".length), readFileSync(join(dir, f), "utf8")));
   const total = { requests: 0, aborted: 0, errored: 0, usageMissing: 0, usage: zero() };
   for (const f of files) {
     for (const k of ["requests", "aborted", "errored", "usageMissing"] as const) total[k] += f[k];
