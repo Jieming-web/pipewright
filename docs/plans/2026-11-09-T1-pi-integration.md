@@ -432,6 +432,7 @@
 **Interfaces:** 仍使用 10A2 CLI；仅 model 选择与模型配置改变；运行结果路径变化不影响任务内容。
 
 - （2026-11-24 作者提醒，10C 开工前）**先测再定，一次只改一个条件**：先用与 10B 第 3 次相同的流程（`--tools read,grep`、`TMPDIR=/tmp/fp-t1`）跑一次。本地模型是非思考的 instruct 版本，10B 已证明格式问题靠开思考才解决，10C 很可能再出现"推理写进最终回答"，结果不好也如实记录，逐题分清格式错误、内容错误（missing/extra）、截断与超出上下文。**16k 上下文**：系统提示、题目、文件清单与 grep/read 返回累计可能接近 16k；开工前确认超出上下文时报告或离线统计能看出来（如结束原因、Ollama 的截断表现），不得被记成答错，看不出来则先停下报告。确因工具不够用而失败，再评估是否开放更多搜索工具；时限先看每题实际耗时再决定是否放宽。
+- （2026-11-24 作者决定，10C 首次正式运行 `177fb39` 后）**运行认可与补充**：认可这次运行（每次请求上下文最多 1,918 token，约为窗口 12%，溢出不可能发生），实现说明追加预检 (b) 的偏差：多条消息合计超出 16k 时 Ollama 静默丢弃最早的消息，报告与 `t1-usage` 当时看不出，按作者规则本应停下。**离线溢出检测**：`t1-usage` 逐题识别上下文溢出——主判据为同一题内后一次请求的输入总量（input + cacheRead）比前一次下降，辅助判据为 cacheRead 相对上一次请求的输入总量骤降；HTTP 400 "exceeds the available context size" 单独归类为超出上下文（不混入一般错误）；输出越过窗口（input + cacheRead + output 超过给定的上下文窗口）也标出；三种情形都要有测试。**Ollama 输出上限**：ollama 条目加 `compat.maxTokensField: "max_tokens"`（Ollama 0.40.15 只认 max_tokens，忽略 max_completion_tokens），不为此重跑，实现说明注明。
 - [ ] **Step 1：检查本地环境未漂移**，核对 Ollama 服务、0C 模型标签/digest/量化和推理配置；缺环境则停止，不能按模型能力不足处理。
 - [ ] **Step 2：运行**，`pnpm tsx scripts/t1-real-run.ts --models config/models.local.json --model ollama/<锁定ID> --record-dir .tmp/t1-local --output .tmp/t1-local-result.json`。记录每题回答、得分、工具调用限制和超时；小模型未全部答对可记录后继续，但服务/脚本/引擎故障须先查明。脚本对未全对返回非零，不为本地模型改变判分。
 - [ ] **Step 3：核对配置切换证据**，比较两次报告中的产品源码与脚本内容哈希、题集/样例版本，要求完全一致；Task 10B 的记录/样本提交不算产品改动。若必须修代码，修复后重跑两组，保留旧结果。补充真实录制后运行 `pnpm vitest run tests/unit/pi-event-converter.test.ts`。
