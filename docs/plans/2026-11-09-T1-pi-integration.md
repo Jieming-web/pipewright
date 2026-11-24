@@ -332,10 +332,10 @@
 
 **Interfaces:** 每题记录目标定义位置、问题及完整答案集合 `{path: string; line: number}[]`；`gradeAnswer(answer: unknown, expected: {path: string; line: number}[]): {passed: boolean; missing: string[]; extra: string[]; error?: string}`。样例与题集各以内容哈希标版本；临时 git commit 仅作规则来源证据，不要求每次临时初始化产生相同 commit。
 
-- [ ] **Step 1：建立小型 Python 样例及答案**，6–8 个模块、5 个目标函数、各 1–3 个调用点，含跨模块调用、导入别名及同名干扰。只使用显式函数调用与导入，无动态分派；人工通读全部模块核对完整调用点，核对记录放在样例仓库之外，仓库 README 不含答案。
-- [ ] **Step 2：写失败测试并运行**，`pnpm vitest run tests/unit/sample-repo-answers.test.ts tests/unit/t1-grade.test.ts`。校验答案路径/行号确有对应调用，并结合人工完整性核对记录验证答案集；不能仅凭行上存在函数名宣称完整。判分覆盖漏报、多报、同名误报、格式错误、重复项和顺序变化。
-- [ ] **Step 3：实现判定**，要求最终回答为 JSON 数组，路径为仓库相对 POSIX 路径、行号从 1 开始；允许去重和排序，不模糊匹配，不自动重问“直到答对”。格式不合法判错。标准答案集合变动须重新完整核对并更新题集版本。
-- [ ] **Step 4：同命令通过并提交** `test(step01): 五题样例与固定判定`。
+- [x] **Step 1：建立小型 Python 样例及答案**，6–8 个模块、5 个目标函数、各 1–3 个调用点，含跨模块调用、导入别名及同名干扰。只使用显式函数调用与导入，无动态分派；人工通读全部模块核对完整调用点，核对记录放在样例仓库之外，仓库 README 不含答案。 — 2026-11-24：`tests/fixtures/sample-repo/` 8 个模块、5 个目标（调用点 3/2/1/1/2），含跨模块调用、函数别名 `compute_total as total_of`、模块别名 `import config as cfg`，同名干扰在 legacy.py（同名函数、同名方法、注释、字符串）；人工核对记录 `tests/fixtures/sample-repo-audit.md` 在仓库外；审查者独立通读全部模块，答案集无漏无多。
+- [x] **Step 2：写失败测试并运行**，`pnpm vitest run tests/unit/sample-repo-answers.test.ts tests/unit/t1-grade.test.ts`。校验答案路径/行号确有对应调用，并结合人工完整性核对记录验证答案集；不能仅凭行上存在函数名宣称完整。判分覆盖漏报、多报、同名误报、格式错误、重复项和顺序变化。 — 2026-11-24：首轮 RED 不合规：实现者先写了判分代码，事后挪走才跑出 RED（t1-grade 加载失败、哈希未记录），已报作者；返修第 1 轮按先测后改：题面写明定义模块、哈希排除 __pycache__（EISDIR）、别名调用机械检索均先见失败。
+- [x] **Step 3：实现判定**，要求最终回答为 JSON 数组，路径为仓库相对 POSIX 路径、行号从 1 开始；允许去重和排序，不模糊匹配，不自动重问“直到答对”。格式不合法判错。标准答案集合变动须重新完整核对并更新题集版本。 — 2026-11-24：`scripts/t1-grade.ts` 严格格式（trim 后 JSON.parse，不剥代码块标记；仓库相对 POSIX 路径、行号为 ≥1 的整数；去重、忽略顺序；多余字段忽略）；样例与题集各有内容哈希，过期即测试失败；`.gitattributes` 固定 fixtures 为 LF。审查 SDD Needs fixes（题面歧义）、ponytail Ship，1 轮返修，复审 Approved。
+- [x] **Step 4：同命令通过并提交** `test(step01): 五题样例与固定判定`。 — 2026-11-24：控制会话复跑 `pnpm test` 353/353，typecheck、build、check:pi 通过，git 干净；变异：删一个答案 → 2 项失败，样例里加一处别名调用 → 3 项失败。提交 e9fab4a、d803f19。
 
 ### Task 10A2：只读验收运行脚本
 
