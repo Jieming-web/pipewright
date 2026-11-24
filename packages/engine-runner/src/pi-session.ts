@@ -10,6 +10,12 @@ import { createRestrictedResourceLoader } from "./restricted-resource-loader.js"
 /** pi 1.5.1 内置工具名（dist/core/tools/index.js 的 allToolNames，包根未导出；测试比对防漂移） */
 export const PI_BUILTIN_TOOLS: readonly string[] = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
 
+export type ThinkingLevel = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"]>;
+// Record 让 pi 的 ThinkingLevel 增删时 typecheck 失败（pi 未导出级别名单）
+const THINKING: Record<ThinkingLevel, true> = { off: true, minimal: true, low: true, medium: true, high: true, xhigh: true, max: true };
+/** pi 1.5.1 的思考级别名（engine.md 思考级别）；runner --thinking 只接受这些 */
+export const PI_THINKING_LEVELS = Object.keys(THINKING) as ThinkingLevel[];
+
 const inside = (root: string, p: string) => { const r = relative(root, p); return r === "" || (r !== ".." && !r.startsWith(".." + sep) && !isAbsolute(r)); };
 
 /** sessionDir 只能是 sessionsRoot 下的相对路径；返回校验后的绝对目录（尚未创建）。 */
@@ -35,6 +41,8 @@ export async function createPiSession(opts: {
   sessionsRoot: string;
   /** 激活的内置工具；undefined 时沿用 pi 默认。名字由调用方（main.ts）校验：pi 会静默忽略未知名 */
   tools?: string[];
+  /** 未给时 off；模型条目不支持思考（reasoning:false）时 pi 自己降为 off */
+  thinkingLevel?: ThinkingLevel;
   decide: ReturnType<typeof createInterceptCoordinator>["decide"];
   signal: AbortSignal;
 }): Promise<{ session: AgentSession; snapshot: RunSnapshot }> {
@@ -55,7 +63,7 @@ export async function createPiSession(opts: {
     agentDir: opts.scratchDir,
     modelRuntime,
     model,
-    thinkingLevel: "off",
+    thinkingLevel: opts.thinkingLevel ?? "off",
     tools: opts.tools,
     resourceLoader: restricted.loader,
     settingsManager: restricted.settingsManager, // 必须显式传：缺省会回退到信任项目设置的 SettingsManager.create

@@ -439,6 +439,34 @@ describe.sequential("runner 进程：激活工具 --tools 与离线（engine.md 
     expect(runner.stderr()).toMatch(/^runner: --tools /m); // 不是 parseArgs 的 Unknown option
   }, 20_000);
 
+  // 思考级别（engine.md 思考级别）：模型条目须 reasoning:true 加 qwen compat，否则 pi 把级别降为 off，测不出透传
+  it("--thinking low 透传为 pi 会话思考级别；未给时为 off", async () => {
+    for (const [args, on] of [[["--thinking", "low"], true], [[], false]] as const) {
+      const r = await launch([{ kind: "text", chunks: ["ok"] }], [...args]);
+      const cfg = fakeModelsJson(r.s.baseUrl) as { providers: { fake: { compat: object; models: object[] } } };
+      Object.assign(cfg.providers.fake.compat, { thinkingFormat: "qwen" });
+      Object.assign(cfg.providers.fake.models[0]!, { reasoning: true });
+      writeFileSync(p("model/models.json"), JSON.stringify(cfg)); // 任务开始时才读模型配置
+      const { client } = await connect(r);
+      await client.start(task());
+      expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
+      expect(r.s.requests[0]).toMatchObject({ enable_thinking: on });
+      expect((await r.exit).code).toBe(0);
+    }
+  }, 30_000);
+
+  it.each(["", "LOW", "none", "on", "low,high", "2048"])("--thinking %j：不监听、非零退出、stderr 说明原因", async (level) => {
+    const runner = spawnRunner({
+      args: ["--import", "tsx", MAIN, "--port", "0", "--models", p("model/models.json"), "--workdir", p("work"), "--sessions-root", p("sessions"), `--thinking=${level}`],
+      env: { ...process.env, TMPDIR: p("tmp") },
+    });
+    if (runner.pid !== undefined) groups.push(runner.pid);
+    exits.push(runner.exit);
+    await expect(runner.listening).rejects.toThrow(/before listening/);
+    expect((await runner.exit).code).not.toBe(0);
+    expect(runner.stderr()).toMatch(/^runner: --thinking /m);
+  }, 20_000);
+
   // PATH 里没有 rg、HOME 指向空目录：pi 若联网下载，会写到 HOME/.pi/agent/bin
   it("缺 rg 时 grep 以错误结果返回，不下载、不写 HOME/.pi", async () => {
     mkdirSync(p("home"));

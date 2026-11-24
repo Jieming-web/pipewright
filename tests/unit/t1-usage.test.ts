@@ -28,6 +28,17 @@ describe("countFile: one request = one assistant message_end", () => {
     const r = countFile("x", [end("aborted", { input: 5, output: 2, totalTokens: 7 }), end("aborted")].join("\n"));
     expect(r).toMatchObject({ requests: 2, aborted: 2, usageMissing: 1, usage: { input: 5, output: 2, total: 7 } });
   });
+  it("stop reasons: counted per value (length = output limit hit) and the file's last request's stop reason is reported", () => {
+    const r = countFile("x", [end("toolUse"), end("length"), end("toolUse"), end("stop")].join("\n"));
+    expect(r.stopReasons).toEqual({ toolUse: 2, length: 1, stop: 1 });
+    expect(r.lastStopReason).toBe("stop");
+    expect(countFile("y", [end("toolUse"), end("length")].join("\n")).lastStopReason).toBe("length");
+  });
+  it("stop reasons: a missing stopReason is counted as \"missing\"; no requests means lastStopReason null", () => {
+    const noReason = JSON.stringify({ type: "message_end", message: { role: "assistant" } });
+    expect(countFile("x", noReason)).toMatchObject({ stopReasons: { missing: 1 }, lastStopReason: "missing" });
+    expect(countFile("x", "")).toMatchObject({ requests: 0, stopReasons: {}, lastStopReason: null });
+  });
   it("ignores non-assistant message_end and tolerates blank lines", () => {
     const tr = JSON.stringify({ type: "message_end", message: { role: "toolResult" } });
     expect(countFile("x", `${tr}\n\n${end("stop")}\n`).requests).toBe(1);
@@ -54,5 +65,7 @@ describe("summarizeDir", () => {
     const s = summarizeDir(d);
     expect(s.files.map((f) => f.id)).toEqual(["a", "b"]);
     expect(s.total).toMatchObject({ requests: 2, errored: 1, usage: { input: 1, output: 1, total: 2 } });
+    expect(s.total.stopReasons).toEqual({ error: 1, stop: 1 });
+    expect(s.files.map((f) => f.lastStopReason)).toEqual(["error", "stop"]);
   });
 });

@@ -158,6 +158,7 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
     expect(JSON.stringify(report)).not.toContain(cfg.apiKey);
     expect(c.maxToolCalls).toBe(30);
     expect(c.tools).toEqual(["read", "grep"]);
+    expect(c.thinking).toBe("off"); // 未给 --thinking：默认关闭
     expect(c.rg).toMatch(/^ripgrep \d+\.\d+\.\d+/);
     expect(c.questionTimeoutMs).toBe(120_000);
     // 报告写的采样参数与假服务收到的请求体一致：未设置的字段请求里确实没有
@@ -269,6 +270,50 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     expect(err).toMatch(/no-such\.json/);
     expect(existsSync(p("report.json"))).toBe(false);
   }, 20_000);
+});
+
+describe.sequential("t1-real-run：思考开启（--thinking）时判卷只读最终回答", () => {
+  it("思考内容只在原始录制里：交给判卷的回答只有最终回答，报告不含思考；报告记录思考级别；请求开启思考", async () => {
+    const MARK = "THINK-MARK-10a6";
+    await fake(Qs.flatMap((q): ScriptedTurn[] => [
+      { kind: "toolCall", name: "read", args: { path: q.target.path }, id: `c-${q.id}`, reasoning: [`${MARK} 先读 `, q.target.path] },
+      { kind: "text", reasoning: [`${MARK} 推理：`, "调用位置在第几行"], chunks: [JSON.stringify(q.answers)] },
+    ]));
+    // 思考要生效，模型条目须 reasoning:true 加 qwen compat（否则 pi 把级别降为 off）
+    const cfg = JSON.parse(readFileSync(p("model/models.json"), "utf8"));
+    Object.assign(cfg.providers.fake.compat, { thinkingFormat: "qwen" });
+    Object.assign(cfg.providers.fake.models[0], { reasoning: true });
+    writeFileSync(p("model/models.json"), JSON.stringify(cfg));
+
+    const { code, err } = await cli(["--models", p("model/models.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json"), "--thinking", "low"]);
+    expect(code, err).toBe(0);
+    const raw = readFileSync(p("report.json"), "utf8");
+    const report: Report = JSON.parse(raw);
+    expect(report.conditions.thinking).toBe("low");
+    expect(report.summary.passed).toEqual(Qs.map((q) => q.id));
+    Qs.forEach((q, i) => expect(report.questions[i]!.answer).toBe(JSON.stringify(q.answers)));
+    expect(raw).not.toContain(MARK);
+    expect(server!.errors).toEqual([]);
+    for (const req of server!.requests) expect(req).toMatchObject({ enable_thinking: true });
+    // 防空转：pi 确实把 reasoning_content 解析成了思考内容（录制里有 thinking 增量与带标记的 thinking 内容项）
+    for (const q of Qs) {
+      const rec = readFileSync(p("records", `${q.id}.jsonl`), "utf8");
+      expect(rec).toContain('"type":"thinking_delta"');
+      expect(rec).toMatch(new RegExp(`"type":"thinking","thinking":"${MARK}`));
+    }
+    expect(leftovers()).toEqual([]);
+  }, 60_000);
+
+  it("--thinking 非法值：runner 拒绝启动，各题记为服务故障，不发模型请求", async () => {
+    await fake([]);
+    const { code } = await cli(["--models", p("model/models.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json"), "--thinking", "LOW"]);
+    expect(code).toBe(1);
+    const report: Report = JSON.parse(readFileSync(p("report.json"), "utf8"));
+    expect(report.summary.serviceFailures.map((f) => f.id)).toEqual(Qs.map((q) => q.id));
+    expect(report.questions[0]!.runner.stderr).toMatch(/^runner: --thinking /m);
+    expect(server!.requests).toEqual([]);
+    expect(leftovers()).toEqual([]);
+  }, 60_000);
 });
 
 describe.sequential("t1-real-run：每题工具调用刹车（tool.started 与拦截共用计数，按 callId 去重）", () => {

@@ -1,5 +1,5 @@
 // T1 只读验收：五道题各起一个新 runner（独立进程组）、新内存会话与样例的临时 git 副本，逐题判分并写报告。
-// 用法：pnpm tsx scripts/t1-real-run.ts --models <配置> --model <provider/id> --record-dir <目录> --output <报告> [--max-tool-calls 30]
+// 用法：pnpm tsx scripts/t1-real-run.ts --models <配置> --model <provider/id> --record-dir <目录> --output <报告> [--max-tool-calls 30] [--thinking off]
 // 密钥等 env 由外层 Node 进程注入，本脚本不读 .env；也不解析 runner 录制的 pi 原始事件。
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -32,6 +32,8 @@ export type RunOptions = {
   questionTimeoutMs?: number;
   stopTimeoutMs?: number;
   maxToolCalls?: number;
+  /** 原样透传给 runner --thinking，由 runner 校验；未给时 off */
+  thinking?: string;
 };
 export type QuestionResult = {
   id: string;
@@ -67,6 +69,8 @@ export type Report = {
     maxToolCalls: number;
     questionTimeoutMs: number;
     tools: readonly string[];
+    /** 请求的思考级别（runner --thinking）；模型条目 reasoning:false 时 pi 实际按 off 运行 */
+    thinking: string;
     /** PATH 上 rg 的版本行（pi grep 依赖它）；找不到为 null */
     rg: string | null;
   };
@@ -239,7 +243,7 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
     const contextFiles = await readRules(gitDir);
     for (const d of ["sessions", "tmp"]) mkdirSync(join(root, d));
     runner = spawnRunner({
-      args: ["--import", "tsx", MAIN, "--port", "0", "--models", resolve(o.modelsPath), "--workdir", r.workDir, "--sessions-root", join(root, "sessions"), "--record-pi-events", r.recordFile, "--tools", TOOLS.join(",")],
+      args: ["--import", "tsx", MAIN, "--port", "0", "--models", resolve(o.modelsPath), "--workdir", r.workDir, "--sessions-root", join(root, "sessions"), "--record-pi-events", r.recordFile, "--tools", TOOLS.join(","), "--thinking", o.thinking ?? "off"],
       cwd: ROOT,
       // runner 的 scratchDir 建在 TMPDIR 下：指向本题临时目录，强杀后也由下面的 finally 一并删除
       env: runnerEnv(join(root, "tmp")),
@@ -322,6 +326,7 @@ export async function runAll(o: RunOptions): Promise<Report> {
       maxToolCalls: o.maxToolCalls ?? MAX_TOOL_CALLS,
       questionTimeoutMs: o.questionTimeoutMs ?? QUESTION_TIMEOUT_MS,
       tools: TOOLS,
+      thinking: o.thinking ?? "off",
       rg: spawnSync("rg", ["--version"], { encoding: "utf8", env: runnerEnv(tmpdir()) }).stdout?.split("\n")[0] || null,
     },
     versions: {
@@ -350,7 +355,7 @@ export async function runAll(o: RunOptions): Promise<Report> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let v: Record<string, string | undefined>;
   try {
-    ({ values: v } = parseArgs({ options: Object.fromEntries(["models", "model", "record-dir", "output", "max-tool-calls"].map((k) => [k, { type: "string" as const }])) }));
+    ({ values: v } = parseArgs({ options: Object.fromEntries(["models", "model", "record-dir", "output", "max-tool-calls", "thinking"].map((k) => [k, { type: "string" as const }])) }));
   } catch (e) {
     process.stderr.write(`t1-real-run: ${message(e)}\n`);
     process.exit(2);
@@ -368,7 +373,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   let report: Report;
   try {
-    report = await runAll({ modelsPath: v.models!, model: { provider: v.model!.slice(0, slash), id: v.model!.slice(slash + 1) }, recordDir: v["record-dir"]!, maxToolCalls: Number(max) });
+    report = await runAll({ modelsPath: v.models!, model: { provider: v.model!.slice(0, slash), id: v.model!.slice(slash + 1) }, recordDir: v["record-dir"]!, maxToolCalls: Number(max), thinking: v.thinking });
     writeFileSync(v.output!, JSON.stringify(report, null, 2) + "\n");
   } catch (e) {
     // 跑题之前或写报告时出错：与答错（1）、参数错（2）区分

@@ -5,7 +5,7 @@ import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-
 import type { SequencedEvent, StartTask, TerminalEvent } from "@forgepilot/engine-protocol";
 import type { createInterceptCoordinator } from "./intercept-coordinator.js";
 import { convertPiEvent } from "./pi-event-converter.js";
-import { createPiSession } from "./pi-session.js";
+import { createPiSession, type ThinkingLevel } from "./pi-session.js";
 import { createRawEventRecorder } from "./raw-event-recorder.js";
 import { createRunEvents } from "./run-events.js";
 
@@ -29,6 +29,7 @@ export class PiEngine {
       workDir: string;
       sessionsRoot: string;
       tools?: string[];
+      thinkingLevel?: ThinkingLevel;
       coordinator: ReturnType<typeof createInterceptCoordinator>;
       emit: (event: SequencedEvent) => void;
       recordPiEventsPath?: string;
@@ -117,7 +118,7 @@ export class PiEngine {
       scratchDir = await mkdtemp(join(tmpdir(), "fp-run-")); // 每次运行独占，pi 的 auth/models-store 写在这里
       const created = await createPiSession({
         task, modelsPath: this.opts.modelsPath, workDir: this.opts.workDir, scratchDir,
-        sessionsRoot: this.opts.sessionsRoot, tools: this.opts.tools, decide: coordinator.decide, signal: abort.signal,
+        sessionsRoot: this.opts.sessionsRoot, tools: this.opts.tools, thinkingLevel: this.opts.thinkingLevel, decide: coordinator.decide, signal: abort.signal,
       });
       session = created.session;
       session.subscribe(onPiEvent);

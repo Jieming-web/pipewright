@@ -1,9 +1,12 @@
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-/** 一条脚本对应一次 POST /chat/completions，按到达顺序消耗，耗尽后报错而不是复用。 */
+/**
+ * 一条脚本对应一次 POST /chat/completions，按到达顺序消耗，耗尽后报错而不是复用。
+ * reasoning：先以 delta.reasoning_content 发出的思考增量（百炼 qwen 思考模式的形状，pi 1.5.1 openai-completions 解析为 thinking 内容项）。
+ */
 export type ScriptedTurn =
-  | { kind: "text"; chunks: string[]; chunkDelayMs?: number }
+  | { kind: "text"; chunks: string[]; reasoning?: string[]; chunkDelayMs?: number }
   /** 发出文本块后直接销毁连接：没有 finish 块、usage 和 [DONE]，用于“说到一半断开”（0B.2 stream-drop） */
   | { kind: "drop"; chunks: string[]; chunkDelayMs?: number }
   | {
@@ -11,6 +14,7 @@ export type ScriptedTurn =
       name: string;
       args: unknown;
       id?: string;
+      reasoning?: string[];
       /** split：百炼形状，首块带 id/name，续块 id 为 ""；whole：Ollama 形状，一次给全 */
       style?: "split" | "whole";
       chunkDelayMs?: number;
@@ -101,11 +105,13 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     const delay = turn.chunkDelayMs ?? 0;
 
     let finish: string;
+    const reasoning = turn.kind === "drop" ? [] : (turn.reasoning ?? []);
+    for (const [i, r] of reasoning.entries()) send(choice(i ? { reasoning_content: r } : { role: "assistant", content: null, reasoning_content: r }));
     if (turn.kind === "text" || turn.kind === "drop") {
       finish = "stop";
       for (const [i, c] of turn.chunks.entries()) {
         if (i) await sleep(delay, signal);
-        send(choice(i ? { content: c } : { role: "assistant", content: c }));
+        send(choice(i || reasoning.length ? { content: c } : { role: "assistant", content: c }));
       }
       // 空写的回调在前面的块交出后才触发；直接 destroy 会丢掉 cork 缓冲里的块
       if (turn.kind === "drop") return void res.write("", () => res.destroy());

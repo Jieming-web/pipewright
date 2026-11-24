@@ -133,6 +133,26 @@ describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b
   });
 });
 
+describe("思考开启（engine.md 思考级别：思考内容不进入最终回答文本）", () => {
+  it("thinking 增量不产生 text.delta；message.completed 只拼 text 内容项，不含 thinking", () => {
+    const es = [
+      { type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } },
+      { type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "THINK-MARK 推理" } },
+      { type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "THINK-MARK 推理" } },
+      { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "[]" } },
+      {
+        type: "message_end",
+        message: { role: "assistant", stopReason: "stop", content: [{ type: "thinking", thinking: "THINK-MARK 推理" }, { type: "text", text: "[]" }] },
+      },
+    ].flatMap((e) => convertPiEvent(e));
+    expect(es).toEqual([{ type: "text.delta", text: "[]" }, { type: "message.completed", role: "assistant", text: "[]" }]);
+  });
+
+  it("只有 thinking、没有 text 的助手消息（如思考后直接调用工具）不产生 message.completed", () => {
+    expect(convertPiEvent({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "thinking", thinking: "x" }] } })).toEqual([]);
+  });
+});
+
 describe("工具事件空值归一", () => {
   it("缺 args / result 时输出 null，且经 JSON 往返后仍通过 schema", () => {
     const es = [

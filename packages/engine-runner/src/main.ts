@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { PI_BUILTIN_TOOLS } from "./pi-session.js";
+import { PI_BUILTIN_TOOLS, PI_THINKING_LEVELS, type ThinkingLevel } from "./pi-session.js";
 import { startRunnerServer } from "./runner-server.js";
 
 // engine.md 外部程序与离线：缺 rg 等工具时 pi 不得联网下载（否则写到 ~/.pi/agent/bin）
@@ -15,7 +15,7 @@ let values: Record<string, string | undefined>;
 try {
   ({ values } = parseArgs({
     options: Object.fromEntries(
-      ["port", "models", "workdir", "sessions-root", "intercept-timeout-ms", "confirm-timeout-ms", "idle-timeout-ms", "record-pi-events", "tools"].map((k) => [k, { type: "string" as const }]),
+      ["port", "models", "workdir", "sessions-root", "intercept-timeout-ms", "confirm-timeout-ms", "idle-timeout-ms", "record-pi-events", "tools", "thinking"].map((k) => [k, { type: "string" as const }]),
     ),
   }));
 } catch (e) {
@@ -34,12 +34,16 @@ const int = (name: string) => {
 const tools = values.tools?.split(",");
 if (tools?.some((t) => !PI_BUILTIN_TOOLS.includes(t))) fail(`--tools must be a comma-separated list of pi built-in tools (${PI_BUILTIN_TOOLS.join(", ")}), got ${JSON.stringify(values.tools)}`);
 
+const thinking = values.thinking as ThinkingLevel | undefined;
+if (thinking !== undefined && !PI_THINKING_LEVELS.includes(thinking)) fail(`--thinking must be one of ${PI_THINKING_LEVELS.join(", ")}, got ${JSON.stringify(thinking)}`);
+
 const opts = {
   port: int("port") ?? 0,
   modelsPath: required("models"),
   workDir: required("workdir"),
   sessionsRoot: required("sessions-root"),
   tools,
+  thinkingLevel: thinking,
   interceptTimeoutMs: int("intercept-timeout-ms"),
   confirmTimeoutMs: int("confirm-timeout-ms"),
   idleTimeoutMs: int("idle-timeout-ms"),

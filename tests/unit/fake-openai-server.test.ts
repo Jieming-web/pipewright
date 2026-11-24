@@ -72,6 +72,22 @@ describe("fake OpenAI server", () => {
     expect(s.errors).toEqual([]);
   });
 
+  it("思考内容（qwen 兼容）：先以 reasoning_content 增量发出，再发正文或工具调用；正文不含思考", async () => {
+    const s = await start([
+      { kind: "text", reasoning: ["想", "一想"], chunks: ["答", "案"] },
+      { kind: "toolCall", name: "read", args: { path: "a" }, reasoning: ["先读"] },
+    ]);
+    const deltas = (cs: Chunk[]) => cs.flatMap((c) => c.choices.map((x) => x.delta as { reasoning_content?: string; content?: string | null; tool_calls?: unknown }));
+    const text = deltas((await readSse(await post(s))).chunks);
+    expect(text.flatMap((d) => (d.reasoning_content ? [d.reasoning_content] : []))).toEqual(["想", "一想"]);
+    expect(text.findIndex((d) => d.content)).toBeGreaterThan(text.findLastIndex((d) => d.reasoning_content));
+    expect(text.map((d) => d.content ?? "").join("")).toBe("答案");
+    const tool = deltas((await readSse(await post(s))).chunks);
+    expect(tool[0]).toMatchObject({ reasoning_content: "先读" });
+    expect(tool.findIndex((d) => d.tool_calls)).toBeGreaterThan(0);
+    expect(s.errors).toEqual([]);
+  });
+
   it("一次给全的工具调用（Ollama 形状）只有一个工具块", async () => {
     const s = await start([{ kind: "toolCall", name: "read", args: { path: "a" }, style: "whole" }]);
     const { chunks } = await readSse(await post(s));

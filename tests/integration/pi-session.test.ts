@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StartTask } from "../../packages/engine-protocol/src/index.js";
 import type { FinalDecision } from "../../packages/engine-runner/src/intercept-coordinator.js";
 import { loadModelRuntime } from "../../packages/engine-runner/src/model-config.js";
-import { createPiSession, PI_BUILTIN_TOOLS } from "../../packages/engine-runner/src/pi-session.js";
+import { createPiSession, PI_BUILTIN_TOOLS, PI_THINKING_LEVELS } from "../../packages/engine-runner/src/pi-session.js";
 import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
 // 与 runner 进程同一设置（engine.md 外部程序与离线）：本文件在进程内建会话，缺 rg 时也不得下载到 ~/.pi
@@ -47,9 +47,9 @@ const task = (o: Partial<StartTask> = {}): StartTask => ({
 });
 const allow = () => vi.fn(async (): Promise<FinalDecision> => ({ decision: "allow" }));
 
-async function open(o: { task?: StartTask; decide?: ReturnType<typeof allow>; workDir?: string; sessionsRoot?: string; tools?: string[] } = {}) {
+async function open(o: { task?: StartTask; decide?: ReturnType<typeof allow>; workDir?: string; sessionsRoot?: string; tools?: string[]; thinkingLevel?: (typeof PI_THINKING_LEVELS)[number] } = {}) {
   return createPiSession({
-    task: o.task ?? task(), modelsPath: p("model/models.json"), workDir: o.workDir ?? p("work"), scratchDir: p("scratch"), tools: o.tools,
+    task: o.task ?? task(), modelsPath: p("model/models.json"), workDir: o.workDir ?? p("work"), scratchDir: p("scratch"), tools: o.tools, thinkingLevel: o.thinkingLevel,
     sessionsRoot: o.sessionsRoot ?? p("sessions"), decide: o.decide ?? allow(), signal: new AbortController().signal,
   });
 }
@@ -126,6 +126,39 @@ describe.sequential("createPiSession", () => {
     await session.prompt("go");
     session.dispose();
     expect((s.requests[0] as any).enable_thinking).toBe(false);
+    expect(s.requests[0]).not.toHaveProperty("thinking_budget"); // 关闭时不发预算：默认行为不变
+  });
+
+  // 10A6：按 models.example.json 的 qwen-api 条目（maxTokens 8192、thinkingTokenBudgetField thinking_budget）核对 pi 实际发出的字段。
+  // 预算 = min(级别预算, 上限 − 1024)，思考与回答共用上限时至少给回答留 1024
+  it.each([
+    ["minimal", 1024],
+    ["low", 2048],
+    ["medium", 7168],
+    ["high", 7168],
+    ["xhigh", 7168], // 模型没有 thinkingLevelMap：pi 把 xhigh/max 降到 high
+  ] as const)("thinkingLevel %s：enable_thinking true、thinking_budget %i、max_completion_tokens 8192", async (level, budget) => {
+    const s = await serve(TEXT);
+    writeModels({ fake: fakeProvider(s.baseUrl, { compat: QWEN.compat, models: [{ ...QWEN.models[0], id: "fake-model" }] }) });
+    const { session } = await open({ thinkingLevel: level });
+    await session.prompt("go");
+    session.dispose();
+    expect(s.requests[0]).toMatchObject({ enable_thinking: true, thinking_budget: budget, max_completion_tokens: 8192 });
+    expect(s.requests[0]).not.toHaveProperty("reasoning_effort"); // supportsReasoningEffort:false
+  });
+
+  it("不支持思考的模型（reasoning:false）：pi 把任何级别降为 off，请求里没有思考字段", async () => {
+    const s = await serve(TEXT);
+    writeModels({ fake: fakeProvider(s.baseUrl) });
+    const { session } = await open({ thinkingLevel: "high" });
+    expect(session.thinkingLevel).toBe("off");
+    await session.prompt("go");
+    session.dispose();
+    for (const k of ["enable_thinking", "thinking_budget", "reasoning_effort"]) expect(s.requests[0]).not.toHaveProperty(k);
+  });
+
+  it("runner 的思考级别名单与 pi 的 ThinkingLevel 一致", () => {
+    expect([...PI_THINKING_LEVELS]).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
   });
 
   it("API key 只从环境引用获得；缺密钥报明确错误", async () => {

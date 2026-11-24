@@ -1,7 +1,8 @@
-// 离线统计 runner 录下的 pi 原始事件（--record-pi-events）：逐题模型请求数、中止数、错误数与用量。
+// 离线统计 runner 录下的 pi 原始事件（--record-pi-events）：逐题模型请求数、中止数、错误数、结束原因与用量。
 // 用法：pnpm tsx scripts/t1-usage.ts --record-dir <目录> [--output <json>]；只读文件，不读 key、不联网、不输出正文。
 // 口径：一次模型请求 = 一条 role=assistant 的 message_end（pi-agent-core 在流结束、错误、中止时都会发出）。
 // message_update 是同一消息的增量，turn_end/agent_end 带同一消息的副本，均不计；重试时失败尝试自己有一条 message_end（stopReason error），各算一次。
+// 结束原因取 pi 的 stopReason（stop/toolUse/length/error/aborted）；length 即输出上限用完被截断，lastStopReason 为该题最后一次请求的结束原因。
 // shortcut: 进程被杀等导致没有 message_end 的请求无法统计，T2 评测框架加请求结束事件后再替换。
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,14 +10,17 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number };
-export type FileStats = { id: string; requests: number; aborted: number; errored: number; usageMissing: number; usage: Usage };
+export type FileStats = {
+  id: string; requests: number; aborted: number; errored: number; usageMissing: number; usage: Usage;
+  stopReasons: Record<string, number>; lastStopReason: string | null;
+};
 
 const zero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 0 });
 const KEYS = ["input", "output", "cacheRead", "cacheWrite", "reasoning"] as const;
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 export function countFile(id: string, text: string): FileStats {
-  const s: FileStats = { id, requests: 0, aborted: 0, errored: 0, usageMissing: 0, usage: zero() };
+  const s: FileStats = { id, requests: 0, aborted: 0, errored: 0, usageMissing: 0, usage: zero(), stopReasons: {}, lastStopReason: null };
   text.split("\n").forEach((line, i) => {
     if (!line.trim()) return;
     let e: any;
@@ -28,6 +32,9 @@ export function countFile(id: string, text: string): FileStats {
     if (typeof e !== "object" || e === null) throw new Error(`${id}: line ${i + 1}: not a JSON object`);
     if (e.type !== "message_end" || e.message?.role !== "assistant") return;
     s.requests++;
+    const reason = typeof e.message.stopReason === "string" ? e.message.stopReason : "missing";
+    s.stopReasons[reason] = (s.stopReasons[reason] ?? 0) + 1;
+    s.lastStopReason = reason;
     if (e.message.stopReason === "aborted") s.aborted++;
     if (e.message.stopReason === "error") s.errored++;
     const u = e.message.usage;
@@ -42,10 +49,11 @@ export function summarizeDir(dir: string) {
   const names = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
   if (!names.length) throw new Error(`no .jsonl files in ${dir}`);
   const files = names.map((f) => countFile(f.slice(0, -".jsonl".length), readFileSync(join(dir, f), "utf8")));
-  const total = { requests: 0, aborted: 0, errored: 0, usageMissing: 0, usage: zero() };
+  const total = { requests: 0, aborted: 0, errored: 0, usageMissing: 0, usage: zero(), stopReasons: {} as Record<string, number> };
   for (const f of files) {
     for (const k of ["requests", "aborted", "errored", "usageMissing"] as const) total[k] += f[k];
     for (const k of Object.keys(total.usage) as (keyof Usage)[]) total.usage[k] += f.usage[k];
+    for (const [r, n] of Object.entries(f.stopReasons)) total.stopReasons[r] = (total.stopReasons[r] ?? 0) + n;
   }
   return { files, total };
 }

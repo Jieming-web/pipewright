@@ -1,20 +1,27 @@
 // 跑真实 API 后查密钥泄露：在报告、录制等文件里找环境变量的原文，并确认 .env 被 git 忽略。输出只写变量名与文件，不写值。
-// 用法：node --env-file=<.env> --import tsx scripts/check-secrets.ts --env <变量名> [--env <变量名>...] <文件或目录>...
+// --local-paths 另查本机路径（家目录、仓库/工作树绝对路径、用户名），只报类别与 文件:行:列，不写命中内容；用于要提交的录制样本
+// （.tmp 下的原始录制含 pi 系统提示里的本机路径，只做 key 检查）。
+// 用法：node --env-file=<.env> --import tsx scripts/check-secrets.ts [--env <变量名>...] [--local-paths] <文件或目录>...（--env 与 --local-paths 至少一个）
 // 退出码：0 无问题；1 有问题（命中、变量未设置、文件读不了、目录内软链接、.env 未被忽略或无法检查）；2 参数错误
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 /** 返回问题列表，空表示通过 */
-export function checkSecrets(o: { names: string[]; paths: string[]; env: NodeJS.ProcessEnv; repoRoot: string }): string[] {
+export function checkSecrets(o: { names: string[]; paths: string[]; env: NodeJS.ProcessEnv; repoRoot: string; localPaths?: Record<string, string> }): string[] {
   const problems: string[] = [];
   const cantRead = (f: string, e: unknown) => problems.push(`无法读取 ${f}：${(e as NodeJS.ErrnoException).code ?? String(e)}`);
   const values = o.names.flatMap((name) => {
     if (o.env[name]) return [[name, o.env[name]] as const];
     problems.push(`环境变量 ${name} 未设置或为空，无法检查`);
     return [];
+  });
+  const locals = Object.entries(o.localPaths ?? {}).filter(([label, value]) => {
+    if (!value) problems.push(`本机路径（${label}）为空，无法检查`);
+    return value !== "";
   });
   // 参数里给的路径照常跟随；目录里的软链接不跟随，记为未检查（fail safe）。readdirSync 的 recursive 会进入软链接目录，故自己遍历
   const files: string[] = [];
@@ -39,6 +46,11 @@ export function checkSecrets(o: { names: string[]; paths: string[]; env: NodeJS.
     try {
       const buf = readFileSync(f);
       for (const [name, value] of values) if (buf.includes(value)) problems.push(`${name} 的值出现在 ${f}`);
+      if (locals.length)
+        buf.toString("utf8").split("\n").forEach((line, i) => {
+          for (const [label, value] of locals)
+            for (let at = line.indexOf(value); at !== -1; at = line.indexOf(value, at + 1)) problems.push(`本机路径（${label}）出现在 ${f}:${i + 1}:${at + 1}`);
+        });
     } catch (e) {
       cantRead(f, e);
     }
@@ -52,16 +64,20 @@ export function checkSecrets(o: { names: string[]; paths: string[]; env: NodeJS.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let names: string[] = [];
   let paths: string[] = [];
+  let local = false;
   try {
-    const { values, positionals } = parseArgs({ options: { env: { type: "string", multiple: true } }, allowPositionals: true });
-    [names, paths] = [values.env ?? [], positionals];
+    const { values, positionals } = parseArgs({ options: { env: { type: "string", multiple: true }, "local-paths": { type: "boolean" } }, allowPositionals: true });
+    [names, paths, local] = [values.env ?? [], positionals, values["local-paths"] ?? false];
   } catch {}
-  if (!names.length || !paths.length) {
-    process.stderr.write("check-secrets: usage: --env <NAME> [--env <NAME>...] <file-or-dir>...\n");
+  if ((!names.length && !local) || !paths.length) {
+    process.stderr.write("check-secrets: usage: [--env <NAME>...] [--local-paths] <file-or-dir>... (at least one of --env, --local-paths)\n");
     process.exit(2);
   }
-  const problems = checkSecrets({ names, paths, env: process.env, repoRoot: join(import.meta.dirname, "..") });
+  const repoRoot = join(import.meta.dirname, "..");
+  const localPaths = local ? { 家目录: homedir(), 仓库路径: realpathSync(repoRoot), 用户名: userInfo().username } : undefined;
+  const problems = checkSecrets({ names, paths, env: process.env, repoRoot, localPaths });
   for (const p of problems) process.stderr.write(`check-secrets: ${p}\n`);
   if (problems.length) process.exit(1);
-  process.stdout.write(`check-secrets: ok (${names.join(", ")} not found in ${paths.length} path(s); .env ignored)\n`);
+  const checked = [...(names.length ? [`${names.join(", ")} not found`] : []), ...(local ? ["no 本机路径"] : [])].join("; ");
+  process.stdout.write(`check-secrets: ok (${checked} in ${paths.length} path(s); .env ignored)\n`);
 }

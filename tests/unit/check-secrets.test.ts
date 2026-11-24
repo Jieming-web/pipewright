@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkSecrets } from "../../scripts/check-secrets.js";
@@ -88,6 +88,44 @@ describe("checkSecrets", () => {
   });
 });
 
+describe("checkSecrets：本机路径检查（10A6，用于要提交的录制样本）", () => {
+  const LOCAL = { 家目录: "/Users/fakeuser", 仓库路径: "/Users/fakeuser/work/repo", 用户名: "fakeuser" };
+  // 思考开启时的录制行：思考内容里出现本机路径
+  const thinkingLine = (text: string) =>
+    JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: text } });
+
+  it("思考内容里的本机路径：按文件:行:列逐处报告，标明类别，不输出命中内容", () => {
+    const f = p("scan/rec.jsonl");
+    const line2 = thinkingLine("先看 /Users/fakeuser/work/repo/cli.py 第 7 行");
+    writeFileSync(f, `${thinkingLine("ok")}\n${line2}\n`);
+    const col = line2.indexOf("/Users/fakeuser") + 1;
+    const problems = checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: LOCAL });
+    expect(problems).toEqual([
+      `本机路径（家目录）出现在 ${f}:2:${col}`,
+      `本机路径（仓库路径）出现在 ${f}:2:${col}`,
+      `本机路径（用户名）出现在 ${f}:2:${col + "/Users/".length}`,
+    ]);
+    expect(problems.join("\n")).not.toContain("/Users/fakeuser");
+    expect(problems.join("\n")).not.toContain("cli.py");
+  });
+
+  it("同一行多处命中逐处报告；未命中的文件没有问题", () => {
+    const f = p("scan/a/two.jsonl");
+    writeFileSync(f, "fakeuser x fakeuser");
+    const problems = checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: { 用户名: "fakeuser" } });
+    expect(problems).toEqual([`本机路径（用户名）出现在 ${f}:1:1`, `本机路径（用户名）出现在 ${f}:1:12`]);
+  });
+
+  it("不给 localPaths：不做本机路径检查（.tmp 原始录制只做 key 检查）", () => {
+    writeFileSync(p("scan/rec.jsonl"), thinkingLine("/Users/fakeuser/x"));
+    expect(checkSecrets({ names: ["FAKE_KEY"], paths: [p("scan")], env, repoRoot: repo(true) })).toEqual([]);
+  });
+
+  it("本机路径检查的值为空：报告无法检查，而不是当作通过", () => {
+    expect(checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: { 用户名: "" } })).toEqual(["本机路径（用户名）为空，无法检查"]);
+  });
+});
+
 describe("check-secrets CLI", () => {
   const cli = (args: string[], e: NodeJS.ProcessEnv) => {
     const r = spawnSync(process.execPath, ["--import", "tsx", join(REPO, "scripts/check-secrets.ts"), ...args], { cwd: REPO, env: { ...process.env, ...e }, encoding: "utf8" });
@@ -108,6 +146,19 @@ describe("check-secrets CLI", () => {
     const r = cli(["--env", "FAKE_KEY_UNSET_10A3", p("scan")], {});
     expect(r.code).toBe(1);
     expect(r.out).toContain("FAKE_KEY_UNSET_10A3 未设置");
+  }, 20_000);
+
+  it("--local-paths：用本机家目录、仓库路径、用户名检查；命中非零退出、只报文件与位置；可不带 --env", () => {
+    const f = p("scan/a/rec.jsonl");
+    writeFileSync(f, JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: `${homedir()}/secret-proj-10a6` } }) + "\n");
+    const hit = cli(["--local-paths", p("scan")], {});
+    expect(hit.code).toBe(1);
+    expect(hit.out).toMatch(new RegExp(`本机路径（家目录）出现在 ${f}:1:\\d+`));
+    expect(hit.out).not.toContain("secret-proj-10a6");
+    rmSync(f);
+    const ok = cli(["--local-paths", "--env", "FAKE_KEY", p("scan")], env);
+    expect(ok.code, ok.out).toBe(0);
+    expect(ok.out).toContain("本机路径");
   }, 20_000);
 
   it("缺 --env 或路径：退出 2", () => {

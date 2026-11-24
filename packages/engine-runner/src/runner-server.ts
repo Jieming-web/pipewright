@@ -2,6 +2,7 @@ import { parseClientMessage, type ProtocolError, type RunnerMessage } from "@for
 import { WebSocket, WebSocketServer } from "ws";
 import { createInterceptCoordinator } from "./intercept-coordinator.js";
 import { CLEANUP_LIMIT_MS, PiEngine } from "./pi-engine.js";
+import type { ThinkingLevel } from "./pi-session.js";
 
 const TERMINAL = new Set(["run.settled", "run.failed", "run.cancelled"]);
 // 引擎自身清理限时之外的兜底：run/cancel 永不返回时 done 也必须 resolve。从 finish() 起算，会话创建很慢时的取消可能超过它而记 ok:false；残留进程由启动者按进程组清理（契约）
@@ -30,6 +31,7 @@ export async function startRunnerServer(opts: {
   workDir: string;
   sessionsRoot: string;
   tools?: string[];
+  thinkingLevel?: ThinkingLevel;
   interceptTimeoutMs?: number;
   confirmTimeoutMs?: number;
   recordPiEventsPath?: string;
@@ -75,6 +77,7 @@ export async function startRunnerServer(opts: {
     workDir: opts.workDir,
     sessionsRoot: opts.sessionsRoot,
     tools: opts.tools,
+    thinkingLevel: opts.thinkingLevel,
     recordPiEventsPath: opts.recordPiEventsPath,
     coordinator,
     emit: (event) => {
