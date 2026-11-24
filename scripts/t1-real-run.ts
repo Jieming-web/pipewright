@@ -55,7 +55,7 @@ export type Report = {
     startedAt: string;
     source: { commit: string; dirty: boolean };
     modelEntry: ReturnType<typeof modelEntry>;
-    sampling: { temperature: null; top_p: null; maxTokens: number | null; note: string };
+    sampling: Record<string, unknown> & { maxTokens: number | null; note: string };
     maxToolCalls: number;
     questionTimeoutMs: number;
   };
@@ -92,12 +92,18 @@ function sourceHashes(): Record<string, string> {
   return Object.fromEntries(files.sort().map((f) => [f, sha(readFileSync(join(ROOT, f)))]));
 }
 
-/** 报告用的模型配置条目：apiKey 只保留 "$环境变量名" 引用，字面值与 headers 不进报告 */
+/** provider 与模型条目同一规则：apiKey 只保留 "$环境变量名" 引用，字面值与 headers（值可为字面密钥）不进报告 */
+const redact = ({ apiKey, headers: _, ...rest }: Record<string, any>): Record<string, any> =>
+  ({ ...rest, ...(apiKey !== undefined && { apiKey: /^\$[A-Za-z_]\w*$/.test(apiKey) ? apiKey : "<omitted>" }) });
+
+/** 报告用的模型配置条目。按思考档位的采样参数与 modelOverrides 会改变实际请求，报告无法如实写出：直接报错 */
 export function modelEntry(config: { providers?: Record<string, any> }, m: RunOptions["model"]) {
-  const { models, apiKey, headers: _, ...provider } = config.providers?.[m.provider] ?? {};
-  const model = (models as { id: string }[] | undefined)?.find((x) => x.id === m.id);
+  const { models, modelOverrides, ...provider } = config.providers?.[m.provider] ?? {};
+  const model = (models as Record<string, any>[] | undefined)?.find((x) => x.id === m.id);
   if (!model) return { provider: null, model: null };
-  return { provider: { ...provider, ...(apiKey !== undefined && { apiKey: /^\$[A-Za-z_]\w*$/.test(apiKey) ? apiKey : "<omitted>" }) }, model };
+  if (model.samplingParamsByThinkingLevel || modelOverrides?.[m.id])
+    throw new Error(`T1 报告不支持 samplingParamsByThinkingLevel 或 modelOverrides（${m.provider}/${m.id}），请改用 samplingParams`);
+  return { provider: redact(provider), model: redact(model) };
 }
 
 /** 样例 .py/.md 的临时 git 副本，提交到 main；固定身份与时间，同一内容得到同一基准 commit。files 由副本的 git ls-files 生成 */
@@ -255,12 +261,13 @@ export async function runAll(o: RunOptions): Promise<Report> {
       startedAt,
       source: { commit: git("rev-parse", "HEAD").trim(), dirty: git("status", "--porcelain") !== "" },
       modelEntry: entry,
+      // 依据 pi 1.5.1 openai-completions（模型条目的 samplingParams 原样并入每个请求体），由集成测试对照假服务收到的请求体核对
       sampling: {
         temperature: null,
         top_p: null,
-        maxTokens: (entry.model as { maxTokens?: number } | null)?.maxTokens ?? null,
-        // 依据 pi 1.5.1 openai-completions，由集成测试对照假服务收到的请求体核对
-        note: "null 表示请求中未设置、由服务端默认（runner 与 pi 会话都不设采样参数）；maxTokens 为 pi 按模型条目发送的上限，随剩余上下文截断，字段名 max_tokens/max_completion_tokens 由 compat 决定",
+        maxTokens: entry.model?.maxTokens ?? null,
+        ...entry.model?.samplingParams,
+        note: "null 表示请求中未设置、由服务端默认（runner 与 pi 会话都不设采样参数，只有模型条目的 samplingParams 会发送）；maxTokens 为 pi 按模型条目发送的上限，随剩余上下文截断，字段名 max_tokens/max_completion_tokens 由 compat 决定",
       },
       maxToolCalls: o.maxToolCalls ?? MAX_TOOL_CALLS,
       questionTimeoutMs: o.questionTimeoutMs ?? QUESTION_TIMEOUT_MS,

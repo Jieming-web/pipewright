@@ -45,9 +45,11 @@ afterEach(async () => {
   }
 });
 
-async function fake(turns: ScriptedTurn[]) {
+async function fake(turns: ScriptedTurn[], samplingParams?: object) {
   server = await startFakeOpenAIServer(turns);
-  writeFileSync(p("model/models.json"), JSON.stringify(fakeModelsJson(server.baseUrl)));
+  const config = fakeModelsJson(server.baseUrl) as { providers: { fake: { models: object[] } } };
+  if (samplingParams) Object.assign(config.providers.fake.models[0]!, { samplingParams });
+  writeFileSync(p("model/models.json"), JSON.stringify(config));
 }
 const opts = (o: Partial<Parameters<typeof runAll>[0]> = {}) => ({ modelsPath: p("model/models.json"), model: MODEL, recordDir: p("records"), ...o });
 /** 模型实际看到的全部文本：各条消息的内容（含工具结果）拼接 */
@@ -76,7 +78,8 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
     for (const f of readdirSync(join(FX, "sample-repo")).filter((f) => /\.(py|md)$/.test(f))) copyFileSync(join(FX, "sample-repo", f), p("sample", f));
     const rules = "RULE-MARKER-7f3a: answer precisely.\n";
     writeFileSync(p("sample/AGENTS.md"), rules);
-    await fake(Qs.flatMap((q) => readThenAnswer(q, JSON.stringify(q.answers))));
+    // 模型条目带 samplingParams（pi 并入每个请求体）：报告须如实写出
+    await fake(Qs.flatMap((q) => readThenAnswer(q, JSON.stringify(q.answers))), { temperature: 0.2 });
 
     const report: Report = await runAll(opts({ sampleDir: p("sample") }));
 
@@ -149,9 +152,10 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
     expect(c.maxToolCalls).toBe(30);
     expect(c.questionTimeoutMs).toBe(120_000);
     // 报告写的采样参数与假服务收到的请求体一致：未设置的字段请求里确实没有
-    expect(c.sampling).toMatchObject({ temperature: null, top_p: null, maxTokens: cfg.models[0].maxTokens });
+    expect(c.sampling).toMatchObject({ temperature: 0.2, top_p: null, maxTokens: cfg.models[0].maxTokens });
     for (const req of server!.requests as Record<string, unknown>[]) {
-      expect(Object.keys(req).sort()).toEqual(["max_completion_tokens", "messages", "model", "stream", "stream_options", "tools"]);
+      expect(Object.keys(req).sort()).toEqual(["max_completion_tokens", "messages", "model", "stream", "stream_options", "temperature", "tools"]);
+      expect(req.temperature).toBe(c.sampling.temperature);
       expect(req.max_completion_tokens).toBe(c.sampling.maxTokens);
     }
     expect(report.modelsConfigSha256).toBe(sha(readFileSync(p("model/models.json"))));
@@ -253,15 +257,19 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
 });
 
 describe.sequential("t1-real-run：每题工具调用刹车", () => {
-  it("模型反复调用被拒的 bash：到上限即拒绝并取消本题，记为超出上限，不判分；请求数不超过上限加 1", async () => {
-    await fake(Array.from({ length: 10 }, (_, i): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: `echo ${i}` }, id: `b${i}` })));
+  it("先放行一次 read，再反复调用被拒的 bash：放行也计数，到上限即拒绝并取消本题，记为超出上限，不判分；请求数不超过上限加 1", async () => {
+    await fake([
+      { kind: "toolCall", name: "read", args: { path: Qs[0]!.target.path }, id: "r0" },
+      ...Array.from({ length: 10 }, (_, i): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: `echo ${i + 1}` }, id: `b${i}` })),
+    ]);
     const r = await runQuestion(Qs[0]!, opts({ maxToolCalls: 3 }));
     expect(r.limitExceeded).toBe("tool calls exceeded --max-tool-calls 3");
     expect(r.serviceFailure).toBeUndefined();
     expect(r.grade).toBeUndefined();
     expect(r.terminal).toBe("run.cancelled");
-    // 放行与拒绝都计数；越限的第 4 次也记为拒绝
-    expect(r.denials.map((d) => d.input)).toEqual([0, 1, 2, 3].map((i) => ({ command: `echo ${i}` })));
+    // 第 1 次 read 放行且计数，越限的是第 4 次（echo 3），它也记为拒绝；放行若不计数会拒到 echo 4
+    expect(r.denials.map((d) => d.input)).toEqual([1, 2, 3].map((i) => ({ command: `echo ${i}` })));
+    expect(seen(server!.requests[1])).toContain(readFileSync(join(FX, "sample-repo", Qs[0]!.target.path), "utf8").split("\n")[0]);
     expect(server!.requests.length).toBeLessThanOrEqual(3 + 1);
     expect(server!.errors).toEqual([]);
     expect(r.runner).toMatchObject({ exitCode: 0, forced: false });

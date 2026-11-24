@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -48,6 +48,39 @@ describe("checkSecrets", () => {
     const repoRoot = repo(true);
     for (const e of [{}, { FAKE_KEY: "" }])
       expect(checkSecrets({ names: ["FAKE_KEY"], paths: [p("scan")], env: e, repoRoot })).toEqual(["环境变量 FAKE_KEY 未设置或为空，无法检查"]);
+  });
+
+  it("二进制文件中含 key：命中", () => {
+    writeFileSync(p("scan/a/blob.bin"), Buffer.concat([Buffer.from([0, 255, 1]), Buffer.from(KEY), Buffer.from([0, 0])]));
+    expect(checkSecrets({ names: ["FAKE_KEY"], paths: [p("scan")], env, repoRoot: repo(true) })).toEqual([`FAKE_KEY 的值出现在 ${p("scan/a/blob.bin")}`]);
+  });
+
+  it("目录内的软链接：不跟随，逐个报告为未检查", () => {
+    writeFileSync(p("outside.txt"), KEY);
+    mkdirSync(p("outside-dir"));
+    writeFileSync(p("outside-dir/x.txt"), KEY);
+    symlinkSync(p("outside.txt"), p("scan/a/link.txt"));
+    symlinkSync(p("outside-dir"), p("scan/a/b/linkdir"));
+    const problems = checkSecrets({ names: ["FAKE_KEY"], paths: [p("scan")], env, repoRoot: repo(true) });
+    expect(problems.sort()).toEqual([`软链接未检查：${p("scan/a/b/linkdir")}`, `软链接未检查：${p("scan/a/link.txt")}`]);
+  });
+
+  it("读不了的文件记为问题并继续扫描，其他命中照常列出", () => {
+    writeFileSync(p("scan/a/locked.txt"), "x");
+    chmodSync(p("scan/a/locked.txt"), 0);
+    writeFileSync(p("scan/a/b/hit.txt"), KEY);
+    const problems = checkSecrets({ names: ["FAKE_KEY"], paths: [p("scan"), p("no-such-file")], env, repoRoot: repo(true) });
+    chmodSync(p("scan/a/locked.txt"), 0o600);
+    expect(problems.sort()).toEqual(
+      [`FAKE_KEY 的值出现在 ${p("scan/a/b/hit.txt")}`, `无法读取 ${p("scan/a/locked.txt")}：EACCES`, `无法读取 ${p("no-such-file")}：ENOENT`].sort(),
+    );
+  });
+
+  it("git 检查本身失败（不是 git 仓库）：单独说明，不说成未被忽略", () => {
+    mkdirSync(p("not-a-repo"));
+    const problems = checkSecrets({ names: ["FAKE_KEY"], paths: [p("scan")], env, repoRoot: p("not-a-repo") });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(new RegExp(`^无法用 git 检查 \\.env 是否被忽略（${p("not-a-repo")}）`));
   });
 
   it(".env 未被 git 忽略：报告", () => {

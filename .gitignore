@@ -7,6 +7,7 @@ node_modules/
 dist/
 coverage/
 tmp/
+.tmp/
 *.tsbuildinfo
 .forgepilot/
 models.local.json

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRepo, modelEntry, readRules, toolDecision } from "../../scripts/t1-real-run.js";
+import { makeRepo, modelEntry, readRules, runAll, toolDecision } from "../../scripts/t1-real-run.js";
 
 // 10A2 调用方拦截：只放行 read，且只放行解析软链接后落在本题副本内、已存在的文件（作者 2026-11-24 决定）
 let root: string;
@@ -77,15 +77,34 @@ describe("规则来源", () => {
 describe("运行条件：模型配置条目", () => {
   const config = {
     providers: {
-      a: { baseUrl: "u", api: "openai-completions", apiKey: "$DASHSCOPE_API_KEY", headers: { "x-k": "secret-h" }, models: [{ id: "m1", maxTokens: 1 }, { id: "m2" }] },
+      a: { baseUrl: "u", api: "openai-completions", apiKey: "$DASHSCOPE_API_KEY", headers: { "x-k": "secret-h" }, models: [{ id: "m1", maxTokens: 1, headers: { "x-m": "secret-model-h" } }, { id: "m2" }] },
       b: { baseUrl: "u", apiKey: "sk-literal-secret", models: [{ id: "m1" }] },
     },
   };
-  it("只取所选模型；apiKey 为 $环境变量名 时保留，headers 整体不进报告", () => {
-    expect(modelEntry(config, { provider: "a", id: "m1" })).toEqual({
+  it("只取所选模型；apiKey 为 $环境变量名 时保留，provider 与模型条目的 headers 都不进报告", () => {
+    const e = modelEntry(config, { provider: "a", id: "m1" });
+    expect(e).toEqual({
       provider: { baseUrl: "u", api: "openai-completions", apiKey: "$DASHSCOPE_API_KEY" },
       model: { id: "m1", maxTokens: 1 },
     });
+    expect(JSON.stringify(e)).not.toMatch(/secret/);
+  });
+  it("模型条目里的字面 apiKey 同样不写入报告", () => {
+    const e = modelEntry({ providers: { a: { models: [{ id: "m1", apiKey: "sk-model-literal" }] } } }, { provider: "a", id: "m1" });
+    expect(e.model).toEqual({ id: "m1", apiKey: "<omitted>" });
+  });
+  it("samplingParamsByThinkingLevel 或 modelOverrides 中有所选模型：报告不支持，直接报错", () => {
+    const byLevel = { providers: { a: { models: [{ id: "m1", samplingParamsByThinkingLevel: { off: { temperature: 0 } } }] } } };
+    const override = { providers: { a: { models: [{ id: "m1" }], modelOverrides: { m1: { maxTokens: 2 } } } } };
+    expect(() => modelEntry(byLevel, { provider: "a", id: "m1" })).toThrow(/samplingParamsByThinkingLevel/);
+    expect(() => modelEntry(override, { provider: "a", id: "m1" })).toThrow(/modelOverrides/);
+    // 别的模型的 override 不影响，也不进报告
+    const other = { providers: { a: { models: [{ id: "m1" }], modelOverrides: { m9: { headers: { k: "secret-o" } } } } } };
+    expect(JSON.stringify(modelEntry(other, { provider: "a", id: "m1" }))).not.toMatch(/secret|m9/);
+  });
+  it("runAll 在跑题前就因不支持的配置失败", async () => {
+    writeFileSync(p("bad-models.json"), JSON.stringify({ providers: { a: { models: [{ id: "m1", samplingParamsByThinkingLevel: {} }] } } }));
+    await expect(runAll({ modelsPath: p("bad-models.json"), model: { provider: "a", id: "m1" }, recordDir: p("bad-records") })).rejects.toThrow(/T1 报告不支持/);
   });
   it("apiKey 为字面值时不写入报告", () => {
     const e = modelEntry(config, { provider: "b", id: "m1" });
