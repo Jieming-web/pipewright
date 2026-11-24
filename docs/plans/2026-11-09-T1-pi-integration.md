@@ -390,9 +390,9 @@
 
 **Interfaces:** `pnpm tsx scripts/t1-usage.ts --record-dir <目录> [--output <json>]`；按文件（每题一个）输出 `{ id, requests, aborted, errored, usage: { input, output, cacheRead, cacheWrite, reasoning, total } }` 及合计；不读取 key、不联网。
 
-- [ ] **Step 1：写失败测试**，用 `tests/fixtures/pi-events/` 中已有录制（含 10B 的 real-qwen-api 样本、retry 样本）与构造的小样本覆盖：正常结束、工具调用多轮、重试（每次失败尝试各算一次请求）、被中止（stopReason aborted 计入 aborted，有用量则计入，无则如实标注）、错误结束。请求的判定口径（以哪类事件为一次模型请求的结束）先核对 pi 1.5.1 的事件语义并写进脚本注释与测试名；同一请求的增量更新不得重复计数。
-- [ ] **Step 2：实现**，只读给定目录下的录制文件；文件损坏或某行无法解析时报告该文件与行号并非零退出，不静默跳过；输出不含提示词与回答正文。
-- [ ] **Step 3：验证并提交** `test(step01): 录制离线统计请求数与用量`；用 10B 首跑的 `.tmp/t1-api` 实际运行一次，与实现说明中手算的输入 28,644、输出 900 token 核对，差异如实记录（不提交 `.tmp`）。
+- [x] **Step 1：写失败测试**，用 `tests/fixtures/pi-events/` 中已有录制（含 10B 的 real-qwen-api 样本、retry 样本）与构造的小样本覆盖：正常结束、工具调用多轮、重试（每次失败尝试各算一次请求）、被中止（stopReason aborted 计入 aborted，有用量则计入，无则如实标注）、错误结束。请求的判定口径（以哪类事件为一次模型请求的结束）先核对 pi 1.5.1 的事件语义并写进脚本注释与测试名；同一请求的增量更新不得重复计数。
+- [x] **Step 2：实现**，只读给定目录下的录制文件；文件损坏或某行无法解析时报告该文件与行号并非零退出，不静默跳过；输出不含提示词与回答正文。
+- [x] **Step 3：验证并提交** `test(step01): 录制离线统计请求数与用量`；用 10B 首跑的 `.tmp/t1-api` 实际运行一次，与实现说明中手算的输入 28,644、输出 900 token 核对，差异如实记录（不提交 `.tmp`）。 — 2026-11-24：`57cde6c`（一次请求 = role=assistant 的 message_end；重试每次失败尝试各计一次并计 errored；aborted 另计；缺用量计 usageMissing）；返修 1 轮 `cfe6e0d`（非对象行、目录无 .jsonl 均报错退出 2）。对 10B 首跑 `.tmp/t1-api` 实跑：13 请求、输入 28,644、输出 900，与手算一致。`pnpm test` 453/453、typecheck/build/check:pi 通过，控制者重跑一致。审查：SDD Approved（确认响应开始前被取消的请求仍发出 aborted 的 message_end）、ponytail Ship，1 轮返修，复审 ADDRESSED。
 
 ### Task 10B：API 五题验收与录制
 
