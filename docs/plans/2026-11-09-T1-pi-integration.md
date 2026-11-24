@@ -403,11 +403,11 @@
 
 **Interfaces:** runner `--thinking <级别>`（默认 off）；`t1-real-run.ts --thinking <级别>` 透传给 runner；`t1-usage` 输出增加按结束原因的计数（含长度截断）与每题最后一次请求的结束原因；`check-secrets` 增加本机路径检查选项。
 
-- [ ] **Step 1：思考级别参数**，先写失败测试。runner `--thinking` 透传为 pi 会话思考级别，取值按 pi 的级别名由 runner 校验，非法值不监听、非零退出；未给时为 off，现有行为不变。报告运行条件记录思考级别。
-- [ ] **Step 2：输出上限与截断**，核对 pi 1.5.1 在 compat `thinkingFormat: "qwen"` 下开启思考时实际发送的字段（如 enable_thinking、思考预算）以及思考 token 是否计入最大输出 token；确认上限足以容纳"思考 + 回答"，必要时按 pi 支持的方式设置思考预算，做法写进实现说明。被截断的回答（结束原因为长度用完）必须能识别：统一事件不带结束原因（事件契约增加该字段推迟到 T2），由 `t1-usage` 统计各结束原因（含长度截断）和每题最后一次请求的结束原因；10B 记录时据此把截断与普通格式错误分开。
-- [ ] **Step 3：判卷只读最终回答**，假服务支持按 qwen 兼容格式流式发送思考内容（以 pi 实际解析的字段为准）。测试证明：开启思考时，交给判卷程序的回答文本只有最终回答，不含思考内容；转换器的 `message.completed` 不含思考内容。
-- [ ] **Step 4：隐私检查覆盖思考内容**，`check-secrets` 增加本机路径检查（家目录、仓库/工作树绝对路径、用户名），命中只报文件与位置，不打印命中内容；单元测试覆盖含思考内容的录制行。10B 提交录制样本前对样本运行 key 检查与本机路径检查，均须通过（`.tmp` 下的原始录制因系统提示含本机路径，只做 key 检查）。
-- [ ] **Step 5：同命令通过并提交** `feat(step01): 思考级别参数与思考开启时的判卷、截断、隐私检查`。
+- [x] **Step 1：思考级别参数**，先写失败测试。runner `--thinking` 透传为 pi 会话思考级别，取值按 pi 的级别名由 runner 校验，非法值不监听、非零退出；未给时为 off，现有行为不变。报告运行条件记录思考级别。
+- [x] **Step 2：输出上限与截断**，核对 pi 1.5.1 在 compat `thinkingFormat: "qwen"` 下开启思考时实际发送的字段（如 enable_thinking、思考预算）以及思考 token 是否计入最大输出 token；确认上限足以容纳"思考 + 回答"，必要时按 pi 支持的方式设置思考预算，做法写进实现说明。被截断的回答（结束原因为长度用完）必须能识别：统一事件不带结束原因（事件契约增加该字段推迟到 T2），由 `t1-usage` 统计各结束原因（含长度截断）和每题最后一次请求的结束原因；10B 记录时据此把截断与普通格式错误分开。
+- [x] **Step 3：判卷只读最终回答**，假服务支持按 qwen 兼容格式流式发送思考内容（以 pi 实际解析的字段为准）。测试证明：开启思考时，交给判卷程序的回答文本只有最终回答，不含思考内容；转换器的 `message.completed` 不含思考内容。
+- [x] **Step 4：隐私检查覆盖思考内容**，`check-secrets` 增加本机路径检查（家目录、仓库/工作树绝对路径、用户名），命中只报文件与位置，不打印命中内容；单元测试覆盖含思考内容的录制行。10B 提交录制样本前对样本运行 key 检查与本机路径检查，均须通过（`.tmp` 下的原始录制因系统提示含本机路径，只做 key 检查）。
+- [x] **Step 5：同命令通过并提交** `feat(step01): 思考级别参数与思考开启时的判卷、截断、隐私检查`。 — 2026-11-24：`43a269a`（runner `--thinking` 自校验、默认 off；假服务按 qwen 流式发 reasoning_content，端到端证明判卷只拿最终回答（把思考拼进 message.completed 的变异使 3 条测试失败）；t1-usage 统计结束原因与 lastStopReason；check-secrets `--local-paths`；models.example.json compat 加 `thinkingTokenBudgetField: "thinking_budget"`，low 预算 2048、max_completion_tokens 8192）；返修 1 轮 `f5b6682`（实现说明追加做法与截断归类规则；用户名按路径段匹配；仓库路径在家目录内不重复报）。`pnpm test` 481/481、typecheck/build/check:pi 通过，控制者重跑一致，~/.pi 不存在。审查：SDD 逐行核实 pi 1.5.1 发送字段、ponytail Ship after fixes，1 轮返修，复审全部 ADDRESSED。10B 前须给 git 忽略的 config/models.local.json 加同一 compat 字段。
 
 ### Task 10B：API 五题验收与录制
 
