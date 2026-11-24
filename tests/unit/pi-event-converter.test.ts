@@ -116,17 +116,22 @@ describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b
     const started = es.filter((e) => e.type === "tool.started");
     expect(started.map((e) => e.toolName)).toEqual(["read", "grep", "read", "read"]);
     for (const e of es) expect(ProgressEventSchema.safeParse(JSON.parse(JSON.stringify(e))).success).toBe(true);
-    expect(completed(es)).toEqual(['[{"path": "orders.py", "line": 8}]']);
-    expect(deltas(es)).toBe('[{"path": "orders.py", "line": 8}]');
-    // 样本内容：每次请求都有 thinking 内容项且 reasoning 用量 > 0；思考原文不出现在任何转换结果里
+    // 样本内容：每次请求都有 thinking 内容项且 reasoning 用量 > 0
     const ends = rawLines(n).filter((e) => e.type === "message_end" && e.message.role === "assistant").map((e) => e.message);
     expect(ends).toHaveLength(3);
     const thoughts = ends.flatMap((m) => m.content.filter((c: any) => c.type === "thinking").map((c: any) => c.thinking as string));
     expect(thoughts).toHaveLength(3);
     for (const m of ends) expect(m).toMatchObject({ thinkingLevel: "low", usage: { reasoning: expect.any(Number) } });
     expect(ends.every((m) => m.usage.reasoning > 0)).toBe(true);
-    const out = JSON.stringify(es);
-    for (const t of thoughts) expect(out).not.toContain(t.trim().slice(0, 40));
+    // 思考原文的任何部分都不进入文本事件：整段按 20 字符切片逐片检查（先于下面的精确比较，泄漏时由这里报出）
+    const texts = es.flatMap((e) => (e.type === "text.delta" || e.type === "message.completed" ? [e.text] : [])).join("\n");
+    for (const t of thoughts) {
+      const pieces = [...Array(Math.ceil(t.length / 20)).keys()].map((i) => t.slice(i * 20, i * 20 + 20)).concat(t.slice(-20)); // 末尾不足 20 的片段另用最后 20 字符覆盖
+      for (const piece of pieces)
+        if (piece.trim().length >= 10) expect(texts, `thinking leaked: ${JSON.stringify(piece)}`).not.toContain(piece);
+    }
+    expect(completed(es)).toEqual(['[{"path": "orders.py", "line": 8}]']);
+    expect(deltas(es)).toBe('[{"path": "orders.py", "line": 8}]');
   });
 
   it("样本内容核对（思考关闭的样本）：没有 thinking 流事件，助手消息只有 text/toolCall，reasoning 用量为 0，thinkingLevel 为 off", () => {

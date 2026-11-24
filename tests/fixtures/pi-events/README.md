@@ -75,8 +75,6 @@
 | 工作树根目录 | `<repo>` |
 | 家目录 | `<home>` |
 
-（同次运行另有 `real-qwen-api-compute-total.jsonl`，纯文本、无工具，与 `text-only.jsonl` 覆盖的形状相同，已在第 3 次运行的提交中删除。）
-
 替换后检查：样本中都不再含家目录、工作树路径和用户名（`grep` 无结果），`check-secrets --env DASHSCOPE_API_KEY` 通过。
 
 规则：家目录、仓库/工作树路径和用户名必须去掉；随机临时目录若无法一致替换（如被拆在流式增量里），可以保留，并在下面注明原因。
@@ -108,9 +106,6 @@
 |---|---|---|
 | `real-qwen-api-run3-thinking-send-notice.jsonl` | `send_notice` | 每次请求都先有 thinking（`thinking_start/delta/end`）：thinking + `read notify.py` 与 `grep` 并行 → thinking + 并行 `read orders.py`、`read legacy.py` → thinking + 最终文本 `[{"path": "orders.py", "line": 8}]`（正确） |
 
-生成元数据与第 2 次不同的地方：
-- 命令：`TMPDIR=/tmp/fp-t1 node --env-file=<项目根目录>/.env --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/qwen3.6-35b-a3b --thinking low --record-dir .tmp/t1-api-run3 --output .tmp/t1-api-run3-result.json`，取自 `.tmp/t1-api-run3/send_notice.jsonl`；
-- 时间 `2026-11-24T12:17:41.489Z`；源码 commit `c16278660c7a5deb9005b1ff121d7ea64ca7a59e`，工作区干净；
-- 思考 `low`：qwen-api 的 compat 另有 `thinkingTokenBudgetField: "thinking_budget"`，pi 发送 `enable_thinking: true`、`thinking_budget: 2048`、`max_completion_tokens: 8192`；助手消息的 `thinkingLevel` 为 `low`。
+取自 `.tmp/t1-api-run3/send_notice.jsonl`。运行条件（命令、时间、commit、思考级别与请求字段、`TMPDIR=/tmp/fp-t1`）见 `docs/reviews/step01-pi-integration.md` 的“Task 10B 第 3 次运行”一节。
 
 脱敏规则同上；替换后搜索家目录、工作树路径和用户名都没有结果，`check-secrets --env DASHSCOPE_API_KEY --local-paths` 通过，且不含 `var/folders`。临时副本路径为 `/private/tmp/fp-t1/fp-t1-<随机>/repo`（`/tmp` 的 realpath），不含用户名或账户标识，照旧保留（同样被拆在流式增量里）。转换器测试断言：thinking 不进入 `text.delta` 与 `message.completed`，每次请求的 `usage.reasoning` 都大于 0。
