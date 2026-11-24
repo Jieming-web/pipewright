@@ -35,9 +35,12 @@ beforeEach(() => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(servers.map((s) => s.close()));
-  for (const [k, v] of [["FP_TEST_KEY", saved.key], ["TMPDIR", saved.tmp]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-  rmSync(root, { recursive: true, force: true });
+  try {
+    await Promise.all(servers.map((s) => s.close()));
+    for (const [k, v] of [["FP_TEST_KEY", saved.key], ["TMPDIR", saved.tmp]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 const serve = async (turns: ScriptedTurn[]) => { const s = await startFakeOpenAIServer(turns); servers.push(s); return s; };

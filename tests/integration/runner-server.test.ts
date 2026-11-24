@@ -27,10 +27,13 @@ beforeEach(() => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(runners.map((r) => r.close()));
-  await Promise.all(servers.map((s) => s.close()));
-  if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
-  rmSync(root, { recursive: true, force: true });
+  try {
+    await Promise.all(runners.map((r) => r.close()));
+    await Promise.all(servers.map((s) => s.close()));
+    if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 async function setup(turns: ScriptedTurn[], o: Partial<Parameters<typeof startRunnerServer>[0]> = {}) {

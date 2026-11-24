@@ -28,9 +28,12 @@ beforeEach(() => {
   servers = [];
 });
 afterEach(async () => {
-  await Promise.all(servers.map((s) => s.close()));
-  if (saved === undefined) delete process.env.FP_TEST_KEY; else process.env.FP_TEST_KEY = saved;
-  rmSync(root, { recursive: true, force: true });
+  try {
+    await Promise.all(servers.map((s) => s.close()));
+    if (saved === undefined) delete process.env.FP_TEST_KEY; else process.env.FP_TEST_KEY = saved;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 const serve = async (turns: ScriptedTurn[]) => { const s = await startFakeOpenAIServer(turns); servers.push(s); return s; };

@@ -30,11 +30,14 @@ beforeEach(() => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(clients.map((c) => c.close()));
-  await Promise.all(runners.map((r) => r.close()));
-  await Promise.all(servers.map((s) => s.close()));
-  await Promise.all(stubs.map((w) => new Promise((r) => { for (const c of w.clients) c.terminate(); w.close(r); })));
-  rmSync(root, { recursive: true, force: true });
+  try {
+    await Promise.all(clients.map((c) => c.close()));
+    await Promise.all(runners.map((r) => r.close()));
+    await Promise.all(servers.map((s) => s.close()));
+    await Promise.all(stubs.map((w) => new Promise((r) => { for (const c of w.clients) c.terminate(); w.close(r); })));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 async function setup(turns: ScriptedTurn[], o: Partial<Parameters<typeof startRunnerServer>[0]> = {}) {
