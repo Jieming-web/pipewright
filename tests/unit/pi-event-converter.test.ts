@@ -71,7 +71,7 @@ describe("convertPiEvent 重放 2B 样本", () => {
   });
 });
 
-const REAL_API = ["real-qwen-api-send-notice", "real-qwen-api-compute-total"];
+const REAL_API = ["real-qwen-api-send-notice", "real-qwen-api-compute-total", "real-qwen-api-run2-normalize-name"];
 const rawLines = (name: string): any[] =>
   readFileSync(join(FIX, `${name}.jsonl`), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
 
@@ -98,6 +98,23 @@ describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b
     expect(completed(es)).toHaveLength(1);
     expect(completed(es)[0].startsWith("```json")).toBe(true);
     expect(deltas(es)).toBe(completed(es)[0]);
+  });
+
+  it("run2-normalize-name：grep 结果带行号；文本与工具调用同在一条消息时也产生 message.completed", () => {
+    const es = replay("real-qwen-api-run2-normalize-name");
+    const started = es.filter((e) => e.type === "tool.started");
+    const finished = es.filter((e) => e.type === "tool.finished") as any[];
+    expect(started.map((e) => e.toolName)).toEqual(["grep", "read", "read", "read", "read"]);
+    expect(started[0]).toMatchObject({ input: { pattern: "normalize_name" } });
+    expect(new Set(finished.map((e) => e.callId))).toEqual(new Set(started.map((e) => e.callId)));
+    expect(finished.every((e) => e.isError === false)).toBe(true);
+    const grep = finished.find((e) => e.toolName === "grep");
+    expect(grep.output.content[0].text.split("\n")).toContain("cli.py:7:     name = normalize_name(argv[2])");
+    for (const e of es) expect(ProgressEventSchema.safeParse(JSON.parse(JSON.stringify(e))).success).toBe(true);
+    const texts = completed(es);
+    expect(texts).toHaveLength(3); // 两条“文本 + read”的中间消息，加最终回答
+    expect(texts[2].endsWith('[{"path":"cli.py","line":7},{"path":"billing.py","line":9}]')).toBe(true);
+    expect(deltas(es)).toBe(texts.join(""));
   });
 
   it("思考模式关闭：没有 thinking 流事件，助手消息只有 text/toolCall，reasoning 用量为 0，thinkingLevel 为 off", () => {

@@ -86,3 +86,17 @@
 - 用量字段 `usage.cost` 为 0，因为模型条目没有写 `cost`；实际花费按 token 数估算，见实现说明 10B。
 
 读样本时：`partial` 超前的问题同上文；转换器测试（`tests/unit/pi-event-converter.test.ts`）断言这两个样本没有思考内容（无 `thinking*` 流事件、助手消息只含 `text`/`toolCall`、`usage.reasoning` 为 0、`thinkingLevel` 为 `off`）。
+
+### 第 2 次运行样本（Task 10B 第 2 次运行，2026-11-24）
+
+| 文件 | 来源题目 | 内容 |
+|---|---|---|
+| `real-qwen-api-run2-normalize-name.jsonl` | `normalize_name` | 先 `grep`（结果带 `文件:行号:` 前缀）→ 并行 2 个 `read` → 两轮“文本 + `read`”同在一条助手消息 → 最终文本：一段说明加 JSON 数组（格式错误、漏了 text_utils.py:6，见实现说明 10B 第 2 次运行） |
+
+生成元数据与上面不同的地方：
+- 命令中 `--record-dir .tmp/t1-api-run2 --output .tmp/t1-api-run2-result.json`，取自 `.tmp/t1-api-run2/normalize_name.jsonl`；
+- 时间 `2026-11-24T11:33:42.836Z`；源码 commit `e5253d7fbe8908c3e4789c48195fb7aa68f66132`，工作区干净；
+- runner `--tools read,grep`：系统提示只声明 `read`、`grep`，rules 段没有 bash 规则；`rg` 为 ripgrep 16.0.0，runner 设 `PI_OFFLINE=1`；
+- 提示词为“先用工具查看需要的文件，确认后再作答”。
+
+脱敏规则与检查同上：家目录、工作树路径和用户名都已去掉，`check-secrets` 通过。临时副本路径照旧保留：模型这次给 `grep`/`read` 传的是副本内的绝对路径，它被拆在流式增量里。

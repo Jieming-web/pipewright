@@ -1773,3 +1773,108 @@ Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：�
 替换后用 `grep` 搜索家目录、工作树路径和用户名，都没有结果。临时副本路径没有替换：它在流式增量里被拆成多段，替换会破坏增量与最终参数的一致性，而且它不含用户名。`tests/unit/pi-event-converter.test.ts` 新增 3 个测试（工具配对与拒绝、纯文本、无思考内容），并把两个样本加进了“不产生终止事件”的检查。
 
 **未做的事**：没有重跑，没有改提示词、题目、答案或判分，没有创建 evals 报告，也没有勾选计划。`.tmp/` 和 `config/models.local.json` 不提交。
+
+### Task 10B 第 2 次运行（2026-11-24，追加）：1/5，未达标
+
+**结论**：作者批准在修正流程缺陷后、用同一模型（`qwen-api/qwen3.6-35b-a3b`，思考关闭）重跑一次。结果 1/5，退出码 1。
+- 通过：`load_config`。
+- 格式错误：其余 4 题，`answer is not valid JSON`。
+- 内容错误、超出上限、服务故障：都没有。
+
+4 道格式错误题都是先写一段说明，再给 JSON。若只看其中的 JSON：
+- `send_notice` 和 `audit_event` 是对的；
+- `normalize_name` 漏了 text_utils.py:6；
+- `compute_total` 的别名调用行号写错。
+
+按严格判分没有放宽。没有改提示词、题目、答案或判分，也没有再跑。
+
+**与第 1 次运行相比改了什么**（都是第 1 次运行暴露的流程缺陷，见 Task 10A4/10A5）：
+1. **只声明需要的工具**。契约见 `67115c9`、`d990ab1`，实现见 `8d1d57f`：
+   - runner 新增 `--tools`，脚本以 `--tools read,grep` 启动，pi 系统提示只声明 `read`、`grep`，不再有 bash 规则；
+   - 未声明的工具由 pi 回 “Tool X not found”，报告中的 `undeclaredCalls` 与 `denials` 分开列出；
+   - runner 设 `PI_OFFLINE=1`。
+2. **提供带行号的检索**（`8d1d57f`）：
+   - 开放 pi 的 `grep`（依赖 rg，结果带 `文件:行号:`），路径规则与 `read` 相同，限于副本内；
+   - 工作目录改为 `git checkout-index` 导出的纯文件，没有 `.git`。
+3. **提示词改为先读后答**（`8d1d57f`）：“先用工具查看需要的文件，确认后再作答；最终回答只输出 JSON 数组……”，工具句由工具清单生成。
+
+另外：
+- 刹车改为已声明工具最多 上限+1、未声明工具最多 上限+2（`50091c1`、`9e1687d`）；
+- 新增离线用量统计 `scripts/t1-usage.ts`（`57cde6c`、`cfe6e0d`）。用它统计第 1 次运行，结果为 13 个请求、输入 28,644、输出 900，与上一节一致。
+
+**运行前检查**：
+- 假模型测试：`pnpm vitest run tests/integration/t1-real-run.test.ts tests/unit/t1-real-run.test.ts tests/unit/check-secrets.test.ts tests/unit/t1-usage.test.ts`，4 个文件 76 个测试全部通过。
+- **以录制为准**核对工具声明：用一次性脚本启动假模型服务（`tests/helpers/fake-openai-server.ts`），对 `send_notice` 跑 `runQuestion`，录制写到 `.tmp/dryrun`，假模型依次回一次 `grep` 和一句文本。录制中系统消息的 `toolsAdded` 只有 `read`、`grep` 两个，假服务收到的请求中 `tools` 也只有 `["read","grep"]`，整个录制文件里没有出现 “bash”。系统提示的两段原文：
+  ```
+  <tools>
+  - read: Read file contents
+  - grep: Search file contents for patterns (respects .gitignore)
+
+  Additional tools may be available.
+  </tools>
+  ```
+  ```
+  <rules>
+  - Use read to examine files instead of cat or sed.
+  - Be concise in your responses
+  - Show file paths clearly when working with files
+  </rules>
+  ```
+  preamble 仍是 “Help users inspect files, run commands, and modify code.”（pi 固定文本）。干跑中的 `grep` 正常返回带行号的结果，说明 rg 在 runner 环境中可用。
+
+**运行条件**（取自报告 `conditions`）：
+- 命令：`node --env-file=<项目根目录>/.env --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/qwen3.6-35b-a3b --record-dir .tmp/t1-api-run2 --output .tmp/t1-api-run2-result.json`。第 1 次运行的输出没有被覆盖。
+- 时间 `2026-11-24T11:33:42.836Z`；源码 commit `e5253d7fbe8908c3e4789c48195fb7aa68f66132`，`dirty: false`；样例与题集 hash 与记录一致。
+- 模型条目与第 1 次相同：百炼北京端点，`qwen3.6-35b-a3b`，`thinkingFormat: "qwen"`、`reasoning: true`、`maxTokens 8192`。temperature、top_p 未设置（服务端默认）。思考关闭（`thinkingLevel: "off"`，即 `enable_thinking: false`）。
+- `tools: ["read","grep"]`；`rg: "ripgrep 16.0.0"`；`maxToolCalls 30`；每题上限 120 s。
+
+**一次的结果只代表这一次**：采样未固定、模型 ID 不带日期，同样的命令再跑结果可能不同。
+
+**逐题结果**：
+
+| 题目 | 分类 | 工具调用 | 请求 | 耗时 | 回答中的 JSON | 正确答案 |
+|---|---|---|---|---|---|---|
+| `normalize_name` | 格式错误（说明 + JSON） | grep 1，read 4 | 5 | 8.5 s | cli.py:7、billing.py:9 | billing.py:9、cli.py:7、text_utils.py:6 |
+| `compute_total` | 格式错误（说明 + 代码块） | grep 1，read 3 | 4 | 5.5 s | orders.py:10、billing.py:13 | billing.py:13、orders.py:7 |
+| `send_notice` | 格式错误（说明 + 代码块） | grep 1，read 3 | 5 | 5.5 s | orders.py:8 | orders.py:8 |
+| `load_config` | **通过** | grep 1，read 2 | 4 | 5.2 s | cli.py:6（只输出了数组） | cli.py:6 |
+| `audit_event` | 格式错误（说明 + 代码块） | grep 1，read 3 | 5 | 6.3 s | orders.py:9、notify.py:5 | notify.py:5、orders.py:9 |
+
+所有题都以 `run.settled` 结束，runner 均以 0 退出、未强杀，没有重试。
+
+**逐题分析**：
+- **5 题都先用了 grep，然后读了相关文件**，没有一题不查就答。第 1 次运行中有 3 题没调工具就作答，这个问题这次没有出现。
+- **行号**：grep 给出的行号全部正确，模型采用 grep 行号的地方都对：cli.py:7、billing.py:9、orders.py:8、notify.py:5、orders.py:9、cli.py:6。
+  - 唯一的行号错误是 `compute_total` 的别名调用。`orders.py` 中是 `total = total_of(items)`，grep `compute_total` 搜不到这一行，模型读了文件后自己数行，写成 10，实际是 7。这与第 1 次运行“自己数行容易错”的现象一致。
+- **`normalize_name` 漏了 text_utils.py:6**。grep 结果里有这一行，模型在中间消息中也写过“递归调用应该算”，但最终判断“text_utils.py 第6行调用的是同文件内定义的 normalize_name，所以是 text_utils.py 自己的定义”，于是排除了。这是对题意的推理错误。题目问的正是 text_utils.py 中定义的函数，同文件调用应该算。
+- **格式**：4 题都在最终回答中先写分析（3 题再加 ```` ```json ```` 代码块，1 题直接给数组），违反了“最终回答只输出 JSON 数组”。思考关闭时，模型把推理写进了正文。“先读后答”提示词是否促成了这一点，一次运行无法区分。
+- 如果允许从正文中取出 JSON（这不符合判分规范，只是为了说明问题），可算 3/5。
+
+**按作者顺序的检查**：
+- a. check-secrets 先行：`node --env-file=<.env> --import tsx scripts/check-secrets.ts --env DASHSCOPE_API_KEY .tmp/t1-api-run2 .tmp/t1-api-run2-result.json`，输出 `check-secrets: ok (DASHSCOPE_API_KEY not found in 2 path(s); .env ignored)`，退出 0。
+- b. 分类：`passed: [load_config]`；`formatErrors`：normalize_name、compute_total、send_notice、audit_event；`contentErrors`、`limitExceeded`、`serviceFailures` 均为空。
+- c. 拒绝与未声明工具：5 题的 `denials` 和 `undeclaredCalls` 都为空，**未声明工具（bash 等）调用次数为 0**；录制中没有出现 “bash”。
+  - 所有 `grep`/`read` 都使用副本内的**绝对路径**（取自系统提示中的 cwd），全部放行成功，没有尝试访问副本外的路径。
+  - 由于没有拒绝或 not found，不存在“被引导回 read/grep”的情况。
+  - 思考核对用与第 1 次相同的递归检查，覆盖 5 个文件中 1,430 个助手消息对象，0 个问题。23 个助手 `message_end` 的 `usage.reasoning` 全部为 0；`message_update` 只有 `text_*`、`toolcall_*`；所有含 “thinking” 的键都是 `"thinkingLevel":"off"`（69 处）。
+- d. 用量（`pnpm tsx scripts/t1-usage.ts --record-dir .tmp/t1-api-run2`）：
+
+  | 题目 | 请求 | aborted | errored | usageMissing | 输入 | 输出 |
+  |---|---|---|---|---|---|---|
+  | normalize_name | 5 | 0 | 0 | 0 | 10,421 | 725 |
+  | compute_total | 4 | 0 | 0 | 0 | 7,550 | 496 |
+  | send_notice | 5 | 0 | 0 | 0 | 9,353 | 376 |
+  | load_config | 4 | 0 | 0 | 0 | 7,117 | 240 |
+  | audit_event | 5 | 0 | 0 | 0 | 9,481 | 446 |
+  | 合计 | 23 | 0 | 0 | 0 | 43,922 | 2,283 |
+
+  每题请求数都大于 0。按 0C.1 的北京原价估算：43,922×1.8/10⁶ + 2,283×10.8/10⁶ ≈ **0.104 元**。两次运行合计约 0.165 元。控制台账单待作者核对。干跑使用假模型，没有调用 API。
+
+**发给 API 提供方的内容**：系统提示仍包含本机绝对路径。cwd 现在是每题的临时副本目录（macOS 按用户随机生成的临时目录）；docs 段中 pi 安装目录的路径在家目录下，含本机用户名。模型这次还把副本绝对路径写进了工具参数。
+
+**录制**：本次出现了已有样本没有覆盖的形状：`grep` 调用与带行号的结果，以及同一条助手消息里同时有文本和 `read`。为此新增 `tests/fixtures/pi-events/real-qwen-api-run2-normalize-name.jsonl`，按 README 的规则脱敏。
+- 搜索家目录、工作树路径和用户名都没有结果，check-secrets 通过；
+- 临时副本路径按 README 的规则保留；
+- `tests/unit/pi-event-converter.test.ts` 新增一个测试，并把该样本加入无思考内容和不产生终止事件的检查。
+
+**建议**（需要作者决定）：剩下的问题集中在格式（正文中混入推理）和推理判断（同文件调用、别名调用的行号）。作者预定的下一个调整是开启思考，若仍不行再换模型；开启思考也可能让推理留在思考段，使最终回答更干净。是否开启、是否再跑，由作者决定。
