@@ -11,8 +11,8 @@ const replay = (name: string): ProgressEvent[] =>
 const deltas = (es: ProgressEvent[]) => es.flatMap((e) => (e.type === "text.delta" ? [e.text] : [])).join("");
 const completed = (es: ProgressEvent[]) => es.flatMap((e) => (e.type === "message.completed" ? [e.text] : []));
 const TERMINAL = ["run.settled", "run.failed", "run.cancelled"];
-// 10B 真实 API 样本：前两个思考关闭，run3 思考开启（low）
-const REAL_API_OFF = ["real-qwen-api-send-notice", "real-qwen-api-run2-normalize-name"];
+// 10B 真实 API 样本：前两个思考关闭，run3 思考开启（low）；10C 本地 Ollama 样本思考关闭
+const REAL_API_OFF = ["real-qwen-api-send-notice", "real-qwen-api-run2-normalize-name", "real-ollama-audit-event"];
 const REAL_API = [...REAL_API_OFF, "real-qwen-api-run3-thinking-send-notice"];
 const rawLines = (name: string): any[] =>
   readFileSync(join(FIX, `${name}.jsonl`), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
@@ -162,6 +162,24 @@ describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b
         expect(m.thinkingLevel).toBe("off");
       }
     }
+  });
+});
+
+describe("convertPiEvent 重放 10C 本地 Ollama 样本（ollama/qwen3-4b-instruct-2507-ctx16k）", () => {
+  it("audit-event：工具调用一次给全（单个 toolcall_delta），grep 开始/结束配对，完成消息与增量一致", () => {
+    const n = "real-ollama-audit-event";
+    const toolDeltas = rawLines(n).filter((e) => e.type === "message_update" && e.assistantMessageEvent.type === "toolcall_delta");
+    expect(toolDeltas).toHaveLength(1);
+    const es = replay(n);
+    const started = es.filter((e) => e.type === "tool.started");
+    const finished = es.filter((e) => e.type === "tool.finished") as any[];
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ toolName: "grep", input: { pattern: "audit_event\\s*\\(", path: "." } });
+    expect(finished.map((e) => [e.callId, e.isError])).toEqual([[started[0].callId, false]]);
+    expect(finished[0].output.content[0].text.split("\n")).toContain('orders.py:9:     audit.audit_event("order", user)');
+    for (const e of es) expect(ProgressEventSchema.safeParse(JSON.parse(JSON.stringify(e))).success).toBe(true);
+    expect(completed(es)).toEqual(['[{"path":"notify.py","line":5},{"path":"orders.py","line":9}]']);
+    expect(deltas(es)).toBe(completed(es)[0]);
   });
 });
 

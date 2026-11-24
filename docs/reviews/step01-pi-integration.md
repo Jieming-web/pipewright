@@ -1941,3 +1941,70 @@ Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：�
 - README 写明：`/private/var/folders/<标识>/T/` 是 macOS 每个用户固定的临时目录标识，不含用户名；第 3 次运行用 TMPDIR 避开了它。
 
 **发给 API 提供方的内容**：同第 2 次。系统提示仍包含本机绝对路径：cwd 为 `/private/tmp/fp-t1/…`，pi docs 路径在家目录下、含用户名。
+
+### Task 10C 本地五题验收与配置切换（2026-11-24，追加）：1/5，结果如实记录
+
+**结论**：本地模型 `ollama/qwen3-4b-instruct-2507-ctx16k`（非思考 instruct，思考 off）唯一一次正式运行 1/5，退出码 1。通过 `audit_event`；其余 4 题都是内容错误。没有格式错误、截断、上下文溢出、服务故障，也没有超出上限。小模型的结果只做记录，不要求通过。按作者规则没有改提示词、题目、答案、判分、时限、工具或思考。配置切换证据：产品源码与脚本的 21 个文件 hash、样例与题集 hash，都与 10B 第 3 次运行完全一致。
+
+**Step 1 环境核对（只读，未拉模型、未启停服务、未改 Ollama 配置）**：与 0C.2 一致。
+- `ollama --version` / `/api/version` 为 0.40.15；进程 `ollama serve` 由 brew launch agent 启动，plist 环境同 0C（`OLLAMA_FLASH_ATTENTION=1`、`OLLAMA_KV_CACHE_TYPE=q8_0`）。日志最近一次 server config 中 `OLLAMA_CONTEXT_LENGTH:0`、`NUM_PARALLEL:1`、`KEEP_ALIVE:5m0s`。
+- `/api/tags`：派生标签 `7f091551b95c30f4…0ffc`，基础标签 `0edcdef34593eac1…8ba0`，与 0C 相同；两者都是 Q4_K_M、4.0B。派生标签参数含 `num_ctx 16384`，FROM 为同一权重层 `sha256-85e4a5b7…18b9`；运行时 `ollama ps` 为 `CONTEXT 16384`、100% GPU。
+- 有一处与 0C 不同，但不阻塞推理：数据卷可用空间 9.2 GiB（0C 为 51 GiB）。
+
+**模型配置切换**：把 `config/models.example.json` 中的 `ollama` provider 原样复制进被 git 忽略的 `config/models.local.json`，其余不变（qwen-api 条目保留）。文件 sha256 由 `ae2e7c79…` 变为 `f0c1691a…`（与报告的 `modelsConfigSha256` 一致）。
+
+**预检 (a)：真实工具调用**。在 scratch 中写了一段一次性 tsx 代码，直接调用 `runQuestion`（`send_notice`，`TMPDIR=/tmp/fp-t1`，录制到 `.tmp/t1-local-precheck/`）。原始录制中，助手 `message_end` 的 content 是 `toolCall`，不是看起来像调用的文本：
+- 第 1 轮为 `grep {"pattern":"send_notice\\s*\\(","path":".","glob":"notify.py"}`，`stopReason: toolUse`；
+- 接着是 `tool_execution_start/end{isError:false}` 和 `toolResult`（`notify.py:4: def send_notice…`）；
+- 第 2 轮为不带 glob 的 `grep`，结果中有 `orders.py:8`；
+- 最后文本结束（`stop`）。
+
+本题多答了 legacy.py:7/11（类内同名方法）。这只是预检，不计入结果。
+
+**预检 (b)：16k 上下文溢出时 Ollama 的表现**（直接请求 `127.0.0.1:11434/v1/chat/completions`，请求形状同 pi，并另经 pi 验证一次）：
+
+| 情形 | 现象 | 能否识别 |
+|---|---|---|
+| 单条消息 33,103 或 16,472 token（> 16384） | **HTTP 400** `request (N tokens) exceeds the available context size (16384 tokens), try increasing it`，不截断 | 能。pi 记为 `stopReason: error`，errorMessage 匹配 pi 的 llama.cpp 溢出模式；runner 据此发 `run.failed`，报告记为 `serviceFailures`，原因中带这句话 |
+| 多条消息合计超出（直接请求：系统消息 + 4 条消息约 18k token） | **静默丢弃最早的非系统消息**，只保留系统消息和最后一条：HTTP 200，`finish_reason: stop`，`prompt_tokens 6645`，`cached_tokens 12`；问题已被丢掉，模型答 `UNSEEN`。Ollama 在 INFO 级别没有任何日志 | 报告和 t1-usage 看不出来。**原始录制能看出**：同一题中，每次请求的前缀都是上一次请求的全部内容，所以本次 `cacheRead` 应 ≈ 上一次的 `input+cacheRead`（预检 (a) 实测 1408→1410、1467→1509）。丢弃最早的消息会让前缀在系统提示之后就断开，`cacheRead` 骤降（直接请求为 12）。Ollama 日志的 `lcp` 可以佐证 |
+| 经 pi：一次并行 `read` 两个约 38 KB 的文件（约 20k token） | 第 2 次请求到 Ollama 时只剩 `task.n_tokens = 12770`；与上一次的公共前缀 lcp 从 1432 降到 1250，说明用户的问题已被丢弃。模型开始回答 “The provided data shows…”，处理 110 s 后被脚本 120 s 时限中止，判为 `timed out` 服务故障 | 能（记为超时，不记为答错）；中止的请求没有用量 |
+| 输出越过窗口（prompt 15,490 + 输出 2,330） | **静默 context shift**：日志有 `slot context shift, n_keep = 4, n_discard = 8189` 和 `truncated = 1`；响应 HTTP 200、`finish_reason: stop`、`total_tokens 17820` | 能：录制中该请求的 `input+cacheRead+output > 16384` |
+
+另一项发现：**Ollama 0.40.15 忽略 pi 发送的 `max_completion_tokens`，只认 `max_tokens`**。同一个 20 token 上限：`max_tokens` 得到 `finish_reason: length`、20 token；`max_completion_tokens` 得到 1806 token、`stop`。也就是说，模型条目的 `maxTokens 4096` 和 pi 按剩余上下文做的截断，在 Ollama 上都不起作用，这个配置下不会出现 `length` 截断。本次运行不受影响：生成速度约 15 token/s，120 s 内最多约 1,900 token，达不到 4096；输出越窗又要求 prompt 已在约 14.5k 以上。修法（例如在 ollama 条目加 `compat.maxTokensField: "max_tokens"`）属于配置改动，留给作者决定，本次没有改。0C.3 写的“Ollama 接受 `max_completion_tokens`”只说明请求不报错，并不说明这个字段生效。
+
+**判据**：正式运行的溢出判断用了 scratch 中的一次性脚本 `overflow-check.py`（未入库，含 assert 自检，规则覆盖上表三种用量形状）。规则：
+- error 原因含 “exceeds the available context size” → 溢出（显式）；
+- 某次请求 `input+cacheRead+output > 16384` → 溢出（context shift）；
+- N ≥ 2 时 `cacheRead(N) < input(N−1)+cacheRead(N−1) − 16` → 疑似丢弃消息（也可能是缓存未命中，须查 Ollama 日志）；
+- 中止的请求没有用量，按超时归类。
+
+**正式运行条件**（取自报告 `conditions`）：
+- 命令：`TMPDIR=/tmp/fp-t1 pnpm tsx scripts/t1-real-run.ts --models config/models.local.json --model ollama/qwen3-4b-instruct-2507-ctx16k --record-dir .tmp/t1-local --output .tmp/t1-local-result.json`，只跑一次。
+- 时间 `2026-11-24T13:18:06.906Z`；commit `5d8af7e9629cae18cb572b53b6b2cbc8417ef34d`，`dirty: false`。
+- 模型条目：`baseUrl http://127.0.0.1:11434/v1`，没有 compat；`reasoning: false`、`contextWindow 16384`、`maxTokens 4096`（实际未生效，见上）。报告中 apiKey 为 `<omitted>`，因为它是字面值 `"ollama"`。
+- temperature/top_p 未设置，由服务端默认，即 Modelfile 中的 0.7/0.8、top_k 20。思考 off。
+- `tools [read, grep]`，rg 16.0.0，`maxToolCalls 30`，每题 120 s。
+- `TMPDIR=/tmp/fp-t1`。tsx 编译缓存 `/tmp/fp-t1/tsx-501` 是热的（之前的运行和预检留下的，没有删）；`/tmp/fp-t1/node-compile-cache` 是本次新出现的 Node 编译缓存。模型在运行前已由预检加载（KEEP_ALIVE 5 分钟），所以这次没有冷启动。
+
+**逐题结果**（按 t1-usage，每题 2 次请求、结束原因为 `toolUse`+`stop`，`lastStopReason` 都是 `stop`；aborted、errored、usageMissing 都是 0。每题 denials、undeclaredCalls 都为空，runner 退出 0、未强杀）：
+
+| 题目 | 分类 | 实际工具调用 | 耗时 | 回答 | 原因 |
+|---|---|---|---|---|---|
+| `normalize_name` | 内容错误：missing text_utils.py:6 | grep 1（`normalize_name`，`glob *.py`，`context 5`） | 23.8 s | cli.py:7、billing.py:9 | grep 结果里有 `text_utils.py:6`，模型漏了同文件内的调用（与 10B 第 2 次相同） |
+| `compute_total` | 内容错误：missing billing.py:13、orders.py:7 | grep 1（`compute_total\s*\(\)`） | 8.7 s | `[]` | 模式要求空括号，`No matches found`，模型就答空数组，没有再搜 |
+| `send_notice` | 内容错误：missing orders.py:8 | grep 1（`glob notify.py`） | 9.5 s | `[]` | 只在定义所在的文件里搜，只搜到定义行，就答空数组 |
+| `load_config` | 内容错误：missing cli.py:6 | grep 1（`load_config\s*\(\)`） | 9.5 s | `[]` | 同 compute_total |
+| `audit_event` | **通过** | grep 1（`audit_event\s*\(`，`context 2`） | 12.8 s | notify.py:5、orders.py:9 | — |
+
+- 合计 10 次请求：输入 4,595，cacheRead 10,403，输出 290；单次请求的 prompt+输出最多 1,918 token。溢出判据对 5 题都没有标记，上下文离 16k 很远。
+- 每题都只调用了一次 grep，没有 read。回答格式都干净（只有 JSON 数组）；与 10B 思考关闭时“推理写进正文”的现象不同。
+- 失败都出在搜索策略上：模式写错或范围太窄，然后不再核对就作答。这属于小模型能力问题。时限没有成为限制：最长 23.8 s，远小于 120 s。是否开放更多工具、是否放宽时限，现在没有依据需要这样做。
+
+**配置切换证据**（对比 `.tmp/t1-api-run3-result.json`）：
+- `versions.sources` 的 21 个文件 hash 全部相同（scripts/t1-real-run.ts、scripts/t1-grade.ts，以及 engine-protocol、engine-runner、engine-client 的 src）。`sampleRepoHash 5062bea7…`、`questionsHash ba85b7e0…` 和 recorded 都相同；每题副本的基准 commit 也相同（`a75dd979…`）。
+- 两次 source commit 之间（`c162786..5d8af7e`）只改了 docs、tests/fixtures、tests/unit；`git diff --name-only c162786 HEAD -- scripts packages config` 为空。
+- 报告中不同的项：`model`、`modelsConfigSha256`、`modelEntry`、`sampling.maxTokens`（8192→4096，来自模型条目），以及 `thinking`（10B 第 3 次是运行参数 `--thinking low`，本次是默认 off）、startedAt、commit。代码没有任何改动。
+
+**录制与 fixtures**：新增 `tests/fixtures/pi-events/real-ollama-audit-event.jsonl`。新形状：Ollama 一次给全的工具调用只产生一个 `toolcall_delta`；`cacheRead` 非 0。脱敏规则同 README，README 已追加一节。`check-secrets --local-paths` 对该文件通过。`.tmp/t1-local*` 中有 pi docs 段的家目录路径（`--local-paths` 报出，仅供参考；不提交）。`tests/unit/pi-event-converter.test.ts` 新增 1 个测试，并把该样本加入思考关闭的样本核对与“不产生终止事件”的检查。把样本的 `thinkingLevel` 临时改为 low 后，核对测试会失败（已恢复）。`pnpm vitest run tests/unit/pi-event-converter.test.ts`：16 个测试通过。
+
+**未做的事**：没有改代码、提示词、判分、时限、工具或思考；没有重跑；没有修 `max_completion_tokens` 的问题；没有勾选计划。`.tmp/` 和 `config/models.local.json` 不提交。

@@ -109,3 +109,13 @@
 取自 `.tmp/t1-api-run3/send_notice.jsonl`。运行条件（命令、时间、commit、思考级别与请求字段、`TMPDIR=/tmp/fp-t1`）见 `docs/reviews/step01-pi-integration.md` 的“Task 10B 第 3 次运行”一节。
 
 脱敏规则同上；替换后搜索家目录、工作树路径和用户名都没有结果，`check-secrets --env DASHSCOPE_API_KEY --local-paths` 通过，且不含 `var/folders`。临时副本路径为 `/private/tmp/fp-t1/fp-t1-<随机>/repo`（`/tmp` 的 realpath），不含用户名或账户标识，照旧保留（同样被拆在流式增量里）。转换器测试断言：思考原文的任何片段都不出现在转换结果的任何事件、任何字段中（与工具结果等非思考内容重合的片段除外），每次请求的 `usage.reasoning` 都大于 0。
+
+## 本地 Ollama 样本（Task 10C，2026-11-24）
+
+| 文件 | 来源题目 | 内容 |
+|---|---|---|
+| `real-ollama-audit-event.jsonl` | `audit_event` | 一次 `grep`（带 `context: 2`）→ 最终文本 `[{"path":"notify.py","line":5},{"path":"orders.py","line":9}]`（正确）。新形状：Ollama 的工具调用一次给全，pi 只发**一个** `toolcall_delta`；`usage.cacheRead` 非 0（Ollama 的 `cached_tokens`） |
+
+取自 `.tmp/t1-local/audit_event.jsonl`。命令：`TMPDIR=/tmp/fp-t1 pnpm tsx scripts/t1-real-run.ts --models config/models.local.json --model ollama/qwen3-4b-instruct-2507-ctx16k --record-dir .tmp/t1-local --output .tmp/t1-local-result.json`；时间 `2026-11-24T13:18:06.906Z`，源码 commit `5d8af7e9629cae18cb572b53b6b2cbc8417ef34d`，工作区干净；模型条目 `reasoning: false`、`contextWindow 16384`、`maxTokens 4096`，思考 off；其余运行条件见 `docs/reviews/step01-pi-integration.md` 的 “Task 10C” 一节。
+
+脱敏规则同上（时间戳、`<pi-package>`、`<repo>`、`<home>`；没有 8 位会话条目 id）。替换后搜索家目录、工作树路径和用户名都没有结果，`check-secrets --local-paths` 通过。临时副本路径 `/private/tmp/fp-t1/fp-t1-<随机>/repo` 照旧保留。
