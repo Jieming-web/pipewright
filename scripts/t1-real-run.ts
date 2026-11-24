@@ -1,5 +1,5 @@
 // T1 只读验收：五道题各起一个新 runner（独立进程组）、新内存会话与样例的临时 git 副本，逐题判分并写报告。
-// 用法：pnpm tsx scripts/t1-real-run.ts --models <配置> --model <provider/id> --record-dir <目录> --output <报告>
+// 用法：pnpm tsx scripts/t1-real-run.ts --models <配置> --model <provider/id> --record-dir <目录> --output <报告> [--max-tool-calls 30]
 // 密钥等 env 由外层 Node 进程注入，本脚本不读 .env；也不解析 runner 录制的 pi 原始事件。
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -13,6 +13,7 @@ import type { ContextFile, Decision, RunSnapshot, SequencedEvent, ToolRequest } 
 import { gradeAnswer, type CallSite, type GradeResult } from "./t1-grade.js";
 
 export const QUESTION_TIMEOUT_MS = 120_000;
+export const MAX_TOOL_CALLS = 30;
 const ROOT = join(import.meta.dirname, "..");
 const MAIN = join(ROOT, "packages/engine-runner/src/main.ts");
 const FIXTURES = join(ROOT, "tests/fixtures");
@@ -27,6 +28,7 @@ export type RunOptions = {
   sampleDir?: string;
   questionTimeoutMs?: number;
   stopTimeoutMs?: number;
+  maxToolCalls?: number;
 };
 export type QuestionResult = {
   id: string;
@@ -40,6 +42,8 @@ export type QuestionResult = {
   /** 只在 run.settled 后判分；服务故障不判分 */
   grade?: GradeResult;
   serviceFailure?: string;
+  /** 工具调用超过每题上限而取消；不判分 */
+  limitExceeded?: string;
   denials: { toolName: string; input: unknown }[];
   durationMs: number;
   runner: { pid?: number; exitCode: number | null; signal: string | null; forced: boolean; stopWaitMs?: number; stderr: string };
@@ -47,6 +51,14 @@ export type QuestionResult = {
 export type Report = {
   model: RunOptions["model"];
   modelsConfigSha256: string;
+  conditions: {
+    startedAt: string;
+    source: { commit: string; dirty: boolean };
+    modelEntry: ReturnType<typeof modelEntry>;
+    sampling: { temperature: null; top_p: null; maxTokens: number | null; note: string };
+    maxToolCalls: number;
+    questionTimeoutMs: number;
+  };
   versions: {
     sampleRepoHash: string;
     questionsHash: string;
@@ -60,6 +72,7 @@ export type Report = {
     formatErrors: { id: string; reason: string }[];
     contentErrors: { id: string; missing: string[]; extra: string[] }[];
     serviceFailures: { id: string; reason: string }[];
+    limitExceeded: { id: string; reason: string }[];
   };
 };
 
@@ -77,6 +90,14 @@ function sourceHashes(): Record<string, string> {
       if (e.isFile()) files.push(relative(ROOT, join(e.parentPath, e.name)).split(sep).join("/"));
   }
   return Object.fromEntries(files.sort().map((f) => [f, sha(readFileSync(join(ROOT, f)))]));
+}
+
+/** 报告用的模型配置条目：apiKey 只保留 "$环境变量名" 引用，字面值与 headers 不进报告 */
+export function modelEntry(config: { providers?: Record<string, any> }, m: RunOptions["model"]) {
+  const { models, apiKey, headers: _, ...provider } = config.providers?.[m.provider] ?? {};
+  const model = (models as { id: string }[] | undefined)?.find((x) => x.id === m.id);
+  if (!model) return { provider: null, model: null };
+  return { provider: { ...provider, ...(apiKey !== undefined && { apiKey: /^\$[A-Za-z_]\w*$/.test(apiKey) ? apiKey : "<omitted>" }) }, model };
 }
 
 /** 样例 .py/.md 的临时 git 副本，提交到 main；固定身份与时间，同一内容得到同一基准 commit。files 由副本的 git ls-files 生成 */
@@ -142,6 +163,7 @@ function buildPrompt(q: Question, files: string[]): string {
 
 export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionResult> {
   const timeoutMs = o.questionTimeoutMs ?? QUESTION_TIMEOUT_MS;
+  const maxToolCalls = o.maxToolCalls ?? MAX_TOOL_CALLS;
   const t0 = performance.now();
   const root = realpathSync(mkdtempSync(join(tmpdir(), "fp-t1-")));
   const r: QuestionResult = {
@@ -174,8 +196,15 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
     r.runner.pid = runner.pid;
     client = await within(runner.connect());
     client.onEvent((e) => events.push(e));
+    let toolCalls = 0;
     client.onIntercept(async (req) => {
-      const d = toolDecision(req, r.workDir);
+      // 刹车：放行与拒绝都计数。越限的这次先经启动者取消（停止时限照常从此刻计），再回拒绝，runner 不再发下一次模型请求
+      const over = ++toolCalls > maxToolCalls;
+      if (over && !r.limitExceeded) {
+        r.limitExceeded = `tool calls exceeded --max-tool-calls ${maxToolCalls}`;
+        runner!.cancel();
+      }
+      const d: Decision = over ? { decision: "block", reason: `本题工具调用已超过上限 ${maxToolCalls}，任务取消` } : toolDecision(req, r.workDir);
       if (d.decision !== "allow") r.denials.push({ toolName: req.toolName, input: req.input });
       return d;
     });
@@ -183,7 +212,7 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
     started = true;
     const end = await within(client.waitForEnd());
     if (end.type === "run.failed") failures.push(`run.failed: ${end.reason}`);
-    else if (end.type === "run.cancelled") failures.push("run.cancelled");
+    else if (end.type === "run.cancelled" && !r.limitExceeded) failures.push("run.cancelled");
   } catch (e) {
     failures.push(message(e));
     if (e === TIMEOUT && started) runner?.cancel();
@@ -206,7 +235,7 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
   if (r.runner.forced) failures.push(`runner force-killed after ${o.stopTimeoutMs ?? STOP_TIMEOUT_MS} ms stop timeout`);
   else if (r.runner.exitCode !== 0) failures.push(`runner exited with code ${r.runner.exitCode} (signal ${r.runner.signal})`);
   if (failures.length) r.serviceFailure = failures.join("; ");
-  else if (r.terminal === "run.settled") r.grade = gradeAnswer(r.answer ?? "", q.answers);
+  else if (r.terminal === "run.settled" && !r.limitExceeded) r.grade = gradeAnswer(r.answer ?? "", q.answers);
   r.durationMs = Math.round(performance.now() - t0);
   return r;
 }
@@ -215,9 +244,27 @@ export async function runAll(o: RunOptions): Promise<Report> {
   const qs = JSON.parse(readFileSync(join(FIXTURES, "sample-repo-questions.json"), "utf8"));
   const questions: Question[] = qs.questions;
   mkdirSync(o.recordDir, { recursive: true });
+  const startedAt = new Date().toISOString();
+  const config = readFileSync(o.modelsPath);
+  const entry = modelEntry(JSON.parse(config.toString()), o.model);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: ROOT, encoding: "utf8" });
   const report: Report = {
     model: o.model,
-    modelsConfigSha256: sha(readFileSync(o.modelsPath)),
+    modelsConfigSha256: sha(config),
+    conditions: {
+      startedAt,
+      source: { commit: git("rev-parse", "HEAD").trim(), dirty: git("status", "--porcelain") !== "" },
+      modelEntry: entry,
+      sampling: {
+        temperature: null,
+        top_p: null,
+        maxTokens: (entry.model as { maxTokens?: number } | null)?.maxTokens ?? null,
+        // 依据 pi 1.5.1 openai-completions，由集成测试对照假服务收到的请求体核对
+        note: "null 表示请求中未设置、由服务端默认（runner 与 pi 会话都不设采样参数）；maxTokens 为 pi 按模型条目发送的上限，随剩余上下文截断，字段名 max_tokens/max_completion_tokens 由 compat 决定",
+      },
+      maxToolCalls: o.maxToolCalls ?? MAX_TOOL_CALLS,
+      questionTimeoutMs: o.questionTimeoutMs ?? QUESTION_TIMEOUT_MS,
+    },
     versions: {
       sampleRepoHash: sampleHash(o.sampleDir ?? join(FIXTURES, "sample-repo")),
       questionsHash: sha(JSON.stringify(questions)),
@@ -225,13 +272,14 @@ export async function runAll(o: RunOptions): Promise<Report> {
       sources: sourceHashes(),
     },
     questions: [],
-    summary: { allCorrect: false, passed: [], formatErrors: [], contentErrors: [], serviceFailures: [] },
+    summary: { allCorrect: false, passed: [], formatErrors: [], contentErrors: [], serviceFailures: [], limitExceeded: [] },
   };
   const s = report.summary;
   for (const q of questions) {
     const r = await runQuestion(q, o);
     report.questions.push(r);
     if (r.serviceFailure) s.serviceFailures.push({ id: r.id, reason: r.serviceFailure });
+    else if (r.limitExceeded) s.limitExceeded.push({ id: r.id, reason: r.limitExceeded });
     else if (r.grade?.error) s.formatErrors.push({ id: r.id, reason: r.grade.error });
     else if (r.grade?.passed) s.passed.push(r.id);
     else s.contentErrors.push({ id: r.id, missing: r.grade!.missing, extra: r.grade!.extra });
@@ -243,7 +291,7 @@ export async function runAll(o: RunOptions): Promise<Report> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let v: Record<string, string | undefined>;
   try {
-    ({ values: v } = parseArgs({ options: Object.fromEntries(["models", "model", "record-dir", "output"].map((k) => [k, { type: "string" as const }])) }));
+    ({ values: v } = parseArgs({ options: Object.fromEntries(["models", "model", "record-dir", "output", "max-tool-calls"].map((k) => [k, { type: "string" as const }])) }));
   } catch (e) {
     process.stderr.write(`t1-real-run: ${message(e)}\n`);
     process.exit(2);
@@ -254,9 +302,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.stderr.write(`t1-real-run: required --models --model <provider/id> --record-dir --output${missing.length ? `; missing ${missing.join(", ")}` : ""}\n`);
     process.exit(2);
   }
+  const max = v["max-tool-calls"] ?? String(MAX_TOOL_CALLS);
+  if (!/^[1-9]\d*$/.test(max)) {
+    process.stderr.write(`t1-real-run: --max-tool-calls must be a positive integer, got ${max}\n`);
+    process.exit(2);
+  }
   let report: Report;
   try {
-    report = await runAll({ modelsPath: v.models!, model: { provider: v.model!.slice(0, slash), id: v.model!.slice(slash + 1) }, recordDir: v["record-dir"]! });
+    report = await runAll({ modelsPath: v.models!, model: { provider: v.model!.slice(0, slash), id: v.model!.slice(slash + 1) }, recordDir: v["record-dir"]!, maxToolCalls: Number(max) });
     writeFileSync(v.output!, JSON.stringify(report, null, 2) + "\n");
   } catch (e) {
     // 跑题之前或写报告时出错：与答错（1）、参数错（2）区分

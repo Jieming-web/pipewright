@@ -80,7 +80,7 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
 
     const report: Report = await runAll(opts({ sampleDir: p("sample") }));
 
-    expect(report.summary).toEqual({ allCorrect: true, passed: Qs.map((q) => q.id), formatErrors: [], contentErrors: [], serviceFailures: [] });
+    expect(report.summary).toEqual({ allCorrect: true, passed: Qs.map((q) => q.id), formatErrors: [], contentErrors: [], serviceFailures: [], limitExceeded: [] });
     expect(server!.errors).toEqual([]);
     expect(server!.requests).toHaveLength(10);
     const files = readdirSync(p("sample")).sort();
@@ -132,6 +132,28 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
     expect(new Set(report.questions.map((r) => r.baseCommit)).size).toBe(1);
 
     expect(report.model).toEqual(MODEL);
+    // 10A3 运行条件
+    const c = report.conditions;
+    expect(new Date(c.startedAt).toISOString()).toBe(c.startedAt);
+    expect(Date.parse(c.startedAt)).toBeLessThanOrEqual(Date.now());
+    expect(c.source).toEqual({
+      commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO, encoding: "utf8" }).trim(),
+      dirty: execFileSync("git", ["status", "--porcelain"], { cwd: REPO, encoding: "utf8" }) !== "",
+    });
+    const cfg = JSON.parse(readFileSync(p("model/models.json"), "utf8")).providers.fake;
+    expect(c.modelEntry).toEqual({
+      provider: { baseUrl: cfg.baseUrl, api: cfg.api, apiKey: "<omitted>", compat: cfg.compat },
+      model: cfg.models[0],
+    });
+    expect(JSON.stringify(report)).not.toContain(cfg.apiKey);
+    expect(c.maxToolCalls).toBe(30);
+    expect(c.questionTimeoutMs).toBe(120_000);
+    // 报告写的采样参数与假服务收到的请求体一致：未设置的字段请求里确实没有
+    expect(c.sampling).toMatchObject({ temperature: null, top_p: null, maxTokens: cfg.models[0].maxTokens });
+    for (const req of server!.requests as Record<string, unknown>[]) {
+      expect(Object.keys(req).sort()).toEqual(["max_completion_tokens", "messages", "model", "stream", "stream_options", "tools"]);
+      expect(req.max_completion_tokens).toBe(c.sampling.maxTokens);
+    }
     expect(report.modelsConfigSha256).toBe(sha(readFileSync(p("model/models.json"))));
     expect(report.versions.questionsHash).toBe(qs.questionsHash);
     expect(report.versions.recorded).toEqual({ sampleRepoHash: qs.sampleRepoHash, questionsHash: qs.questionsHash });
@@ -167,6 +189,7 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
       ],
       contentErrors: [{ id: q2.id, missing: ["orders.py:7"], extra: ["billing.py:14"] }],
       serviceFailures: [],
+      limitExceeded: [],
     });
     expect(report.versions.sampleRepoHash).toBe(qs.sampleRepoHash);
     expect(server!.errors).toEqual([]);
@@ -189,11 +212,37 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     expect(leftovers()).toEqual([]);
   }, 60_000);
 
-  it("参数缺失：退出 2，不跑题", async () => {
+  it("--max-tool-calls：越限的题单列为超出上限（不判分、不算服务故障），其余照常，退出 1", async () => {
+    const [q1, ...rest] = Qs as [Q, ...Q[]];
+    const bash = (id: string): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: "ls" }, id });
+    await fake([bash("b1"), bash("b2"), ...rest.map((q): ScriptedTurn => ({ kind: "text", chunks: [JSON.stringify(q.answers)] }))]);
+    const { code, err } = await cli(["--models", p("model/models.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json"), "--max-tool-calls", "1"]);
+    expect(code, err).toBe(1);
+    const report: Report = JSON.parse(readFileSync(p("report.json"), "utf8"));
+    expect(report.summary).toEqual({
+      allCorrect: false,
+      passed: rest.map((q) => q.id),
+      formatErrors: [],
+      contentErrors: [],
+      serviceFailures: [],
+      limitExceeded: [{ id: q1.id, reason: "tool calls exceeded --max-tool-calls 1" }],
+    });
+    expect(report.conditions.maxToolCalls).toBe(1);
+    expect(server!.errors).toEqual([]);
+    expect(server!.requests).toHaveLength(6);
+    expect(leftovers()).toEqual([]);
+  }, 60_000);
+
+  it("参数缺失或 --max-tool-calls 非正整数：退出 2，不跑题", async () => {
     const { code, err } = await cli([]);
     expect(code).toBe(2);
     expect(err).toMatch(/required/);
-  }, 20_000);
+    for (const n of ["0", "-1", "1.5", "abc"]) {
+      const r = await cli(["--models", p("no-such.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json"), "--max-tool-calls", n]);
+      expect(r.code, n).toBe(2);
+      expect(r.err).toMatch(/max-tool-calls/);
+    }
+  }, 30_000);
 
   it("运行前出错（模型配置不存在）：stderr 说明原因，退出 3，与答错区分，不写报告", async () => {
     const { code, err } = await cli(["--models", p("no-such.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json")]);
@@ -201,6 +250,23 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     expect(err).toMatch(/no-such\.json/);
     expect(existsSync(p("report.json"))).toBe(false);
   }, 20_000);
+});
+
+describe.sequential("t1-real-run：每题工具调用刹车", () => {
+  it("模型反复调用被拒的 bash：到上限即拒绝并取消本题，记为超出上限，不判分；请求数不超过上限加 1", async () => {
+    await fake(Array.from({ length: 10 }, (_, i): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: `echo ${i}` }, id: `b${i}` })));
+    const r = await runQuestion(Qs[0]!, opts({ maxToolCalls: 3 }));
+    expect(r.limitExceeded).toBe("tool calls exceeded --max-tool-calls 3");
+    expect(r.serviceFailure).toBeUndefined();
+    expect(r.grade).toBeUndefined();
+    expect(r.terminal).toBe("run.cancelled");
+    // 放行与拒绝都计数；越限的第 4 次也记为拒绝
+    expect(r.denials.map((d) => d.input)).toEqual([0, 1, 2, 3].map((i) => ({ command: `echo ${i}` })));
+    expect(server!.requests.length).toBeLessThanOrEqual(3 + 1);
+    expect(server!.errors).toEqual([]);
+    expect(r.runner).toMatchObject({ exitCode: 0, forced: false });
+    expect(leftovers()).toEqual([]);
+  }, 30_000);
 });
 
 describe.sequential("t1-real-run：超时与停止时限", () => {

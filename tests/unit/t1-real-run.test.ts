@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRepo, readRules, toolDecision } from "../../scripts/t1-real-run.js";
+import { makeRepo, modelEntry, readRules, toolDecision } from "../../scripts/t1-real-run.js";
 
 // 10A2 调用方拦截：只放行 read，且只放行解析软链接后落在本题副本内、已存在的文件（作者 2026-11-24 决定）
 let root: string;
@@ -71,5 +71,29 @@ describe("规则来源", () => {
     expect(files).toEqual(["AGENTS.md", "m.py"]);
     writeFileSync(join(dir, "AGENTS.md"), "WORKTREE-RULES\n");
     expect(await readRules(dir)).toEqual([{ repo: "sample", path: "AGENTS.md", content: "MAIN-RULES\n", sourceCommit: baseCommit }]);
+  });
+});
+
+describe("运行条件：模型配置条目", () => {
+  const config = {
+    providers: {
+      a: { baseUrl: "u", api: "openai-completions", apiKey: "$DASHSCOPE_API_KEY", headers: { "x-k": "secret-h" }, models: [{ id: "m1", maxTokens: 1 }, { id: "m2" }] },
+      b: { baseUrl: "u", apiKey: "sk-literal-secret", models: [{ id: "m1" }] },
+    },
+  };
+  it("只取所选模型；apiKey 为 $环境变量名 时保留，headers 整体不进报告", () => {
+    expect(modelEntry(config, { provider: "a", id: "m1" })).toEqual({
+      provider: { baseUrl: "u", api: "openai-completions", apiKey: "$DASHSCOPE_API_KEY" },
+      model: { id: "m1", maxTokens: 1 },
+    });
+  });
+  it("apiKey 为字面值时不写入报告", () => {
+    const e = modelEntry(config, { provider: "b", id: "m1" });
+    expect(e.provider).toEqual({ baseUrl: "u", apiKey: "<omitted>" });
+    expect(JSON.stringify(e)).not.toContain("sk-literal-secret");
+  });
+  it("配置里没有所选模型：条目为 null", () => {
+    expect(modelEntry(config, { provider: "a", id: "nope" })).toEqual({ provider: null, model: null });
+    expect(modelEntry(config, { provider: "zz", id: "m1" })).toEqual({ provider: null, model: null });
   });
 });
