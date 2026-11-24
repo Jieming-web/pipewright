@@ -81,7 +81,8 @@
 | 9C 跨进程异常与清理验证 | 60 分钟 | 9B | 1、5 |
 | 10A1 五题样例与判定 | 60 分钟 | 9C | 4 |
 | 10A2 只读验收运行脚本 | 60 分钟 | 10A1、5、9B | 3、4 |
-| 10B API 验收与录制 | 45 分钟 | 10A2 | 2、3、4 |
+| 10A3 真实运行刹车、运行条件与密钥检查（2026-11-24 作者要求） | 45 分钟 | 10A2 | 3、4 |
+| 10B API 验收与录制 | 45 分钟 | 10A3 | 2、3、4 |
 | 10C 本地验收与配置切换证据 | 45 分钟 | 10B | 2、3、4 |
 | 11 收尾关卡 | 60 分钟 | 以上全部 | 1–11 逐条核对 |
 
@@ -350,6 +351,19 @@
 - [x] **Step 3：实现记录并验证**，每题由 runner `--record-pi-events` 写独立原始事件文件，脚本不解析 pi 原始事件；报告保存回答、判分差异（格式错误与内容答错 missing/extra 分开列出，格式错误带具体原因；2026-11-24 作者决定）、工具拒绝、模型配置版本、样例/题集哈希、源码与脚本哈希、临时基准 commit、耗时及退出情况。脚本全部答对退出 0，否则非零；服务故障与答案错误分别记录。
 - [x] **Step 4：同命令通过并提交** `test(step01): 只读验收运行与诊断采集`。 — 2026-11-24：`d9f3dca` 首版（RED：脚本模块不存在）；返修 1 轮 `c9b44ef`：read 限于临时副本（解析软链接，不存在即拒，5 种情况单元测试）、文件清单由副本 `git ls-files` 生成、拒绝理由写明用 read、启动者代码共用 `packages/engine-client/src/runner-launcher.ts`（10 秒停止计时在其中）、非零退出与脚本崩溃（退出码 3）补测。命令 `pnpm test` 382/382、`pnpm typecheck`/`build`/`check:pi` 通过，控制者在 c9b44ef 重跑一致，无残留进程与临时目录。审查：SDD 与 ponytail-review 共 1 轮返修，复审全部 ADDRESSED。 2026-11-24 返修第 2 轮（作者决定在 10B 前修）`48255dd`：启动者监听 spawn 的 error，启动失败时 exit 立即落定、listening/connect 报错、stop() 不强杀并立即返回、pid 类型可为空；脚本记为本题服务故障并继续。`pnpm test` 383/383，控制者重跑一致；复审 ADDRESSED。
 
+### Task 10A3：真实运行刹车、运行条件与密钥检查
+
+**目标**：跑真实 API 前补齐刹车、可复现条件和密钥泄露的自动检查（2026-11-24 作者要求）。
+
+**Files:** Modify `scripts/t1-real-run.ts`、`tests/integration/t1-real-run.test.ts`、`tests/unit/t1-real-run.test.ts`；Create `scripts/check-secrets.ts`、`tests/unit/check-secrets.test.ts`。
+
+**Interfaces:** 10A2 CLI 增加 `--max-tool-calls`（默认 30）；`check-secrets` CLI：`node --env-file=<.env> --import tsx scripts/check-secrets.ts --env <变量名>... <路径>...`。
+
+- [ ] **Step 1：每题刹车**，先写失败测试。调用方拦截回调按题计数工具调用（放行与拒绝都计），超过上限即取消本题，记为失败并写明原因；报告中单列为"超出上限"，不混入服务故障，也不混入格式错误或答错。假模型脚本反复调用被拒的 bash 时，测试断言本题在上限处停止、假服务请求数不超过上限加 1。每题 120 秒总时限保留。
+- [ ] **Step 2：运行条件**，报告记录开始时间（ISO）、源码 git commit 与工作区是否有未提交改动、所选模型在模型配置中的条目（不含 key，配置只引用环境变量名）、温度等采样参数的实际情况（未设置时写明未设置、由服务端默认）。测试用假服务核对请求里实际发送的采样参数与报告一致。
+- [ ] **Step 3：密钥检查**，`check-secrets` 从指定环境变量取值，在给定文件和目录（递归）中查找原文，命中即列出文件并非零退出，输出不打印 key；同时用 `git check-ignore` 确认 `.env` 已被忽略，否则非零退出。单元测试用假 key 覆盖命中、未命中、目录递归、变量未设置（非零退出并说明）、`.env` 未被忽略。
+- [ ] **Step 4：同命令通过并提交** `test(step01): 真实运行刹车、运行条件与密钥检查`。
+
 ### Task 10B：API 五题验收与录制
 
 **目标**：使用 0C 锁定的 API 候选完成验收，追加真实模型录制。
@@ -359,8 +373,8 @@
 **Interfaces:** 使用 10A2 CLI；配置只引用 `DASHSCOPE_API_KEY`，不嵌入 key。
 
 - [ ] **Step 1：复核环境与固定版本**，确认采用 0C 模型、10A1 固定的样例/题集版本，并记录当前源码 commit；读取根目录 `.env`，只将公开样例送 API。先跑 10A2 假模型测试，防止脚本错误混入结果。
-- [ ] **Step 2：实际运行**，`node --env-file=<项目根目录/.env绝对路径> --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/<锁定ID> --record-dir .tmp/t1-api --output .tmp/t1-api-result.json`；预期报告 5/5 且退出 0。未达标按 workflow 3.3 分析并报告，不更换题目、改答案或忽略失败；所有尝试追加记录。
-- [ ] **Step 3：补充录制与验证**，从 runner 生成文件中选取脱敏样本，保留生成元数据；`pnpm vitest run tests/unit/pi-event-converter.test.ts` 通过，记录五题逐项结果与实际调用花费。
+- [ ] **Step 2：实际运行**，`node --env-file=<项目根目录/.env绝对路径> --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/<锁定ID> --record-dir .tmp/t1-api --output .tmp/t1-api-result.json`；预期报告 5/5 且退出 0。未达标按 workflow 3.3 分析并报告，不更换题目、改答案或忽略失败；所有尝试追加记录。（2026-11-24 作者要求：未全对时先按报告分类看是格式错误、missing、extra、超出上限还是服务故障；题面或流程问题可以修，但不针对某道题调整提示词去凑对；确需改提示词，在账本和实现说明里记清改了什么、为什么。）
+- [ ] **Step 3：补充录制与验证**，从 runner 生成文件中选取脱敏样本，保留生成元数据；`pnpm vitest run tests/unit/pi-event-converter.test.ts` 通过，记录五题逐项结果与实际调用花费。（2026-11-24 作者要求：提交前对 `.tmp/t1-api`、结果报告和新 fixtures 运行 `check-secrets --env DASHSCOPE_API_KEY`，必须通过；以录制为准核对思考模式确实关闭——返回内容无思考段，并在转换器测试中对新 API 样本断言无思考内容；查看工具拒绝记录，副本外读取或 bash 尝试如实记入实现说明；记录运行条件（模型、采样参数、时间、commit），说明一次全对只代表这一次。注意 pi 系统提示含本机绝对路径（可能含用户名），会随请求发往 API 提供方，“只将公开样例送 API”严格说不完全准确，实现说明中注明。）
 - [ ] **Step 4：提交** `test(step01): API 五题验收与事件录制`。这不是正式评测，不创建 evals 报告。
 
 ### Task 10C：本地五题验收与配置切换
