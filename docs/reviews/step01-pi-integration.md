@@ -1689,3 +1689,87 @@ Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：�
 - 第 114 行：`resolvePromptInput("")` 返回 undefined，于是 `system-prompt.js` 第 78 行不使用自定义前言，保留默认系统提示。
 
 `" "` 不行：它是 truthy，会把默认提示整个替换掉（已用测试确认）。测试见 `tests/integration/restricted-loader.test.ts` 的 scratch-agentdir 场景。另外，会话必须使用加载器返回的同一个 `settingsManager`：`createAgentSession` 只读取自己拿到的 settingsManager，不传就会回退到默认值，而默认值是 `SettingsManager.create`，项目信任默认为 true（`dist/core/sdk.js` 第 76 行）。
+
+### Task 10B API 五题验收（2026-11-24，追加）：0/5，未达标
+
+**结论**：唯一一次真实运行 0/5，退出码 1。4 题格式错误、1 题内容错误，没有超出上限、没有服务故障。按作者规则没有改提示词、题目、答案或判分，也没有重跑；原因分析见下文，下一步由作者决定。即使不计格式（去掉代码块、截取 JSON），5 题的调用位置也全部不对，所以格式不是主因。
+
+**运行条件**（取自报告 `conditions`）：
+- 命令（仓库根目录）：`node --env-file=<项目根目录>/.env --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/qwen3.6-35b-a3b --record-dir .tmp/t1-api --output .tmp/t1-api-result.json`。`config/models.local.json` 只有 `models.example.json` 中的 `qwen-api` 条目，`apiKey` 为 `"$DASHSCOPE_API_KEY"`，未提交。
+- 时间 `2026-11-24T07:51:25.755Z`；源码 commit `d83ee30c62f3f63894eb97bb94c82760d4c53786`，`dirty: false`。样例与题集 hash 与 10A1 记录一致（`sampleRepoHash 5062bea7…`、`questionsHash ba85b7e0…`）。
+- 模型：百炼北京端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`，`qwen3.6-35b-a3b`（不带日期的 ID，见 0C.0 决定 4）；`compat.thinkingFormat: "qwen"`、`reasoning: true`、`contextWindow 262144`。
+- 采样：temperature、top_p 未设置（服务端默认）；`maxTokens 8192`。思考：会话 `thinkingLevel: "off"`（`pi-session.ts`）。按 pi 1.5.1 源码：`createAgentSession` 显式传入的档位优先（`dist/core/sdk.js` 第 121 行起），agent 把 `"off"` 变成 `reasoning: undefined`（`pi-agent-core/dist/agent.js` 第 310 行），`openai-completions.js` 第 621–622 行在 `thinkingFormat === "qwen" && model.reasoning` 时发送 `enable_thinking: !!reasoningEffort`，即 `false`。
+- 每题上限 120 s、`--max-tool-calls 30`；每题新 runner、临时 git 副本，只放行副本内的 `read`。
+- 运行前先跑了 10A2/10A3 假模型测试：`pnpm vitest run tests/integration/t1-real-run.test.ts tests/unit/t1-real-run.test.ts tests/unit/check-secrets.test.ts`，3 个文件 45 个测试全部通过。
+
+**一次的结果只代表这一次**：采样未固定、模型 ID 不带日期，同样的命令再跑结果可能不同。下面的分析只基于这一次运行。
+
+**逐题结果**（正确答案取自 `sample-repo-questions.json`）：
+
+| 题目 | 分类 | 工具调用 | 请求数 | 耗时 | 模型回答 | 正确答案 |
+|---|---|---|---|---|---|---|
+| `normalize_name` | 格式错误：`answer must be a JSON array` | 0 | 1 | 1.6 s | `{"error": "No files provided in the request. Please provide the file contents using the 'text' parameter …"}` | billing.py:9、cli.py:7、text_utils.py:6 |
+| `compute_total` | 格式错误：代码块包裹 | 0 | 1 | 1.4 s | ```` ```json ```` 包裹的 cli.py:45、audit.py:23（cli.py 只有 8 行，是编造的） | billing.py:13、orders.py:7 |
+| `send_notice` | 内容错误：missing orders.py:8，extra orders.py:7 | 10（bash 1 被拒，read 9） | 5 | 5.0 s | `[{"path":"orders.py","line":7}]` | orders.py:8 |
+| `load_config` | 格式错误：代码块包裹 | 0 | 1 | 1.8 s | 代码块包裹的 6 条：audit.py:5、billing.py:4、cli.py:6、legacy.py:3、notify.py:7、orders.py:5（只有 cli.py:6 对，其余编造） | cli.py:6 |
+| `audit_event` | 格式错误：`answer is not valid JSON` | 10（bash 1 被拒，read 9） | 5 | 5.9 s | 先写一段英文说明，再给代码块 `notify.py:7`、`orders.py:10` | notify.py:5、orders.py:9 |
+
+所有题都以 `run.settled` 结束，runner 均以 0 退出、未强杀，没有重试和错误消息。
+
+**原因分析**（只分析，未做任何修改）：
+1. **3 题没读任何文件就作答**（`normalize_name`、`compute_total`、`load_config`）。三题都只有一次请求、没有工具调用，回答是编造的。`normalize_name` 甚至回答“没有提供文件，请用 'text' 参数提供”，说明模型没把题面里的文件清单和 `read` 工具联系起来。可能的相关因素：思考关闭；题面末尾“只输出 JSON 数组……不要加任何解释文字”可能被理解成直接作答。这些只是推测，一次运行无法区分。
+2. **读了文件的 2 题行号都不对**。pi 1.5.1 的 `read` 返回原文，不带行号（`dist/core/tools/read.js`；录制中的工具结果也是原文），模型只能自己数行：
+   - `send_notice` 少数一行，写成 7，实际是 8；
+   - `audit_event` 写成 notify.py:7 / orders.py:10，实际是 5 / 9。
+
+   只开放 `read` 而题目要求精确行号，这可能是流程或计划层面的问题，不只是模型能力问题。作者 11-24 要求中说“题面或流程问题可以修”，是否算流程问题、怎么修，需要作者决定。
+3. **格式**：3 题违反了“不要用代码块、不要解释”的要求（2 题用代码块包裹，1 题先写说明再给代码块），另 1 题输出了 JSON 对象。判分按规范严格执行，没有放宽。
+4. pi 默认系统提示把 `bash/edit/write` 列为可用工具，并写着 “Use bash for file operations like ls, rg, find”（见下面的拒绝分析）。这让用了工具的 2 题都先尝试 `bash`。
+
+**思考模式核对**（以录制为准）：对 `.tmp/t1-api/` 下 5 个原始文件逐行解析，递归检查所有对象：
+- `role: "assistant"` 的消息（含 `message_update` 的 `partial`/`message`、`message_end`、`turn_end`、`agent_end` 中的消息，共 632 个对象），`content` 只允许 `text`、`toolCall`；
+- `usage.reasoning` 必须为 0 或缺省（流式中间状态缺省）；
+- 任何位置都不能有名为 `thinking`、`reasoning_content`、`reasoningContent`、`thinkingSignature`、`redacted_thinking` 的键，也不能有含 `thinking` 的 `type` 值。
+
+结果：0 个问题。补充检查：
+- 13 个助手 `message_end` 的 `usage.reasoning` 全部为 0；
+- `message_update` 的类型只有 `text_*`、`toolcall_*`；
+- 文件中所有含 “thinking” 的字符串都是 `"thinkingLevel":"off"`（39 处）。
+
+结论：思考确实关闭。转换器测试也对两个新样本断言了无思考内容；把一个 `thinking` 内容项注入样本副本后，这条断言会失败（已确认，之后恢复原文件）。
+
+**工具拒绝分析**：报告 `denials` 共 2 条，都是 `bash`，没有 `edit`/`write`，也没有读取副本外的路径；所有 `read` 都用文件清单中的相对路径（`send_notice` 9 次，`audit_event` 9 次），全部放行且成功。拒绝原因引导了下一轮改用 `read`（下面的路径已把临时目录写成 `<tmp>`）：
+- `send_notice` 第 1 轮：`bash {"command":"cd <tmp>/repo && grep -n \"send_notice\" *.py | grep -v \"def send_notice\" | grep -v \"^.*import.*send_notice\""}`。工具结果为 `isError: true`，`此任务不提供 bash，请使用 read 读取文件`。第 2 轮：`read {"path":"notify.py"}`。随后一轮并行读了其余 7 个 .py 文件，最后又读了一次 `orders.py`。
+- `audit_event` 第 1 轮：`bash {"command":"cd <tmp>/repo && grep -rn \"audit_event\" --include=\"*.py\" | grep -v \"^audit.py:\" | grep -v \"^.*import.*audit\""}`，拒绝原因同上。第 2 轮：`read {"path":"audit.py"}`。随后并行读了 7 个文件，最后读了 `README.md`。
+
+两题的 bash 命令都带着系统提示中的副本绝对路径；模型第一选择是 `grep`，而这正是 `read` 给不出的行号信息。
+
+**check-secrets**（`node --env-file=<项目根目录>/.env --import tsx scripts/check-secrets.ts --env DASHSCOPE_API_KEY …`）：
+- 运行后立即检查 `.tmp/t1-api .tmp/t1-api-result.json`：`check-secrets: ok (DASHSCOPE_API_KEY not found in 2 path(s); .env ignored)`，退出 0。
+- 检查新 fixtures：`tests/fixtures/pi-events/real-qwen-api-send-notice.jsonl`、`real-qwen-api-compute-total.jsonl` 输出同样的 ok，退出 0。
+- 提交前对全部待提交内容再跑一次：`… check-secrets.ts --env DASHSCOPE_API_KEY docs/reviews/step01-pi-integration.md tests/fixtures/pi-events tests/unit/pi-event-converter.test.ts`，输出 `check-secrets: ok (DASHSCOPE_API_KEY not found in 3 path(s); .env ignored)`，退出 0。
+
+**用量与花费**：13 个请求，输入 28,644、输出 900 token，没有缓存命中（`cacheRead` 0）。
+- 各题：`normalize_name` 1,904/33；`compute_total` 1,904/40；`send_notice` 11,479/331；`load_config` 1,903/61；`audit_event` 11,454/435。
+- 按 0C.1 的北京原价（输入 1.8、输出 10.8 元/百万 token）估算：28,644×1.8/10⁶ + 900×10.8/10⁶ ≈ **0.061 元**。
+- 没有在百炼控制台核对账单；pi 记录的 `usage.cost` 为 0，因为模型条目没有写 `cost`。
+
+**发给 API 提供方的内容**：Step 1 写的“只将公开样例送 API”严格说不完全准确。pi 的系统提示随每个请求发出，其中包括：
+- docs 段中 pi 安装目录的绝对路径。它在本机家目录下的工作树中，含本机用户名。
+- 工作目录（每题的临时副本路径，位于 macOS 按用户随机生成的临时目录下）。
+
+除此之外，请求中只有题面、文件清单和样例文件内容。
+
+**录制**：从 runner 原始文件中选了两个样本，放进 `tests/fixtures/pi-events/`：
+- `real-qwen-api-send-notice.jsonl`：bash 被拒 → read → 并行 read → 文本；
+- `real-qwen-api-compute-total.jsonl`：无工具，纯文本。
+
+脱敏规则与生成元数据写在该目录的 README。替换内容：
+- 时间戳、耗时；
+- pi 安装目录 → `<pi-package>`；
+- 工作树根目录 → `<repo>`；
+- 家目录 → `<home>`。
+
+替换后用 `grep` 搜索家目录、工作树路径和用户名，都没有结果。临时副本路径没有替换：它在流式增量里被拆成多段，替换会破坏增量与最终参数的一致性，而且它不含用户名。`tests/unit/pi-event-converter.test.ts` 新增 3 个测试（工具配对与拒绝、纯文本、无思考内容），并把两个样本加进了“不产生终止事件”的检查。
+
+**未做的事**：没有重跑，没有改提示词、题目、答案或判分，没有创建 evals 报告，也没有勾选计划。`.tmp/` 和 `config/models.local.json` 不提交。

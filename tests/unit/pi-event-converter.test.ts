@@ -66,8 +66,53 @@ describe("convertPiEvent 重放 2B 样本", () => {
   });
 
   it("全部样本都不产生终止事件", () => {
-    for (const n of ["text-only", "tool-call-then-text", "retry", "retry-drop"])
+    for (const n of ["text-only", "tool-call-then-text", "retry", "retry-drop", ...REAL_API])
       expect(replay(n).some((e) => TERMINAL.includes(e.type))).toBe(false);
+  });
+});
+
+const REAL_API = ["real-qwen-api-send-notice", "real-qwen-api-compute-total"];
+const rawLines = (name: string): any[] =>
+  readFileSync(join(FIX, `${name}.jsonl`), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+
+describe("convertPiEvent 重放 10B 真实 API 样本（qwen-api/qwen3.6-35b-a3b）", () => {
+  it("send-notice：bash 被拒后改用 read，工具开始/结束按 callId 配对，完成消息与增量一致", () => {
+    const es = replay("real-qwen-api-send-notice");
+    const started = es.filter((e) => e.type === "tool.started");
+    const finished = es.filter((e) => e.type === "tool.finished");
+    expect(started.map((e) => e.toolName)).toEqual(["bash", ...Array(9).fill("read")]);
+    expect(new Set(finished.map((e) => e.callId))).toEqual(new Set(started.map((e) => e.callId)));
+    const denied = finished.find((e) => e.callId === started[0].callId) as any;
+    expect(denied).toMatchObject({ toolName: "bash", isError: true });
+    expect(denied.output.content[0].text).toBe("此任务不提供 bash，请使用 read 读取文件");
+    expect(finished.filter((e) => e.toolName === "read").every((e) => !(e as any).isError)).toBe(true);
+    expect(started[1]).toMatchObject({ toolName: "read", input: { path: "notify.py" } });
+    for (const e of es) expect(ProgressEventSchema.safeParse(JSON.parse(JSON.stringify(e))).success).toBe(true);
+    expect(completed(es)).toEqual(['[{"path":"orders.py","line":7}]']);
+    expect(deltas(es)).toBe('[{"path":"orders.py","line":7}]');
+  });
+
+  it("compute-total：没有工具调用，只有一条文本（带代码块）", () => {
+    const es = replay("real-qwen-api-compute-total");
+    expect(es.some((e) => e.type === "tool.started" || e.type === "tool.finished")).toBe(false);
+    expect(completed(es)).toHaveLength(1);
+    expect(completed(es)[0].startsWith("```json")).toBe(true);
+    expect(deltas(es)).toBe(completed(es)[0]);
+  });
+
+  it("思考模式关闭：没有 thinking 流事件，助手消息只有 text/toolCall，reasoning 用量为 0，thinkingLevel 为 off", () => {
+    for (const n of REAL_API) {
+      const raws = rawLines(n);
+      const updates = raws.filter((e) => e.type === "message_update").map((e) => e.assistantMessageEvent.type);
+      expect(updates.some((t: string) => /thinking/.test(t))).toBe(false);
+      const ends = raws.filter((e) => e.type === "message_end" && e.message.role === "assistant").map((e) => e.message);
+      expect(ends.length).toBeGreaterThan(0);
+      for (const m of ends) {
+        expect(m.content.every((c: any) => c.type === "text" || c.type === "toolCall")).toBe(true);
+        expect(m.usage.reasoning).toBe(0);
+        expect(m.thinkingLevel).toBe("off");
+      }
+    }
   });
 });
 

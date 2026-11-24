@@ -1,6 +1,10 @@
 # pi 原始事件样本
 
-这里的 `.jsonl` 全部是**真实 pi 输出**，由 `scripts/record-pi-fixtures.ts` 经 SDK 录制，没有手写事件。目前没有 synthetic 样本；以后若补手写的边界样本，文件名须带 `synthetic`，并在本文件单列说明。
+这里的 `.jsonl` 全部是**真实 pi 输出**，没有手写事件。目前没有 synthetic 样本；以后若补手写的边界样本，文件名须带 `synthetic`，并在本文件单列说明。两类来源：
+- 假模型样本（下文到“脱敏规则”为止）：由 `scripts/record-pi-fixtures.ts` 经 SDK 录制。
+- 真实 API 样本 `real-qwen-api-*.jsonl`：从 Task 10B 一次真实运行中 runner 录下的原始事件选取、脱敏，见文末“真实 API 样本”。
+
+以下到“脱敏规则”为止只说假模型样本：
 
 - pi 版本：`@earendil-works/pi-coding-agent` **1.5.1**（未修改）
 - 模型：Task 2A 的假 OpenAI 兼容服务（`tests/helpers/fake-openai-server.ts`），provider `fake`、model `fake-model`，不用真实模型
@@ -47,3 +51,36 @@
 | 家目录 | `<home>` | 兜底 |
 
 替换按上表从上到下进行（路径先长后短）。替换后若仍含临时根目录、系统临时目录或家目录，录制函数抛错，不写文件。
+
+## 真实 API 样本（Task 10B，2026-11-24）
+
+| 文件 | 来源题目 | 内容 |
+|---|---|---|
+| `real-qwen-api-send-notice.jsonl` | `send_notice` | 第 1 轮调用 `bash` 被调用方拦截拒绝（`此任务不提供 bash，请使用 read 读取文件`）→ 改用 `read notify.py` → 一轮并行 7 个 `read` → 再读 `orders.py` → 文本 `[{"path":"orders.py","line":7}]`（行号判错，见实现说明 10B） |
+| `real-qwen-api-compute-total.jsonl` | `compute_total` | 没有工具调用，一条带 ```` ```json ```` 代码块的文本（格式错误，内容也是编造的，见实现说明 10B） |
+
+生成元数据：
+- 命令（仓库根目录）：`node --env-file=<项目根目录>/.env --import tsx scripts/t1-real-run.ts --models config/models.local.json --model qwen-api/qwen3.6-35b-a3b --record-dir .tmp/t1-api --output .tmp/t1-api-result.json`；本目录文件取自 `.tmp/t1-api/<题目>.jsonl`，即 runner `--record-pi-events` 的原始输出（`raw-event-recorder.ts`，收到即序列化）。
+- 时间 `2026-11-24T07:51:25.755Z`（报告 `conditions.startedAt`）；源码 commit `d83ee30c62f3f63894eb97bb94c82760d4c53786`，工作区干净。
+- pi `@earendil-works/pi-coding-agent` 1.5.1（未修改）。模型 provider `qwen-api`、id `qwen3.6-35b-a3b`（百炼北京端点 OpenAI 兼容接口，`compat.thinkingFormat: "qwen"`、`reasoning: true`、`maxTokens: 8192`），会话 `thinkingLevel: "off"`，请求中为 `enable_thinking: false`；没有设置 temperature/top_p（服务端默认）。
+- 会话：runner 的受限资源加载器、内存会话、调用方拦截只放行副本内的 `read`（`scripts/t1-real-run.ts`）。每题一个临时 git 副本，题面列出文件清单。
+- 录制环境与假模型样本不同：这里有 `system` 角色的 `message_end`（pi 系统提示，含工具说明与 docs 段），工具集是 pi 默认的 `read/bash/edit/write`。
+
+脱敏（只改值，不改事件结构和顺序；脚本未入库，规则如下）：
+
+| 原值 | 替换为 |
+|---|---|
+| 字段 `timestamp`、`durationMs` 的数字 / 字符串 | `0` / `1970-01-01T00:00:00.000Z`（同上文） |
+| 字段 `id`、`parentId`、`targetId` 中的 8 位十六进制随机 id | `<entry-N>`（这两个样本中没有出现） |
+| pi 安装目录（工作树 `node_modules/.pnpm/…/pi-coding-agent` 的 realpath，系统提示 docs 段） | `<pi-package>` |
+| 工作树根目录 | `<repo>` |
+| 家目录 | `<home>` |
+
+替换后检查：两个文件中都不再含家目录、工作树路径和用户名（`grep` 无结果），`check-secrets --env DASHSCOPE_API_KEY` 通过。
+
+**没有替换**的值：
+- 每题临时副本路径 `/private/var/folders/<随机>/T/fp-t1-<随机>/repo`。它出现在系统提示的工作目录中，`send-notice` 里模型生成的 `bash` 命令也带着它，而这条命令是按流式增量（`toolcall_delta`）和逐步增长的 `partial`/`message` 参数录下的，路径被拆在多个片段里；只替换完整路径会让增量拼接与最终参数对不上。这个路径不含用户名，是 macOS 的按用户随机临时目录，目录已在运行结束时删除。
+- 百炼返回的 `responseId`、工具调用 id（`call_…`）：服务端生成，不含本机或账号信息。
+- 用量字段 `usage.cost` 为 0，因为模型条目没有写 `cost`；实际花费按 token 数估算，见实现说明 10B。
+
+读样本时：`partial` 超前的问题同上文；转换器测试（`tests/unit/pi-event-converter.test.ts`）断言这两个样本没有思考内容（无 `thinking*` 流事件、助手消息只含 `text`/`toolCall`、`usage.reasoning` 为 0、`thinkingLevel` 为 `off`）。
