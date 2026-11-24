@@ -41,14 +41,14 @@ afterEach(async () => {
 });
 
 /** 启动者（engine-client 的 spawnRunner，与 t1-real-run 共用）：runner 放进独立进程组，等 stdout 的 RUNNER_LISTENING 行 */
-async function launch(turns: ScriptedTurn[], args: string[] = []) {
+async function launch(turns: ScriptedTurn[], args: string[] = [], env: NodeJS.ProcessEnv = {}) {
   const s = await startFakeOpenAIServer(turns);
   servers.push(s);
   writeFileSync(p("model/models.json"), JSON.stringify(fakeModelsJson(s.baseUrl)));
   const runner = spawnRunner({
     args: ["--import", "tsx", MAIN, "--port", "0", "--models", p("model/models.json"), "--workdir", p("work"), "--sessions-root", p("sessions"), "--idle-timeout-ms", "10000", ...args],
     // TMPDIR 指向测试根目录：引擎 scratchDir 建在 os.tmpdir() 下，便于断言跨进程清理
-    env: { ...process.env, TMPDIR: p("tmp") },
+    env: { ...process.env, TMPDIR: p("tmp"), ...env },
   });
   if (runner.pid !== undefined) groups.push(runner.pid);
   exits.push(runner.exit);
@@ -394,6 +394,66 @@ describe.sequential("runner 进程：清理失败与超时（故障注入）", (
     // 外部计时：终止事件约 5 秒后才到、stop() 更晚才调用，时限仍须从取消起算
     expect(stopped.at - t0).toBeLessThan(10_000 + 1000);
     expect(groupAlive(groups[0]!)).toBe(false);
+  }, 30_000);
+});
+
+const toolNames = (req: unknown) => (req as { tools?: { function: { name: string } }[] }).tools?.map((t) => t.function.name);
+const sysPrompt = (req: unknown) => String((req as { messages: { role: string; content: unknown }[] }).messages.find((m) => m.role === "system")?.content);
+const section = (text: string, name: string) => new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`).exec(text)?.[1];
+const toolMessages = (req: unknown) => (req as { messages: { role: string; content: unknown }[] }).messages.filter((m) => m.role === "tool").map((m) => String(m.content));
+
+describe.sequential("runner 进程：激活工具 --tools 与离线（engine.md 激活工具、外部程序与离线）", () => {
+  it("未给 --tools：沿用 pi 默认 read/bash/edit/write", async () => {
+    const r = await launch([{ kind: "text", chunks: ["ok"] }]);
+    const { client } = await connect(r);
+    await client.start(task());
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
+    expect(toolNames(r.s.requests[0])).toEqual(["read", "bash", "edit", "write"]);
+    expect((await r.exit).code).toBe(0);
+  }, 20_000);
+
+  it("--tools read,grep：请求只声明这两个工具，系统提示 tools/rules 段随之变化、rules 段没有 bash 规则", async () => {
+    const r = await launch([{ kind: "text", chunks: ["ok"] }], ["--tools", "read,grep"]);
+    const { client } = await connect(r);
+    await client.start(task());
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
+    expect(toolNames(r.s.requests[0])).toEqual(["read", "grep"]);
+    const sys = sysPrompt(r.s.requests[0]);
+    expect(section(sys, "tools")).toMatch(/^- read: .*\n- grep: /);
+    const rules = section(sys, "rules")!;
+    expect(rules).toBeDefined();
+    expect(rules).not.toMatch(/bash/i);
+    expect(rules).toContain("Use read to examine files");
+    expect((await r.exit).code).toBe(0);
+  }, 20_000);
+
+  it.each(["", "nope", "read,nope", "read,", "read,*", "*", "+read", "-bash", "mcp__x", "READ"])("--tools %j：不监听、非零退出、stderr 说明原因", async (tools) => {
+    const runner = spawnRunner({
+      args: ["--import", "tsx", MAIN, "--port", "0", "--models", p("model/models.json"), "--workdir", p("work"), "--sessions-root", p("sessions"), `--tools=${tools}`], // = 形式：parseArgs 不会把 -bash 当成选项
+      env: { ...process.env, TMPDIR: p("tmp") },
+    });
+    if (runner.pid !== undefined) groups.push(runner.pid);
+    exits.push(runner.exit);
+    await expect(runner.listening).rejects.toThrow(/before listening/);
+    expect((await runner.exit).code).not.toBe(0);
+    expect(runner.stderr()).toMatch(/^runner: --tools /m); // 不是 parseArgs 的 Unknown option
+  }, 20_000);
+
+  // PATH 里没有 rg、HOME 指向空目录：pi 若联网下载，会写到 HOME/.pi/agent/bin
+  it("缺 rg 时 grep 以错误结果返回，不下载、不写 HOME/.pi", async () => {
+    mkdirSync(p("home"));
+    const r = await launch(
+      [{ kind: "toolCall", name: "grep", args: { pattern: "x" }, id: "g1" }, { kind: "text", chunks: ["done"] }],
+      ["--tools", "read,grep"],
+      { PATH: "/usr/bin:/bin", HOME: p("home") },
+    );
+    const { client } = await connect(r);
+    client.onIntercept(allow);
+    await client.start(task());
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
+    expect(toolMessages(r.s.requests[1])).toEqual([expect.stringMatching(/ripgrep \(rg\) is not available/)]);
+    expect(readdirSync(p("home"))).toEqual([]);
+    expect((await r.exit).code).toBe(0);
   }, 30_000);
 });
 

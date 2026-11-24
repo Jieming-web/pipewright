@@ -1,14 +1,15 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRepo, modelEntry, readRules, runAll, toolDecision } from "../../scripts/t1-real-run.js";
+import { makeRepo, modelEntry, readRules, runAll, toolDecision, TOOLS } from "../../scripts/t1-real-run.js";
 
-// 10A2 调用方拦截：只放行 read，且只放行解析软链接后落在本题副本内、已存在的文件（作者 2026-11-24 决定）
+// 10A2/10A4 调用方拦截：只放行 read 与 grep，且路径须解析软链接后落在本题副本内、已存在（作者 2026-11-24 决定）
 let root: string;
 let copy: string;
 const p = (...s: string[]) => join(root, ...s);
 const read = (path: unknown) => toolDecision({ toolName: "read", input: { path } }, copy);
+const grep = (path: unknown) => toolDecision({ toolName: "grep", input: { pattern: "x", path } }, copy);
 
 beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "fp-t1u-")));
@@ -23,9 +24,9 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-describe("toolDecision：read 路径", () => {
-  it("副本内正常文件放行（相对、@ 前缀、绝对、子目录）", () => {
-    for (const path of ["a.py", "@a.py", join(copy, "a.py"), "sub/b.py", "sub/../a.py"]) expect(read(path), path).toEqual({ decision: "allow" });
+describe.each([["read", read], ["grep", grep]] as const)("toolDecision：%s 路径", (_tool, decide) => {
+  it("副本内正常路径放行（相对、@ 前缀、绝对、子目录）", () => {
+    for (const path of ["a.py", "@a.py", join(copy, "a.py"), "sub/b.py", "sub/../a.py", "sub", "."]) expect(decide(path), path).toEqual({ decision: "allow" });
   });
   it.each([
     ["副本外绝对路径", () => p("outside.txt")],
@@ -36,26 +37,38 @@ describe("toolDecision：read 路径", () => {
     ["前缀相似的兄弟目录（绝对）", () => p("copy-10/a.py")],
     ["~ 展开到家目录", () => "~/.bashrc"],
     ["不存在的文件", () => "nope.py"],
-  ])("%s → 拒绝，理由说明只能读副本内文件", (_, path) => {
-    const d = read(path());
+  ])("%s → 拒绝，理由说明只能访问副本内路径并写明 read 与 grep", (_, path) => {
+    const d = decide(path());
     expect(d.decision).toBe("block");
     expect(d).toHaveProperty("reason", expect.stringContaining("仓库副本内"));
+    expect(d).toHaveProperty("reason", expect.stringMatching(/read.*grep/));
   });
-  it("家目录本身也不放行", () => expect(read("~").decision).toBe("block"));
-  it("path 缺失或不是字符串 → 拒绝", () => {
-    for (const input of [{}, { path: 1 }, null, "a.py"]) expect(toolDecision({ toolName: "read", input }, copy).decision).toBe("block");
+  it("家目录本身与父目录也不放行", () => {
+    expect(decide("~").decision).toBe("block");
+    expect(decide("..").decision).toBe("block");
   });
   it("副本目录本身经软链接给出也能放行其中文件", () => {
-    symlinkSync(copy, p("copy-alias"));
-    expect(toolDecision({ toolName: "read", input: { path: "a.py" } }, p("copy-alias"))).toEqual({ decision: "allow" });
+    if (!existsSync(p("copy-alias"))) symlinkSync(copy, p("copy-alias"));
+    expect(toolDecision({ toolName: _tool, input: { pattern: "x", path: "a.py" } }, p("copy-alias"))).toEqual({ decision: "allow" });
+  });
+});
+
+describe("toolDecision：输入形状", () => {
+  it("read 的 path 缺失或不是字符串 → 拒绝", () => {
+    for (const input of [{}, { path: 1 }, null, "a.py"]) expect(toolDecision({ toolName: "read", input }, copy).decision).toBe("block");
+  });
+  it("grep 不给 path 时按 pi 默认搜索副本根目录 → 放行；path 不是字符串 → 拒绝", () => {
+    expect(toolDecision({ toolName: "grep", input: { pattern: "x" } }, copy)).toEqual({ decision: "allow" });
+    for (const input of [{ pattern: "x", path: 1 }, null]) expect(toolDecision({ toolName: "grep", input }, copy).decision).toBe("block");
   });
 });
 
 describe("toolDecision：其他工具", () => {
-  it.each(["bash", "edit", "write", "grep", "no_such_tool"])("%s → 拒绝，理由写明改用 read", (toolName) => {
+  it("工具清单就是 read 与 grep", () => expect(TOOLS).toEqual(["read", "grep"]));
+  it.each(["bash", "edit", "write", "find", "ls", "no_such_tool"])("%s → 拒绝，理由由工具清单生成、写明可用 read 和 grep", (toolName) => {
     expect(toolDecision({ toolName, input: { command: "ls", path: "a.py" } }, copy)).toEqual({
       decision: "block",
-      reason: `此任务不提供 ${toolName}，请使用 read 读取文件`,
+      reason: `此任务不提供 ${toolName}，可用工具：read、grep`,
     });
   });
 });
@@ -66,11 +79,16 @@ describe("规则来源", () => {
     mkdirSync(sample);
     writeFileSync(join(sample, "m.py"), "pass\n");
     writeFileSync(join(sample, "AGENTS.md"), "MAIN-RULES\n");
-    const dir = p("repo");
-    const { files, baseCommit } = makeRepo(sample, dir);
+    const gitDir = p("git");
+    const { files, baseCommit } = makeRepo(sample, gitDir, p("work"));
     expect(files).toEqual(["AGENTS.md", "m.py"]);
-    writeFileSync(join(dir, "AGENTS.md"), "WORKTREE-RULES\n");
-    expect(await readRules(dir)).toEqual([{ repo: "sample", path: "AGENTS.md", content: "MAIN-RULES\n", sourceCommit: baseCommit }]);
+    writeFileSync(join(gitDir, "AGENTS.md"), "WORKTREE-RULES\n");
+    expect(await readRules(gitDir)).toEqual([{ repo: "sample", path: "AGENTS.md", content: "MAIN-RULES\n", sourceCommit: baseCommit }]);
+  });
+  it("runner 工作目录是导出的纯文件：与提交内容一致，没有 .git 目录或文件", () => {
+    const work = p("work");
+    expect(readdirSync(work).sort()).toEqual(["AGENTS.md", "m.py"]);
+    expect(existsSync(join(work, ".git"))).toBe(false);
   });
 });
 

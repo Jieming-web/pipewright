@@ -7,9 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StartTask } from "../../packages/engine-protocol/src/index.js";
 import type { FinalDecision } from "../../packages/engine-runner/src/intercept-coordinator.js";
 import { loadModelRuntime } from "../../packages/engine-runner/src/model-config.js";
-import { createPiSession } from "../../packages/engine-runner/src/pi-session.js";
+import { createPiSession, PI_BUILTIN_TOOLS } from "../../packages/engine-runner/src/pi-session.js";
 import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
+// 与 runner 进程同一设置（engine.md 外部程序与离线）：本文件在进程内建会话，缺 rg 时也不得下载到 ~/.pi
+process.env.PI_OFFLINE = "1";
 const FIXTURE = join(import.meta.dirname, "../fixtures/hostile-repo");
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const RULES = [{ repo: "alpha", path: "AGENTS.md", content: "CALLER_RULE_ALPHA 先跑测试", sourceCommit: "c1" }];
@@ -45,9 +47,9 @@ const task = (o: Partial<StartTask> = {}): StartTask => ({
 });
 const allow = () => vi.fn(async (): Promise<FinalDecision> => ({ decision: "allow" }));
 
-async function open(o: { task?: StartTask; decide?: ReturnType<typeof allow>; workDir?: string; sessionsRoot?: string } = {}) {
+async function open(o: { task?: StartTask; decide?: ReturnType<typeof allow>; workDir?: string; sessionsRoot?: string; tools?: string[] } = {}) {
   return createPiSession({
-    task: o.task ?? task(), modelsPath: p("model/models.json"), workDir: o.workDir ?? p("work"), scratchDir: p("scratch"),
+    task: o.task ?? task(), modelsPath: p("model/models.json"), workDir: o.workDir ?? p("work"), scratchDir: p("scratch"), tools: o.tools,
     sessionsRoot: o.sessionsRoot ?? p("sessions"), decide: o.decide ?? allow(), signal: new AbortController().signal,
   });
 }
@@ -189,6 +191,35 @@ describe.sequential("createPiSession", () => {
     const file = session.sessionFile!;
     session.dispose();
     expect(file.startsWith(p("sessions/..foo/run1"))).toBe(true);
+  });
+
+  it("runner 自带的内置工具名单与 pi 内部 allToolNames 一致（pi 未导出它，按文件路径导入，防升级漂移）", async () => {
+    const pkg = realpathSync(join(import.meta.dirname, "../../packages/engine-runner/node_modules/@earendil-works/pi-coding-agent"));
+    const { allToolNames } = await import(join(pkg, "dist/core/tools/index.js"));
+    expect([...PI_BUILTIN_TOOLS].sort()).toEqual([...allToolNames].sort());
+  });
+
+  // 真实 pi grep + PATH 上的 rg：遍历时不跟随软链接（无 -L），副本内指向外部的文件和目录链接都搜不到
+  it("tools 传入激活工具；grep 搜索 . 时不跟随指向工作目录外的软链接", async () => {
+    mkdirSync(p("outside"));
+    writeFileSync(p("outside/secret.py"), "OUTSIDE_SECRET_1\n");
+    writeFileSync(p("work/in.py"), "INSIDE_MARK\nOUTSIDE_SECRET_0 not here\n");
+    symlinkSync(p("outside/secret.py"), p("work/link.py"));
+    symlinkSync(p("outside"), p("work/linkdir"));
+    const s = await serve([
+      { kind: "toolCall", name: "grep", args: { pattern: "OUTSIDE_SECRET_1" }, id: "g1" },
+      { kind: "toolCall", name: "grep", args: { pattern: "INSIDE_MARK" }, id: "g2" },
+      { kind: "text", chunks: ["done"] },
+    ]);
+    writeModels({ fake: fakeProvider(s.baseUrl) });
+    const { session } = await open({ tools: ["grep"] });
+    expect(session.getActiveToolNames()).toEqual(["grep"]);
+    await session.prompt("go");
+    session.dispose();
+    expect(s.errors).toEqual([]);
+    const toolMsgs = (req: any) => req.messages.filter((m: any) => m.role === "tool").map((m: any) => String(m.content));
+    expect(toolMsgs(s.requests[1])).toEqual(["No matches found"]);
+    expect(toolMsgs(s.requests[2])[1]).toBe("in.py:1: INSIDE_MARK"); // 正向对照：rg 可用，结果带行号
   });
 
   describe("sessionDir 越界", () => {

@@ -29,6 +29,7 @@ export async function startRunnerServer(opts: {
   modelsPath: string;
   workDir: string;
   sessionsRoot: string;
+  tools?: string[];
   interceptTimeoutMs?: number;
   confirmTimeoutMs?: number;
   recordPiEventsPath?: string;
@@ -73,6 +74,7 @@ export async function startRunnerServer(opts: {
     modelsPath: opts.modelsPath,
     workDir: opts.workDir,
     sessionsRoot: opts.sessionsRoot,
+    tools: opts.tools,
     recordPiEventsPath: opts.recordPiEventsPath,
     coordinator,
     emit: (event) => {

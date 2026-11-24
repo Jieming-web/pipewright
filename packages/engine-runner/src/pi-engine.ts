@@ -28,6 +28,7 @@ export class PiEngine {
       modelsPath: string;
       workDir: string;
       sessionsRoot: string;
+      tools?: string[];
       coordinator: ReturnType<typeof createInterceptCoordinator>;
       emit: (event: SequencedEvent) => void;
       recordPiEventsPath?: string;
@@ -116,7 +117,7 @@ export class PiEngine {
       scratchDir = await mkdtemp(join(tmpdir(), "fp-run-")); // 每次运行独占，pi 的 auth/models-store 写在这里
       const created = await createPiSession({
         task, modelsPath: this.opts.modelsPath, workDir: this.opts.workDir, scratchDir,
-        sessionsRoot: this.opts.sessionsRoot, decide: coordinator.decide, signal: abort.signal,
+        sessionsRoot: this.opts.sessionsRoot, tools: this.opts.tools, decide: coordinator.decide, signal: abort.signal,
       });
       session = created.session;
       session.subscribe(onPiEvent);

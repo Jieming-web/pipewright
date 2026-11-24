@@ -7,6 +7,9 @@ import { createInterceptExtension } from "./intercept-extension.js";
 import { loadModelRuntime } from "./model-config.js";
 import { createRestrictedResourceLoader } from "./restricted-resource-loader.js";
 
+/** pi 1.5.1 内置工具名（dist/core/tools/index.js 的 allToolNames，包根未导出；测试比对防漂移） */
+export const PI_BUILTIN_TOOLS: readonly string[] = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
+
 const inside = (root: string, p: string) => { const r = relative(root, p); return r === "" || (r !== ".." && !r.startsWith(".." + sep) && !isAbsolute(r)); };
 
 /** sessionDir 只能是 sessionsRoot 下的相对路径；返回校验后的绝对目录（尚未创建）。 */
@@ -30,6 +33,8 @@ export async function createPiSession(opts: {
   workDir: string;
   scratchDir: string;
   sessionsRoot: string;
+  /** 激活的内置工具；undefined 时沿用 pi 默认。名字由调用方（main.ts）校验：pi 会静默忽略未知名 */
+  tools?: string[];
   decide: ReturnType<typeof createInterceptCoordinator>["decide"];
   signal: AbortSignal;
 }): Promise<{ session: AgentSession; snapshot: RunSnapshot }> {
@@ -51,6 +56,7 @@ export async function createPiSession(opts: {
     modelRuntime,
     model,
     thinkingLevel: "off",
+    tools: opts.tools,
     resourceLoader: restricted.loader,
     settingsManager: restricted.settingsManager, // 必须显式传：缺省会回退到信任项目设置的 SettingsManager.create
     sessionManager: sessionDir ? SessionManager.create(opts.workDir, sessionDir) : SessionManager.inMemory(opts.workDir),

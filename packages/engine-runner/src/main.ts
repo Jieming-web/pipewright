@@ -1,5 +1,9 @@
 import { parseArgs } from "node:util";
+import { PI_BUILTIN_TOOLS } from "./pi-session.js";
 import { startRunnerServer } from "./runner-server.js";
+
+// engine.md 外部程序与离线：缺 rg 等工具时 pi 不得联网下载（否则写到 ~/.pi/agent/bin）
+process.env.PI_OFFLINE = "1";
 
 // stdout 只给启动者一行 RUNNER_LISTENING <port>；其余诊断一律写 stderr
 function fail(message: string, code = 2): never {
@@ -11,7 +15,7 @@ let values: Record<string, string | undefined>;
 try {
   ({ values } = parseArgs({
     options: Object.fromEntries(
-      ["port", "models", "workdir", "sessions-root", "intercept-timeout-ms", "confirm-timeout-ms", "idle-timeout-ms", "record-pi-events"].map((k) => [k, { type: "string" as const }]),
+      ["port", "models", "workdir", "sessions-root", "intercept-timeout-ms", "confirm-timeout-ms", "idle-timeout-ms", "record-pi-events", "tools"].map((k) => [k, { type: "string" as const }]),
     ),
   }));
 } catch (e) {
@@ -26,11 +30,16 @@ const int = (name: string) => {
   return Number.isInteger(n) && n >= 0 ? n : fail(`--${name} must be a non-negative integer`);
 };
 
+// 只接受内置工具的确切名字：通配、+/-、mcp__ 会改变 pi 的选择语义，未知名会被 pi 静默忽略
+const tools = values.tools?.split(",");
+if (tools?.some((t) => !PI_BUILTIN_TOOLS.includes(t))) fail(`--tools must be a comma-separated list of pi built-in tools (${PI_BUILTIN_TOOLS.join(", ")}), got ${JSON.stringify(values.tools)}`);
+
 const opts = {
   port: int("port") ?? 0,
   modelsPath: required("models"),
   workDir: required("workdir"),
   sessionsRoot: required("sessions-root"),
+  tools,
   interceptTimeoutMs: int("intercept-timeout-ms"),
   confirmTimeoutMs: int("confirm-timeout-ms"),
   idleTimeoutMs: int("idle-timeout-ms"),

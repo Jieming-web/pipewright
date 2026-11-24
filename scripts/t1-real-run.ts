@@ -1,7 +1,7 @@
 // T1 只读验收：五道题各起一个新 runner（独立进程组）、新内存会话与样例的临时 git 副本，逐题判分并写报告。
 // 用法：pnpm tsx scripts/t1-real-run.ts --models <配置> --model <provider/id> --record-dir <目录> --output <报告> [--max-tool-calls 30]
 // 密钥等 env 由外层 Node 进程注入，本脚本不读 .env；也不解析 runner 录制的 pi 原始事件。
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -17,7 +17,10 @@ export const MAX_TOOL_CALLS = 30;
 const ROOT = join(import.meta.dirname, "..");
 const MAIN = join(ROOT, "packages/engine-runner/src/main.ts");
 const FIXTURES = join(ROOT, "tests/fixtures");
-const INSTRUCTION = "只输出 JSON 数组，不要用代码块包裹，不要加任何解释文字";
+/** 声明给模型（runner --tools）并由拦截放行的工具；提示词与拒绝理由都由它生成 */
+export const TOOLS = ["read", "grep"] as const;
+const TOOL_LIST = TOOLS.join("、");
+const STEPS = "先用工具查看需要的文件，确认后再作答；最终回答只输出 JSON 数组，不要用代码块包裹，不要加任何解释文字。";
 const EXAMPLE = '[{"path":"example.py","line":12}]'; // 样例中没有 example.py：示例不含真实答案
 
 type Question = { id: string; question: string; answers: CallSite[] };
@@ -44,7 +47,10 @@ export type QuestionResult = {
   serviceFailure?: string;
   /** 工具调用超过每题上限而取消；不判分 */
   limitExceeded?: string;
+  /** 调用方拦截拒绝的调用 */
   denials: { toolName: string; input: unknown }[];
+  /** 未声明工具的调用：pi 直接回 "Tool X not found"，不经过拦截 */
+  undeclaredCalls: { toolName: string; input: unknown }[];
   durationMs: number;
   runner: { pid?: number; exitCode: number | null; signal: string | null; forced: boolean; stopWaitMs?: number; stderr: string };
 };
@@ -58,6 +64,9 @@ export type Report = {
     sampling: Record<string, unknown> & { maxTokens: number | null; note: string };
     maxToolCalls: number;
     questionTimeoutMs: number;
+    tools: readonly string[];
+    /** PATH 上 rg 的版本行（pi grep 依赖它）；找不到为 null */
+    rg: string | null;
   };
   versions: {
     sampleRepoHash: string;
@@ -106,8 +115,11 @@ export function modelEntry(config: { providers?: Record<string, any> }, m: RunOp
   return { provider: redact(provider), model: redact(model) };
 }
 
-/** 样例 .py/.md 的临时 git 副本，提交到 main；固定身份与时间，同一内容得到同一基准 commit。files 由副本的 git ls-files 生成 */
-export function makeRepo(sampleDir: string, dir: string): { files: string[]; baseCommit: string } {
+/**
+ * 样例 .py/.md 的临时 git 副本，提交到 main；固定身份与时间，同一内容得到同一基准 commit。files 由副本的 git ls-files 生成。
+ * runner 的工作目录 workDir 是从索引导出的纯文件：pi 的 grep 带 --hidden，工作目录里不能有可搜到的 .git。
+ */
+export function makeRepo(sampleDir: string, dir: string, workDir: string): { files: string[]; baseCommit: string } {
   mkdirSync(dir);
   const files = sampleFiles(sampleDir);
   for (const f of files) copyFileSync(join(sampleDir, f), join(dir, f));
@@ -121,15 +133,16 @@ export function makeRepo(sampleDir: string, dir: string): { files: string[]; bas
   git("init", "-q", "-b", "main");
   git("add", "--", ...files);
   git("commit", "-q", "--no-verify", "-m", "sample");
+  git("checkout-index", "-a", `--prefix=${workDir}/`);
   return { files: git("ls-files", "-z").split("\0").filter(Boolean), baseCommit: git("rev-parse", "HEAD").trim() };
 }
 
-/** 规则只取副本 main 引用上的 AGENTS.md，不读工作区 */
+/** 规则只取基准仓库 main 引用上的 AGENTS.md，不读工作区 */
 export const readRules = (dir: string): Promise<ContextFile[]> =>
   readGitContextFiles([{ repo: "sample", repoDir: dir, baseRef: "refs/heads/main", paths: ["AGENTS.md"] }]);
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
-/** 照 pi 1.5.1 read 的解析（utils/paths.js resolvePath）：统一空白、去掉开头 @、展开 ~、file:// 转路径，再相对 cwd 解析 */
+/** 照 pi 1.5.1 read/grep 的解析（utils/paths.js resolvePath）：统一空白、去掉开头 @、展开 ~、file:// 转路径，再相对 cwd 解析 */
 function piResolve(input: string, cwd: string): string {
   let s = input.replace(UNICODE_SPACES, " ");
   if (s.startsWith("@")) s = s.slice(1);
@@ -140,29 +153,33 @@ function piResolve(input: string, cwd: string): string {
 }
 
 /**
- * 调用方拦截（作者 2026-11-24 决定）：会话激活的内置工具是 read/bash/edit/write，只放行 read；
- * read 只放行解析软链接后落在副本内的已存在路径（不存在的一律拒绝：pi 对不存在的路径还会试 NFD 等变体，不去猜）。
+ * 调用方拦截（作者 2026-11-24 决定）：声明清单之外的工具一律拒绝（第二道防线）；
+ * read 的 path、grep 的 path（缺省为 pi 默认的 "."）须解析软链接后落在副本内且已存在
+ * （不存在的一律拒绝：pi 对不存在的路径还会试 NFD 等变体，不去猜）。grep 的 glob 只在搜索根内过滤，不另作限制。
  */
 export function toolDecision({ toolName, input }: Pick<ToolRequest, "toolName" | "input">, copyDir: string): Decision {
-  if (toolName !== "read") return { decision: "block", reason: `此任务不提供 ${toolName}，请使用 read 读取文件` };
-  const path = (input as { path?: unknown } | null)?.path;
+  if (!(TOOLS as readonly string[]).includes(toolName)) return { decision: "block", reason: `此任务不提供 ${toolName}，可用工具：${TOOL_LIST}` };
+  const raw = (input as { path?: unknown } | null)?.path;
+  const path = toolName === "grep" && input !== null && raw === undefined ? "." : raw;
   try {
     if (typeof path !== "string") throw new Error("no path");
     const root = realpathSync(copyDir);
     const rel = relative(root, realpathSync(piResolve(path, root)));
     if (rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel))) return { decision: "allow" };
   } catch {} // 不存在或无法解析：拒绝
-  return { decision: "block", reason: "只能读取仓库副本内已存在的文件，请用相对路径 read 提示中列出的文件" };
+  return { decision: "block", reason: `只能访问仓库副本内已存在的路径，请用相对路径调用 ${TOOL_LIST}` };
 }
 
 function buildPrompt(q: Question, files: string[]): string {
   return [
     q.question,
     "",
-    "仓库中的文件（可用 read 工具读取）：",
+    "仓库中的文件：",
     ...files.map((f) => `- ${f}`),
     "",
-    `${INSTRUCTION}。每个调用位置写成 {"path": 相对路径, "line": 行号}，格式示例：`,
+    `可用工具：${TOOL_LIST}。`,
+    STEPS,
+    `每个调用位置写成 {"path": 相对路径, "line": 行号}，格式示例：`,
     EXAMPLE,
   ].join("\n");
 }
@@ -174,7 +191,7 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
   const root = realpathSync(mkdtempSync(join(tmpdir(), "fp-t1-")));
   const r: QuestionResult = {
     id: q.id, workDir: join(root, "repo"), recordFile: join(resolve(o.recordDir), `${q.id}.jsonl`),
-    answer: null, denials: [], durationMs: 0, runner: { exitCode: null, signal: null, forced: false, stderr: "" },
+    answer: null, denials: [], undeclaredCalls: [], durationMs: 0, runner: { exitCode: null, signal: null, forced: false, stderr: "" },
   };
   const failures: string[] = [];
   const TIMEOUT = new Error(`timed out after ${timeoutMs} ms`);
@@ -188,12 +205,13 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
   const events: SequencedEvent[] = [];
 
   try {
-    const { files, baseCommit } = makeRepo(o.sampleDir ?? join(FIXTURES, "sample-repo"), r.workDir);
+    const gitDir = join(root, "git"); // 基准仓库在工作目录之外，越界 path 由拦截拒绝
+    const { files, baseCommit } = makeRepo(o.sampleDir ?? join(FIXTURES, "sample-repo"), gitDir, r.workDir);
     r.baseCommit = baseCommit;
-    const contextFiles = await readRules(r.workDir);
+    const contextFiles = await readRules(gitDir);
     for (const d of ["sessions", "tmp"]) mkdirSync(join(root, d));
     runner = spawnRunner({
-      args: ["--import", "tsx", MAIN, "--port", "0", "--models", resolve(o.modelsPath), "--workdir", r.workDir, "--sessions-root", join(root, "sessions"), "--record-pi-events", r.recordFile],
+      args: ["--import", "tsx", MAIN, "--port", "0", "--models", resolve(o.modelsPath), "--workdir", r.workDir, "--sessions-root", join(root, "sessions"), "--record-pi-events", r.recordFile, "--tools", TOOLS.join(",")],
       cwd: ROOT,
       // runner 的 scratchDir 建在 TMPDIR 下：指向本题临时目录，强杀后也由下面的 finally 一并删除
       env: { ...process.env, TMPDIR: join(root, "tmp") },
@@ -201,16 +219,27 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
     });
     r.runner.pid = runner.pid;
     client = await within(runner.connect());
-    client.onEvent((e) => events.push(e));
-    let toolCalls = 0;
-    client.onIntercept(async (req) => {
-      // 刹车：放行与拒绝都计数。越限的这次先经启动者取消（停止时限照常从此刻计），再回拒绝，runner 不再发下一次模型请求
-      const over = ++toolCalls > maxToolCalls;
+    // 刹车：tool.started 事件（含 pi 直接回 not found 的未声明工具）与拦截共用一个计数，按 callId 去重；
+    // 拦截自己先计数，不依赖事件先到。越限即经启动者取消（停止时限照常从此刻计）
+    const callOrder = new Map<string, number>();
+    const count = (callId: string) => {
+      if (!callOrder.has(callId)) callOrder.set(callId, callOrder.size + 1);
+      const over = callOrder.get(callId)! > maxToolCalls;
       if (over && !r.limitExceeded) {
         r.limitExceeded = `tool calls exceeded --max-tool-calls ${maxToolCalls}`;
         runner!.cancel();
       }
-      const d: Decision = over ? { decision: "block", reason: `本题工具调用已超过上限 ${maxToolCalls}，任务取消` } : toolDecision(req, r.workDir);
+      return over;
+    };
+    client.onEvent((e) => {
+      events.push(e);
+      if (e.type !== "tool.started") return;
+      if (!(TOOLS as readonly string[]).includes(e.toolName)) r.undeclaredCalls.push({ toolName: e.toolName, input: e.input });
+      count(e.callId);
+    });
+    client.onIntercept(async (req) => {
+      // 越限的这次回拒绝（取消已先发出），runner 不再发下一次模型请求
+      const d: Decision = count(req.callId) ? { decision: "block", reason: `本题工具调用已超过上限 ${maxToolCalls}，任务取消` } : toolDecision(req, r.workDir);
       if (d.decision !== "allow") r.denials.push({ toolName: req.toolName, input: req.input });
       return d;
     });
@@ -271,6 +300,8 @@ export async function runAll(o: RunOptions): Promise<Report> {
       },
       maxToolCalls: o.maxToolCalls ?? MAX_TOOL_CALLS,
       questionTimeoutMs: o.questionTimeoutMs ?? QUESTION_TIMEOUT_MS,
+      tools: TOOLS,
+      rg: spawnSync("rg", ["--version"], { encoding: "utf8" }).stdout?.split("\n")[0] || null,
     },
     versions: {
       sampleRepoHash: sampleHash(o.sampleDir ?? join(FIXTURES, "sample-repo")),

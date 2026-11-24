@@ -58,6 +58,9 @@ const seen = (req: unknown) =>
     .map((m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c) => c.text ?? JSON.stringify(c)).join("\n")))
     .join("\n");
 const toolNames = (req: unknown) => (req as { tools?: { function: { name: string } }[] }).tools?.map((t) => t.function.name);
+/** 工具结果消息（不含模型自己的调用参数） */
+const toolMessages = (req: unknown) => (req as { messages: { role: string; content: unknown }[] }).messages.filter((m) => m.role === "tool").map((m) => String(m.content));
+const STEPS = "先用工具查看需要的文件，确认后再作答；最终回答只输出 JSON 数组，不要用代码块包裹，不要加任何解释文字。";
 /** 启动脚本 CLI 子进程，返回退出码与 stderr */
 async function cli(args: string[]) {
   const child = spawn(process.execPath, ["--import", "tsx", SCRIPT, ...args], { cwd: REPO, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: p("tmp") } });
@@ -90,13 +93,15 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
     Qs.forEach((q, i) => {
       const r = report.questions[i]!;
       const [first, second] = [server!.requests[2 * i], server!.requests[2 * i + 1]];
-      // 会话里实际有的工具：read/grep/find/ls 中只有 read
-      expect(toolNames(first)).toEqual(["read", "bash", "edit", "write"]);
+      // 只声明 read 与 grep；提示词里的“可用工具”与请求中的工具定义一致
+      expect(toolNames(first)).toEqual(["read", "grep"]);
+      expect(/可用工具：(.+)。/.exec(seen(first))?.[1]?.split("、")).toEqual(toolNames(first));
       // 新内存会话：首个请求只有系统提示与本题提示
       expect((first as { messages: unknown[] }).messages).toHaveLength(2);
       const prompt = seen(first);
       expect(prompt).toContain(q.question);
       expect(prompt).toContain(INSTRUCTION);
+      expect(prompt).toContain(STEPS);
       expect(prompt).toContain('[{"path":"example.py","line":12}]');
       expect(files).not.toContain("example.py"); // 示例不含真实答案
       for (const f of files) expect(prompt).toContain(f);
@@ -117,6 +122,7 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
       expect(r.grade).toEqual({ passed: true, missing: [], extra: [] });
       expect(r.answer).toBe(JSON.stringify(q.answers));
       expect(r.denials).toEqual([]);
+      expect(r.undeclaredCalls).toEqual([]);
       expect(r.serviceFailure).toBeUndefined();
       expect(r.terminal).toBe("run.settled");
       expect(r.baseCommit).toMatch(/^[0-9a-f]{40}$/);
@@ -150,6 +156,8 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
     });
     expect(JSON.stringify(report)).not.toContain(cfg.apiKey);
     expect(c.maxToolCalls).toBe(30);
+    expect(c.tools).toEqual(["read", "grep"]);
+    expect(c.rg).toMatch(/^ripgrep \d+\.\d+\.\d+/);
     expect(c.questionTimeoutMs).toBe(120_000);
     // 报告写的采样参数与假服务收到的请求体一致：未设置的字段请求里确实没有
     expect(c.sampling).toMatchObject({ temperature: 0.2, top_p: null, maxTokens: cfg.models[0].maxTokens });
@@ -168,7 +176,7 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
 });
 
 describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
-  it("格式错误（带原因）与内容答错分开列出；写与 bash 被拒且无副作用；未全对时退出非零", async () => {
+  it("格式错误（带原因）与内容答错分开列出；未声明的 write 与 bash 得到 not found 且无副作用；越界 read 被拦截拒绝；未全对时退出非零", async () => {
     const [q1, q2, q3, q4, q5] = Qs as [Q, Q, Q, Q, Q];
     await fake([
       { kind: "text", chunks: ["```json\n" + JSON.stringify(q1.answers) + "\n```"] },
@@ -198,17 +206,19 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     expect(report.versions.sampleRepoHash).toBe(qs.sampleRepoHash);
     expect(server!.errors).toEqual([]);
     expect(server!.requests).toHaveLength(8);
-    expect(report.questions[2]!.denials).toEqual([
+    // 未声明的工具由 pi 直接回 not found，不经过拦截；报告分两栏记录
+    expect(report.questions[2]!.undeclaredCalls).toEqual([
       { toolName: "write", input: { path: p("written.txt"), content: "x" } },
       { toolName: "bash", input: { command: `touch ${p("bash.marker")}` } },
-      { toolName: "read", input: { path: join(FX, "sample-repo-questions.json") } },
     ]);
-    // 拒绝理由回给模型并写明改用什么；副本外的标准答案文件没有被读到
-    const afterDenials = seen(server!.requests[5]);
-    expect(afterDenials).toContain("此任务不提供 write，请使用 read 读取文件");
-    expect(afterDenials).toContain("此任务不提供 bash，请使用 read 读取文件");
-    expect(afterDenials).toContain("仓库副本内");
-    expect(afterDenials).not.toContain(qs.sampleRepoHash);
+    expect(report.questions[2]!.denials).toEqual([{ toolName: "read", input: { path: join(FX, "sample-repo-questions.json") } }]);
+    expect(toolMessages(server!.requests[5])).toEqual([
+      "Tool write not found",
+      "Tool bash not found",
+      expect.stringMatching(/仓库副本内.*read.*grep/),
+    ]);
+    // 副本外的标准答案文件没有被读到
+    expect(seen(server!.requests[5])).not.toContain(qs.sampleRepoHash);
     expect(existsSync(p("written.txt"))).toBe(false);
     await new Promise((r) => setTimeout(r, 300)); // detached 的 bash 若逃过拦截，touch 毫秒级完成
     expect(existsSync(p("bash.marker"))).toBe(false);
@@ -217,9 +227,11 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
   }, 60_000);
 
   it("--max-tool-calls：越限的题单列为超出上限（不判分、不算服务故障），其余照常，退出 1", async () => {
-    const [q1, ...rest] = Qs as [Q, ...Q[]];
+    const rest = Qs.slice(0, -1);
+    const q5 = Qs.at(-1)!;
     const bash = (id: string): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: "ls" }, id });
-    await fake([bash("b1"), bash("b2"), ...rest.map((q): ScriptedTurn => ({ kind: "text", chunks: [JSON.stringify(q.answers)] }))]);
+    // 越限的是未声明的 bash：pi 不等拦截就回 not found，取消到达前可能已发出下一个请求，所以放在最后一题并留一轮备用
+    await fake([...rest.map((q): ScriptedTurn => ({ kind: "text", chunks: [JSON.stringify(q.answers)] })), bash("b1"), bash("b2"), bash("b3")]);
     const { code, err } = await cli(["--models", p("model/models.json"), "--model", "fake/fake-model", "--record-dir", p("records"), "--output", p("report.json"), "--max-tool-calls", "1"]);
     expect(code, err).toBe(1);
     const report: Report = JSON.parse(readFileSync(p("report.json"), "utf8"));
@@ -229,11 +241,12 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
       formatErrors: [],
       contentErrors: [],
       serviceFailures: [],
-      limitExceeded: [{ id: q1.id, reason: "tool calls exceeded --max-tool-calls 1" }],
+      limitExceeded: [{ id: q5.id, reason: "tool calls exceeded --max-tool-calls 1" }],
     });
     expect(report.conditions.maxToolCalls).toBe(1);
     expect(server!.errors).toEqual([]);
-    expect(server!.requests).toHaveLength(6);
+    expect(server!.requests.length).toBeGreaterThanOrEqual(6);
+    expect(server!.requests.length).toBeLessThanOrEqual(7);
     expect(leftovers()).toEqual([]);
   }, 60_000);
 
@@ -256,23 +269,66 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
   }, 20_000);
 });
 
-describe.sequential("t1-real-run：每题工具调用刹车", () => {
-  it("先放行一次 read，再反复调用被拒的 bash：放行也计数，到上限即拒绝并取消本题，记为超出上限，不判分；请求数不超过上限加 1", async () => {
+describe.sequential("t1-real-run：每题工具调用刹车（tool.started 与拦截共用计数，按 callId 去重）", () => {
+  it("一次已声明的 read 只计一次（上限 1 时放行）；越限的下一次 read 在拦截时就被拒绝并取消本题，记为超出上限、不判分", async () => {
+    const [q] = Qs as [Q];
     await fake([
-      { kind: "toolCall", name: "read", args: { path: Qs[0]!.target.path }, id: "r0" },
-      ...Array.from({ length: 10 }, (_, i): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: `echo ${i + 1}` }, id: `b${i}` })),
+      { kind: "toolCall", name: "read", args: { path: q.target.path }, id: "r0" },
+      { kind: "toolCall", name: "read", args: { path: "notify.py" }, id: "r1" },
+      { kind: "text", chunks: ["[]"] },
     ]);
-    const r = await runQuestion(Qs[0]!, opts({ maxToolCalls: 3 }));
-    expect(r.limitExceeded).toBe("tool calls exceeded --max-tool-calls 3");
+    const r = await runQuestion(q, opts({ maxToolCalls: 1 }));
+    expect(r.limitExceeded).toBe("tool calls exceeded --max-tool-calls 1");
     expect(r.serviceFailure).toBeUndefined();
     expect(r.grade).toBeUndefined();
     expect(r.terminal).toBe("run.cancelled");
-    // 第 1 次 read 放行且计数，越限的是第 4 次（echo 3），它也记为拒绝；放行若不计数会拒到 echo 4
-    expect(r.denials.map((d) => d.input)).toEqual([1, 2, 3].map((i) => ({ command: `echo ${i}` })));
-    expect(seen(server!.requests[1])).toContain(readFileSync(join(FX, "sample-repo", Qs[0]!.target.path), "utf8").split("\n")[0]);
-    expect(server!.requests.length).toBeLessThanOrEqual(3 + 1);
+    // r0 若被事件与拦截各计一次，会在上限 1 时就被拒；r1 若只等事件计数，会被放行
+    expect(r.denials).toEqual([{ toolName: "read", input: { path: "notify.py" } }]);
+    expect(toolMessages(server!.requests[1])[0]).toContain(readFileSync(join(FX, "sample-repo", q.target.path), "utf8").split("\n")[0]);
+    expect(server!.requests.length).toBeLessThanOrEqual(2);
     expect(server!.errors).toEqual([]);
     expect(r.runner).toMatchObject({ exitCode: 0, forced: false });
+    expect(leftovers()).toEqual([]);
+  }, 30_000);
+
+  it("反复调用未声明的 bash：每次都计数，越限取消本题，记为超出上限而不是服务故障", async () => {
+    await fake(Array.from({ length: 10 }, (_, i): ScriptedTurn => ({ kind: "toolCall", name: "bash", args: { command: `echo ${i + 1}` }, id: `b${i}` })));
+    const r = await runQuestion(Qs[0]!, opts({ maxToolCalls: 2 }));
+    expect(r.limitExceeded).toBe("tool calls exceeded --max-tool-calls 2");
+    expect(r.serviceFailure).toBeUndefined();
+    expect(r.grade).toBeUndefined();
+    expect(r.terminal).toBe("run.cancelled");
+    expect(r.denials).toEqual([]);
+    expect(r.undeclaredCalls.slice(0, 3).map((c) => c.input)).toEqual([1, 2, 3].map((i) => ({ command: `echo ${i}` })));
+    expect(server!.requests.length).toBeLessThanOrEqual(2 + 2); // 越限那次之后，取消到达前 pi 可能已发出下一个请求
+    expect(r.runner).toMatchObject({ exitCode: 0, forced: false });
+    expect(leftovers()).toEqual([]);
+  }, 30_000);
+});
+
+describe.sequential("t1-real-run：grep 接入（真实 pi grep 与 PATH 上的 rg）", () => {
+  it("副本内 grep 带行号；工作目录没有可搜到的 git 元数据；glob 不扩大范围；越界 path 被拦截拒绝", async () => {
+    const [q] = Qs as [Q];
+    const grep = (args: object, id: string): ScriptedTurn => ({ kind: "toolCall", name: "grep", args, id });
+    await fake([
+      grep({ pattern: "def " }, "g1"),
+      // .git/config 的固定键名：工作目录里若有 .git，rg --hidden 会搜到
+      grep({ pattern: "repositoryformatversion" }, "g2"),
+      // 基准仓库就在工作目录的兄弟目录 ../git 下
+      grep({ pattern: "repositoryformatversion", glob: "../**" }, "g3"),
+      grep({ pattern: "def ", path: "../git" }, "g4"),
+      { kind: "text", chunks: [JSON.stringify(q.answers)] },
+    ]);
+    const r = await runQuestion(q, opts());
+    expect(r.grade).toEqual({ passed: true, missing: [], extra: [] });
+    expect(server!.errors).toEqual([]);
+    const [g1, g2, g3, g4] = toolMessages(server!.requests[4]);
+    expect(g1).toMatch(/^\w+\.py:\d+: def /m);
+    expect(g2).toBe("No matches found");
+    expect(g3).toBe("No matches found");
+    expect(g4).toMatch(/仓库副本内.*read.*grep/);
+    expect(r.denials).toEqual([{ toolName: "grep", input: { pattern: "def ", path: "../git" } }]);
+    expect(r.undeclaredCalls).toEqual([]);
     expect(leftovers()).toEqual([]);
   }, 30_000);
 });
