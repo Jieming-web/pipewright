@@ -89,31 +89,38 @@ describe("checkSecrets", () => {
 });
 
 describe("checkSecrets：本机路径检查（10A6，用于要提交的录制样本）", () => {
-  const LOCAL = { 家目录: "/Users/fakeuser", 仓库路径: "/Users/fakeuser/work/repo", 用户名: "fakeuser" };
+  // 仓库在家目录内：仓库路径已被家目录覆盖，不重复报告
+  const LOCAL = { home: "/Users/fakeuser", repo: "/Users/fakeuser/work/repo", username: "fakeuser" };
   // 思考开启时的录制行：思考内容里出现本机路径
   const thinkingLine = (text: string) =>
     JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: text } });
 
-  it("思考内容里的本机路径：按文件:行:列逐处报告，标明类别，不输出命中内容", () => {
+  it("思考内容里的本机路径：按文件:行:列报告家目录与用户名段，仓库在家目录内时不重复报仓库路径，不输出命中内容", () => {
     const f = p("scan/rec.jsonl");
     const line2 = thinkingLine("先看 /Users/fakeuser/work/repo/cli.py 第 7 行");
     writeFileSync(f, `${thinkingLine("ok")}\n${line2}\n`);
     const col = line2.indexOf("/Users/fakeuser") + 1;
     const problems = checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: LOCAL });
-    expect(problems).toEqual([
-      `本机路径（家目录）出现在 ${f}:2:${col}`,
-      `本机路径（仓库路径）出现在 ${f}:2:${col}`,
-      `本机路径（用户名）出现在 ${f}:2:${col + "/Users/".length}`,
-    ]);
+    expect(problems).toEqual([`本机路径（家目录）出现在 ${f}:2:${col}`, `本机路径（用户名）出现在 ${f}:2:${col + "/Users/".length}`]);
     expect(problems.join("\n")).not.toContain("/Users/fakeuser");
     expect(problems.join("\n")).not.toContain("cli.py");
   });
 
-  it("同一行多处命中逐处报告；未命中的文件没有问题", () => {
-    const f = p("scan/a/two.jsonl");
-    writeFileSync(f, "fakeuser x fakeuser");
-    const problems = checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: { 用户名: "fakeuser" } });
-    expect(problems).toEqual([`本机路径（用户名）出现在 ${f}:1:1`, `本机路径（用户名）出现在 ${f}:1:12`]);
+  it("仓库不在家目录内：单独报告仓库路径", () => {
+    const f = p("scan/rec.jsonl");
+    writeFileSync(f, thinkingLine("/srv/build/repo/cli.py"));
+    const problems = checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: { ...LOCAL, repo: "/srv/build/repo" } });
+    expect(problems).toEqual([`本机路径（仓库路径）出现在 ${f}:1:${thinkingLine("/srv").indexOf("/srv") + 1}`]);
+  });
+
+  it("短而常见的用户名（me）：普通词不算，只按路径段匹配（中间段、结尾段、反斜杠路径），同一行多处逐处报告", () => {
+    const f = p("scan/a/me.jsonl");
+    const words = "give me some memes, meet me at home; /home/meta/x; /home/mel";
+    const paths = "/home/me/x and /home/me and C:\\Users\\me\\y";
+    writeFileSync(f, `${words}\n${paths}\n`);
+    const problems = checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: { home: "/Users/nobody", repo: "/srv/r", username: "me" } });
+    const cols = ["/me/", "/me ", "\\me\\"].map((seg) => paths.indexOf(seg) + 2);
+    expect(problems).toEqual(cols.map((c) => `本机路径（用户名）出现在 ${f}:2:${c}`));
   });
 
   it("不给 localPaths：不做本机路径检查（.tmp 原始录制只做 key 检查）", () => {
@@ -122,7 +129,7 @@ describe("checkSecrets：本机路径检查（10A6，用于要提交的录制样
   });
 
   it("本机路径检查的值为空：报告无法检查，而不是当作通过", () => {
-    expect(checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: { 用户名: "" } })).toEqual(["本机路径（用户名）为空，无法检查"]);
+    expect(checkSecrets({ names: [], paths: [p("scan")], env, repoRoot: repo(true), localPaths: { ...LOCAL, username: "" } })).toEqual(["本机路径（用户名）为空，无法检查"]);
   });
 });
 

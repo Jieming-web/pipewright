@@ -1878,3 +1878,18 @@ Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：�
 - `tests/unit/pi-event-converter.test.ts` 新增一个测试，并把该样本加入无思考内容和不产生终止事件的检查。
 
 **建议**（需要作者决定）：剩下的问题集中在格式（正文中混入推理）和推理判断（同文件调用、别名调用的行号）。作者预定的下一个调整是开启思考，若仍不行再换模型；开启思考也可能让推理留在思考段，使最终回答更干净。是否开启、是否再跑，由作者决定。
+
+### Task 10A6 思考级别与输出上限（2026-11-24，追加）
+
+实现见 `43a269a`。依据 pi 1.5.1 源码（`pi-ai/dist/api/openai-completions.js`、`api/simple-options.js`），用假服务逐级核对了请求体（`tests/integration/pi-session.test.ts`）。
+
+**pi 在 compat `thinkingFormat: "qwen"` 下发送的字段**（qwen-api 条目 `maxTokens 8192`，`supportsReasoningEffort: false`，所以不发 `reasoning_effort`；上限字段为 `max_completion_tokens: 8192`，各级别相同）：
+- off（默认）：`enable_thinking: false`，不发预算字段，请求与此前相同。
+- 其他级别：`enable_thinking: true`。只有 compat 写了 `thinkingTokenBudgetField` 时才发预算，预算 = min(级别预算, maxTokens − 1024)。按 `"thinking_budget"`：minimal 1024，low 2048，medium、high 都截到 7168（xhigh、max 降为 high）。不写这个字段时各级别发出的请求相同，思考没有上限。
+- pi 的 compat 说明（`pi-ai/dist/providers/compat-schema.js` 第 181 行）写明，在这类端点上思考与回答共用同一个上限，`thinking_budget` 是 Qwen/DashScope 的字段。百炼是否确实如此、是否接受 `thinking_budget`、是否认 `max_completion_tokens`，都没有实测，以 10B 第 3 次运行为准。
+
+**做法**：`config/models.example.json` 的 qwen-api compat 增加 `"thinkingTokenBudgetField": "thinking_budget"`，`maxTokens` 不变。按共用上限处理时，回答至少保留 1024 token；如果百炼不共用，预算仍然限制思考长度。被 git 忽略的 `config/models.local.json` 必须加同一字段，否则不发预算。报告的 `modelEntry.provider.compat` 会记录是否加了。
+
+**10B 推荐 `low`**：预算 2048，回答至少留 6144 token。第 2 次运行的失败是模型把推理写进正文，low 给回答的余量最大，不容易把截断和格式错误混在一起。medium/high 只给回答留 1024，而且每轮（包括工具调用轮）最多思考 7168，费用和耗时成倍增加，更容易碰到单题 120 秒的超时。
+
+**截断的归类**：统一事件不带结束原因，用 `scripts/t1-usage.ts` 的 `lastStopReason`。某题为 `"length"` 时记为截断，不记为格式错误。最后一轮在思考阶段就被截断、没有产生新的 `message.completed` 时（判卷拿到的是上一条回答或空），也按这条规则记为截断。

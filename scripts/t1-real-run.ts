@@ -14,6 +14,8 @@ import { gradeAnswer, type CallSite, type GradeResult } from "./t1-grade.js";
 
 export const QUESTION_TIMEOUT_MS = 120_000;
 export const MAX_TOOL_CALLS = 30;
+/** 未给 --thinking 时传给 runner 并写进报告的级别（与 runner 的默认一致） */
+const DEFAULT_THINKING = "off";
 const ROOT = join(import.meta.dirname, "..");
 const MAIN = join(ROOT, "packages/engine-runner/src/main.ts");
 const FIXTURES = join(ROOT, "tests/fixtures");
@@ -243,7 +245,7 @@ export async function runQuestion(q: Question, o: RunOptions): Promise<QuestionR
     const contextFiles = await readRules(gitDir);
     for (const d of ["sessions", "tmp"]) mkdirSync(join(root, d));
     runner = spawnRunner({
-      args: ["--import", "tsx", MAIN, "--port", "0", "--models", resolve(o.modelsPath), "--workdir", r.workDir, "--sessions-root", join(root, "sessions"), "--record-pi-events", r.recordFile, "--tools", TOOLS.join(","), "--thinking", o.thinking ?? "off"],
+      args: ["--import", "tsx", MAIN, "--port", "0", "--models", resolve(o.modelsPath), "--workdir", r.workDir, "--sessions-root", join(root, "sessions"), "--record-pi-events", r.recordFile, "--tools", TOOLS.join(","), "--thinking", o.thinking ?? DEFAULT_THINKING],
       cwd: ROOT,
       // runner 的 scratchDir 建在 TMPDIR 下：指向本题临时目录，强杀后也由下面的 finally 一并删除
       env: runnerEnv(join(root, "tmp")),
@@ -326,7 +328,7 @@ export async function runAll(o: RunOptions): Promise<Report> {
       maxToolCalls: o.maxToolCalls ?? MAX_TOOL_CALLS,
       questionTimeoutMs: o.questionTimeoutMs ?? QUESTION_TIMEOUT_MS,
       tools: TOOLS,
-      thinking: o.thinking ?? "off",
+      thinking: o.thinking ?? DEFAULT_THINKING,
       rg: spawnSync("rg", ["--version"], { encoding: "utf8", env: runnerEnv(tmpdir()) }).stdout?.split("\n")[0] || null,
     },
     versions: {
