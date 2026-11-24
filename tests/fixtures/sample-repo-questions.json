@@ -1,15 +1,14 @@
 {
   "sampleRepoHash": "5062bea787d0b527853a33ea3572d61226906848f6844e879b94cdca9c749b24",
-  "questionsHash": "fc8b4bdfd202d2b8858ded6f5783491872bc1883b90d053312befc172f61380b",
+  "questionsHash": "ba85b7e063d78f742a9ee63c94b9576e995ef5b9c3766b6021a5de26fa4a7e6b",
   "questions": [
     {
       "id": "normalize_name",
       "target": {
-        "name": "normalize_name",
         "path": "text_utils.py",
         "line": 1
       },
-      "question": "函数 normalize_name 在哪里被调用？",
+      "question": "text_utils.py 中定义的函数 normalize_name 在哪里被调用？包括经导入别名或模块名限定的调用；不含定义行和 import 行。",
       "answers": [
         {
           "path": "billing.py",
@@ -28,11 +27,10 @@
     {
       "id": "compute_total",
       "target": {
-        "name": "compute_total",
         "path": "billing.py",
         "line": 4
       },
-      "question": "函数 compute_total 在哪里被调用？（注意导入别名）",
+      "question": "billing.py 中定义的函数 compute_total 在哪里被调用？包括经导入别名或模块名限定的调用；不含定义行和 import 行。",
       "answers": [
         {
           "path": "billing.py",
@@ -47,11 +45,10 @@
     {
       "id": "send_notice",
       "target": {
-        "name": "send_notice",
         "path": "notify.py",
         "line": 4
       },
-      "question": "函数 send_notice 在哪里被调用？",
+      "question": "notify.py 中定义的函数 send_notice 在哪里被调用？包括经导入别名或模块名限定的调用；不含定义行和 import 行。",
       "answers": [
         {
           "path": "orders.py",
@@ -62,11 +59,10 @@
     {
       "id": "load_config",
       "target": {
-        "name": "load_config",
         "path": "config.py",
         "line": 4
       },
-      "question": "函数 load_config 在哪里被调用？",
+      "question": "config.py 中定义的函数 load_config 在哪里被调用？包括经导入别名或模块名限定的调用；不含定义行和 import 行。",
       "answers": [
         {
           "path": "cli.py",
@@ -77,11 +73,10 @@
     {
       "id": "audit_event",
       "target": {
-        "name": "audit_event",
         "path": "audit.py",
         "line": 4
       },
-      "question": "函数 audit_event 在哪里被调用？",
+      "question": "audit.py 中定义的函数 audit_event 在哪里被调用？包括经导入别名或模块名限定的调用；不含定义行和 import 行。",
       "answers": [
         {
           "path": "notify.py",

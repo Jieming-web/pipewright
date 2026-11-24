@@ -42,6 +42,12 @@ describe("gradeAnswer", () => {
     ["absolute", [{ path: "/a.py", line: 3 }]],
     ["dotdot", [{ path: "../a.py", line: 3 }]],
     ["backslash", [{ path: "b\\c.py", line: 10 }]],
+    ["negative line", [{ path: "a.py", line: -1 }]],
+    ["nested array", [[{ path: "a.py", line: 3 }]]],
+    ["double-encoded JSON", JSON.stringify(JSON.stringify(exp))],
+    ["empty segment", [{ path: "a//b.py", line: 3 }]],
+    ["missing path", [{ line: 3 }]],
+    ["non-string path", [{ path: 5, line: 3 }]],
     ["empty path", [{ path: "", line: 3 }]],
   ])("format error fails: %s", (_n, input) => {
     const r = gradeAnswer(input, exp);
