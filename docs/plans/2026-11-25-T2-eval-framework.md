@@ -26,13 +26,12 @@
 | D2 | Python 经 stdio 桥连 runner：`docker exec -i <容器> /fp/bin/fp-entry <runner 参数>`，一行一条协议消息，消息本身不变。关停不依赖 stdin EOF：Python 侧设硬截止，最终兜底是删除容器。 |
 | D3 | 新增契约事件 `model.request.finished`：每次模型请求结束都发，包括失败和被中止的请求，停止阶段也发（在终止事件之前）；用量缺失或全为 0 时为 `null`，报告中显示「未知」。用量带 `reasoning`，它是 `output` 的子集（T1 第 3 次录制：无缓存时 `totalTokens = input + output`；T2-0 实测：有缓存命中时 `totalTokens = input + cacheRead + output`；两次都是 `reasoning ≤ output`），只用于单列展示；花费只按 `output` 计，不再加 `reasoning`。T1 的原始录制只作诊断，不再用来统计。 |
 | D4 | 用 swebench 5.x 与 `SWE-bench/SWE-bench_Verified` 数据集（自带 `image`、`eval_script` 等字段）。评分在新建的同镜像容器里进行：沿用 swebench 的补丁回退链，打补丁后跑测试，设测试超时。不信任 agent 容器里的任何结果。 |
-| D5 | 开发集 40 个。Qwen3.6-35B-A3B 每题重复 3 次；Kimi K2.6 重复 2 次（作者补 2：它只是对照；n=2 的样本标准差参考价值低，Kimi 的波动以按题 bootstrap 区间为准，报告注明两组重复次数不同）。成功率报告每次重复的均值与样本标准差（ddof=1），再加一个按题 bootstrap 的 95% 置信区间；报告写明 40 题开发集能分辨的最小差距（供以后比较改动时用）。不做主模型选型（ADR 017）。 |
+| D5 | 开发集 40 个。Qwen3.6-35B-A3B 每题重复 3 次；Kimi K2.6 重复 2 次（作者补 2：它只是对照；n=2 的样本标准差参考价值低，Kimi 的波动以按题 bootstrap 区间为准，报告注明两组重复次数不同）。成功率报告每次重复的均值与样本标准差（ddof=1），再加一个按题 bootstrap 的 95% 置信区间。不做主模型选型（ADR 017）；配对比较与「能分辨的最小差距」暂不实现。 |
 | D6 | 留出集暂缓（tasks.md T2 验收 1），T2 不建、不跑；本计划只在 Task 0 记录核实结果。 |
-| D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
+| D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；采样参数 `temperature`、`top_p` 在两个模型的配置里显式写出，取各自模型卡里做 SWE 类评测所用的值（模型卡没给 SWE 专用值时，取模型卡对所用模式的推荐值，并注明），出处写在配置注释里，不依赖服务端默认值（作者 2026-11-25）；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
 | D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`$(`、反引号之后）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
 | D9 | 本机用 `/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
 | D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error` 与 `rate_limited`（429）最多重试 2 次，仍失败就从分母中排除并逐条列出；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
-| D11 | 已删除：不做主模型选型（作者 2026-11-25，ADR 017）。 |
 
 **需要作者准备**：x86 服务器到 Task 15 才租，租之前先报价。两个模型都用 `.env` 里的 `DASHSCOPE_API_KEY`，T2 不使用 `MOONSHOT_API_KEY`（ADR 017）。
 
@@ -169,8 +168,9 @@
 
 **Interfaces:**
 - `scripts/build-eval-bundle.sh <linux-x64|linux-arm64>` 生成 `eval/.cache/bundle-<arch>/`，包含：
-  - `node/`：node 24 官方 Linux 发行包，版本与 sha256 写死在脚本里并校验；
-  - `bin/rg`、`bin/fd`：官方发行包，同样校验 sha256；
+  - `node/`：node 24 官方 Linux 发行包；
+  - `bin/rg`、`bin/fd`：官方发行包；
+  - 三者的 sha256 先与官方发布的校验文件比对（node 的 `SHASUMS256.txt`，rg、fd 的 GitHub release 中官方发布的校验文件），一致后再写死进脚本，脚本注释写明校验文件的 URL（作者 2026-11-25：T2-0 是下载后自己算的，只能证明文件以后没被改过，证明不了下载到的就是官方那份）。某个项目没有发布官方校验文件时，停下报告作者，不用自己算的值代替；
   - `bin/fp-entry`：即 `fp-entry.sh`；
   - `app/runner/`、`app/client/`：先 `pnpm -r build`，再两次 `pnpm deploy --legacy --prod` 的产物（T2-0 实测：先构建时不需要 `files` 字段，`dist/` 会被带上）；
   - `VERSION`：内容为 `<git commit> pi@1.5.1 node@<版本>`。
@@ -269,7 +269,7 @@
 
 **Interfaces:**
 - `EvalConfig`（从 YAML 读取）字段：
-  - 模型：`model: {provider, id, route, base, keyEnv}`、`thinking`、`sampling`（显式写出的采样参数）；
+  - 模型：`model: {provider, id, route, base, keyEnv}`、`thinking`、`sampling`（必须显式含 `temperature` 与 `top_p`，值与出处见 D7；缺任一项时加载配置报错）；
   - 拦截与限额：`tools`、`danger_patterns`、`max_tool_calls`、`task_timeout_s`、`grade_timeout_s`；
   - 提示词与花费：`prompt_file`、`price: {input_per_m, output_per_m}`、`assumed_tokens_per_run: {input, output, source}`；
   - 计分：`scoring`（D10 的口径与 5% 阈值）。
@@ -296,6 +296,7 @@
   - 任何异常都先写 `record.json`（`infra_error` 加原因），再交给上层。
 
 - [ ] **Step 1：写失败测试**（`docker`、假模型；「实例」用 `buildpack-deps:jammy-scm` 里预置的一个小仓库）：
+  - 配置缺 `sampling.temperature` 或 `sampling.top_p` 时加载报错；假服务收到的请求体里 `temperature`、`top_p` 等于配置值；
   - 假模型执行 `bash: echo fix > new_file.py` 后结束：`patch.diff` 含 `new_file.py`；`failure_type=none`；`snapshot.engine.name=="pi"`；`requests==2`，`usage` 与假服务返回的一致；`record.json` 含 `config_hash`、`taskset_version`、`image_digest`、`bundle_version`。
   - 改了提示词文件内容后，`config_hash` 跟着变。
   - `bash: curl x` 被拒（对应的 `tool.finished` 是错误结果）。
@@ -319,7 +320,6 @@
   - 每次运行的 token、轮数、耗时：均值与中位数；
   - `failure_type` 计数（含 `rate_limited`、`budget_cancelled`）、排除清单、「未运行」清单；状态为 `complete` / `incomplete`（有 `budget_cancelled` 或未运行）/ `invalid`（D10 的 5% 阈值），未完成与无效分开报告。
 - `reconcile_proxy(records, proxy_logs) -> dict`：代理记下的请求总数与 `model.request.finished` 总数对账（按整次评测），差值写进 summary；被强杀的运行没有事件，差值不为 0 时列出这些运行。
-- `min_detectable_diff(summary) -> float`：用按题 bootstrap 区间的半宽估计这批题能分辨的最小差距，写进报告。
 - 命令：`eval/.venv/bin/python -m forgepilot_eval run --config <yaml> --taskset <json> --repeats N --out eval/runs/<名字> --budget <元> [--workers K] [--resume] [--yes]`。
   1. 先打印预计花费和预算，等确认（`--yes` 跳过）；
   2. 输出目录已存在且没有 `--resume` 时拒绝运行；带 `--resume` 时，先核对已有记录的 `config_hash`、`taskset_version`、`taskset_sha256`、`bundle_version` 与当前一致，任何一项不一致就拒绝并列出（作者补 2），一致才跳过已有 `record.json` 的运行；`--budget` 不参与核对，续跑时可以提高；
@@ -349,7 +349,7 @@
   - agent 工具里 `which python` 指向 `envs/testbed`（看 events 中的 bash 输出，提示词不为此改动）；
   - 容器内 `curl` 外网和访问 `host.docker.internal` 都失败；
   - `docker top` 里能看到 agent 的命令，而宿主机上没有对应的进程（验收 3；Docker Desktop 下命令跑在虚拟机里）；
-  - `proxy-fields.json` 与配置一致；`check-secrets` 干净。
+  - `proxy-fields.json` 与配置一致，其中每个请求的 `temperature`、`top_p` 都等于配置里显式写的值（证明确实发出去了，而不是用了服务端默认值）；`check-secrets` 干净。
 - [ ] **Step 3：校准**：用这次的每次运行 token（取 p90）更新两个配置文件的 `assumed_tokens_per_run`，`source` 写为 `smoke-<日期> p90`（作者补 4）。
 - [ ] **Step 4：提交** `docs(step02): Mac 冒烟与花费校准`。
 
@@ -357,8 +357,9 @@
 
 - [ ] **Step 1：报价**：写给作者以下内容，**作者同意后才租**：
   - 金标准预检的时长：60 个候选；
-  - 开发集基线的 token 花费：Qwen 40 题 × 3 次、Kimi 40 题 × 2 次，按校准后的 p90 计；
-  - 服务器规格与价格：只需 CPU，建议 16 vCPU / 64 GB / 500 GB 盘；按小时价格、`--workers` 取值和预计时长；
+  - 开发集基线共 **200 次运行**（Qwen 40 题 × 3 次 = 120，Kimi 40 题 × 2 次 = 80）：token 花费按两组各自校准后的 p90 × 运行次数计；
+  - 预计时长 = 200 × 冒烟实测的单次平均时长（agent + 截断 + 评分）÷ `--workers`，另加 60 个候选的金标准预检时长；
+  - 服务器规格与价格：只需 CPU，建议 16 vCPU / 64 GB / 500 GB 盘；按小时价格乘上面的预计时长；
   - 每次运行的 `--budget`。
 - [ ] **Step 2：服务器准备**（作者决定）：
   - 克隆本仓库的 `step-02-eval` 分支（推送到 GitHub 需作者同意；也可以用 `git bundle` 经 scp 传过去）；
@@ -374,9 +375,9 @@
 - [ ] **Step 2：对账**（作者补 2，必须在 Kimi 组之前）：作者在百炼控制台查 Qwen 组期间的实际账单，与 `actual_cost` 对比，差异与原因（缓存折扣、推理 token 计价等）写进报告；差异超过 10% 时先修正计费口径，再给 Kimi 组报价。
 - [ ] **Step 3：Kimi 组**：报价经作者同意后，跑 `dev-v1` 40 题 × 2 次（`eval/configs/kimi-k2.6.yaml`，设 `--budget`），跑完同样对账。
 - [ ] **Step 4：写报告** `docs/evals/<日期>-T2-baseline.md`（模版 `docs/templates/eval.md`），内容包括：
-  - 两组的成功率（均值、样本标准差、bootstrap 区间）、40 题能分辨的最小差距、token、轮数、耗时、失败类型（含 `rate_limited`）、排除清单、评测状态（完整 / 未完成 / 无效）、花费与对账结果；
+  - 两组的成功率（均值、样本标准差、bootstrap 区间）、token、轮数、耗时、失败类型（含 `rate_limited`）、排除清单、评测状态（完整 / 未完成 / 无效）、花费与对账结果；
   - 工具调用出错率：只计调用层面的错误，即参数校验失败、未知工具、edit 找不到原文；bash 非零退出和策略拦截各自单列；
-  - 注明：主模型按 ADR 017 直接选定，没有经过选型；Kimi 只跑 2 次，两组重复次数不同；开发集分数可能偏高；T2 没有留出集数字，留出集重新启用后要重跑本基线（tasks.md T2 验收 1）；本地模型基线在 T13；
+  - 注明：主模型按 ADR 017 直接选定，没有经过选型；Kimi K2.6 经百炼托管调用，与 Moonshot 官方端点是否完全一致未核实；Kimi 只跑 2 次，两组重复次数不同；开发集分数可能偏高；T2 没有留出集数字，留出集重新启用后要重跑本基线（tasks.md T2 验收 1）；本地模型基线在 T13；
   - 写明任务集版本、配置 hash、运行包版本、镜像 digest 与运行快照的核对结果。
 - [ ] **Step 5：提交** `docs(step02): 开发集基线报告`。
 
