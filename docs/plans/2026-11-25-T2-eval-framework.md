@@ -140,9 +140,9 @@
 - stdin 每行原样作为一个 WebSocket 文本帧发出；每个收到的帧原样写成一行到 stdout。帧里有换行时，写 stderr 并以 2 退出。
 - stdin EOF 时关闭 WebSocket（runner 按断线取消）。WebSocket 关闭后，`spawnRunner().stop()` 等 runner 退出；桥的退出码等于 runner 的退出码，runner 被强杀时为 137。runner 的 stderr 原样转到桥的 stderr。桥不校验、不改写消息。
 
-- [ ] **Step 1：写契约**，提交。
-- [ ] **Step 2：写失败测试**（假模型服务 + 真实 runner 子进程）：`start_task → accepted → 事件 → run.settled`，每条消息各占一行；callback 拦截一来一回之后工具执行；stdin EOF 后桥以 runner 的退出码退出；非法 JSON 行原样转发，stdout 收到 `invalid_message`。
-- [ ] **Step 3：运行确认失败**；**Step 4：实现**（用 `spawnRunner` 的 `listening` 拿端口，再用 `ws` 直连）；**Step 5：全量验证并提交** `feat(step02): runner 的 stdio 桥`。
+- [x] **Step 1：写契约**，提交。 — 2026-11-25：305e23c（传输：stdio 桥）。
+- [x] **Step 2：写失败测试**（假模型服务 + 真实 runner 子进程）：`start_task → accepted → 事件 → run.settled`，每条消息各占一行；callback 拦截一来一回之后工具执行；stdin EOF 后桥以 runner 的退出码退出；非法 JSON 行原样转发，stdout 收到 `invalid_message`。 — 2026-11-25：5 个用例：完整一轮含拦截往返、非法 JSON 透传、监听前退出（退出码 2）、运行中 stdin EOF 即取消、非 KILL 信号终止退出 137。
+- [x] **Step 3：运行确认失败**；**Step 4：实现**（用 `spawnRunner` 的 `listening` 拿端口，再用 `ws` 直连）；**Step 5：全量验证并提交** `feat(step02): runner 的 stdio 桥`。 — 2026-11-25：(Step 3–5) eebbc26、4511531；stderr 在 runner 退出后一次写出（未改 spawnRunner）；全量 531 通过；任务审查 + ponytail 返修 1 轮后复审通过。
 
 ### Task 5：Python 客户端与拦截策略
 
