@@ -15,7 +15,7 @@
 // 后两项未给 --context-window 时为 null，表示未检查。
 // 盲区：静默丢弃可能被新追加的工具结果盖住，使输入总量不降（10C 预检 (b) 的真实静默丢弃，主判据就没有触发），所以两个判据须一起看；
 // 统计干净不等于没有溢出。根本办法在 T3：发送前估算长度，快到窗口就主动停止。
-// shortcut: 进程被杀等导致没有 message_end 的请求无法统计，T2 评测框架加请求结束事件后再替换。
+// shortcut: 进程被杀等导致没有 message_end 的请求无法统计，协议已有 model.request.finished（T2-3），评测框架改用它后再替换。
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";

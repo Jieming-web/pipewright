@@ -57,9 +57,9 @@ describe("convertPiEvent 重放 2B 样本", () => {
     expect(convertPiEvent(ev)).toEqual([{ type: "text.delta", text: "ab" }]);
   });
 
-  it("aborted 的助手消息不产生 message.completed", () => {
+  it("aborted 的助手消息不产生 message.completed（只有 model.request.finished）", () => {
     const ev = { type: "message_end", message: { role: "assistant", stopReason: "aborted", content: [{ type: "text", text: "x" }] } };
-    expect(convertPiEvent(ev)).toEqual([]);
+    expect(convertPiEvent(ev).map((e) => e.type)).toEqual(["model.request.finished"]);
   });
 
   it("未知或畸形事件返回空数组，不抛错", () => {
@@ -195,11 +195,11 @@ describe("思考开启（engine.md 思考级别：思考内容不进入最终回
         message: { role: "assistant", stopReason: "stop", content: [{ type: "thinking", thinking: "THINK-MARK 推理" }, { type: "text", text: "[]" }] },
       },
     ].flatMap((e) => convertPiEvent(e));
-    expect(es).toEqual([{ type: "text.delta", text: "[]" }, { type: "message.completed", role: "assistant", text: "[]" }]);
+    expect(es).toEqual([{ type: "text.delta", text: "[]" }, { type: "model.request.finished", stopReason: "stop", usage: null }, { type: "message.completed", role: "assistant", text: "[]" }]);
   });
 
   it("只有 thinking、没有 text 的助手消息（如思考后直接调用工具）不产生 message.completed", () => {
-    expect(convertPiEvent({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "thinking", thinking: "x" }] } })).toEqual([]);
+    expect(convertPiEvent({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "thinking", thinking: "x" }] } }).map((e) => e.type)).toEqual(["model.request.finished"]);
   });
 });
 
@@ -217,3 +217,46 @@ describe("工具事件空值归一", () => {
     }
   });
 });
+
+describe("model.request.finished", () => {
+  const finished = (es: ProgressEvent[]) => es.filter((e): e is Extract<ProgressEvent, { type: "model.request.finished" }> => e.type === "model.request.finished");
+  const U1 = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+  it.each(["retry", "retry-drop"])("%s：失败尝试 usage 为 null 且带 errorMessage，随后一条 stop", (n) => {
+    const f = finished(replay(n));
+    expect(f).toHaveLength(2);
+    expect(f[0]).toMatchObject({ stopReason: "error", usage: null });
+    expect(f[0]!.errorMessage).toEqual(expect.any(String));
+    expect(f[1]).toEqual({ type: "model.request.finished", stopReason: "stop", usage: U1 });
+  });
+  it("tool-call-then-text：toolUse 与 stop 各一条", () => {
+    expect(finished(replay("tool-call-then-text")).map((e) => [e.stopReason, e.usage])).toEqual([["toolUse", U1], ["stop", U1]]);
+  });
+  it("先于同一消息的 message.completed", () => {
+    const t = replay("text-only").map((e) => e.type);
+    expect(t.indexOf("model.request.finished")).toBeLessThan(t.indexOf("message.completed"));
+  });
+  const msg = (m: object) => convertPiEvent({ type: "message_end", message: { role: "assistant", content: [], stopReason: "aborted", ...m } });
+  it("用量全 0、缺失 → null；reasoning 缺失 → 0；errorMessage 截断 500 且只在 error 出现", () => {
+    expect(msg({ usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })[0]).toMatchObject({ usage: null });
+    expect(msg({})[0]).toMatchObject({ stopReason: "aborted", usage: null });
+    expect(msg({ usage: { input: 0, output: 0, cacheRead: 3, cacheWrite: 0 } })[0]).toMatchObject({ usage: { cacheRead: 3, reasoning: 0 } });
+    const e = msg({ stopReason: "error", errorMessage: "x".repeat(900) })[0] as any;
+    expect(e.errorMessage).toHaveLength(500);
+    expect("errorMessage" in (msg({ errorMessage: "ignored" })[0] as object)).toBe(false);
+  });
+  it("真实录制 run3：reasoning 已含在 output 内，input+cacheRead+output = totalTokens", () => {
+    const n = "real-qwen-api-run3-thinking-send-notice";
+    const raws = rawLines(n).filter((r) => r.type === "message_end" && r.message.role === "assistant" && r.message.usage.totalTokens > 0);
+    expect(raws.length).toBeGreaterThan(0);
+    const f = finished(replay(n)).filter((e) => e.usage);
+    expect(f).toHaveLength(raws.length);
+    f.forEach((e, i) => {
+      const u = e.usage!, t = raws[i].message.usage;
+      expect(u.reasoning).toBeGreaterThan(0);
+      expect(u.reasoning).toBeLessThanOrEqual(u.output);
+      expect(t.input + t.cacheRead + t.output).toBe(t.totalTokens);
+      expect(u).toEqual({ input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite, reasoning: t.reasoning });
+    });
+  });
+});
+

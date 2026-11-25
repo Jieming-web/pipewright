@@ -44,3 +44,16 @@ describe("其他事件", () => {
     expect(AgentEventSchema.safeParse({ type: "message.completed", role: "user", text: "x" }).success).toBe(false);
   });
 });
+
+describe("model.request.finished", () => {
+  const ok = { type: "model.request.finished", stopReason: "stop", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 } };
+  it("接受合法事件（usage 可为 null，error 可带 errorMessage）", () => {
+    expect(AgentEventSchema.safeParse(ok).success).toBe(true);
+    expect(AgentEventSchema.safeParse({ ...ok, stopReason: "error", usage: null, errorMessage: "x" }).success).toBe(true);
+  });
+  it("拒绝未知 stopReason 与缺 usage", () => {
+    expect(AgentEventSchema.safeParse({ ...ok, stopReason: "weird" }).success).toBe(false);
+    expect(AgentEventSchema.safeParse({ ...ok, usage: undefined }).success).toBe(false);
+  });
+});
+

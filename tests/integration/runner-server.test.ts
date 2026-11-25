@@ -99,7 +99,7 @@ describe.sequential("runner 服务：正常流程", () => {
     c.send(start());
     expect(await c.closed).toBe(1000);
     expect(c.msgs[0]).toEqual({ type: "accepted", requestId: "A", sessionId: "s1" });
-    expect(checkFlow(c)).toEqual(["run.started", "text.delta", "text.delta", "message.completed", "run.settled"]);
+    expect(checkFlow(c)).toEqual(["run.started", "text.delta", "text.delta", "model.request.finished", "message.completed", "run.settled"]);
     expect(await runner.done).toEqual({ ok: true });
     expect(await portClosed(runner.port)).toBe(true);
     expect(scratchLeft()).toEqual([]);
@@ -330,7 +330,7 @@ describe.sequential("runner 服务：取消、断线与退出", () => {
     const c = await connect(runner.port, (m, send) => { if (m.type === "intercept_request") closeSync(reader); allow(m, send); });
     c.send(start());
     await c.closed;
-    expect(checkFlow(c)).toEqual(["run.started", "tool.started", "tool.finished", "text.delta", "message.completed", "run.failed"]);
+    expect(checkFlow(c)).toEqual(["run.started", "model.request.finished", "tool.started", "tool.finished", "text.delta", "model.request.finished", "message.completed", "run.failed"]);
     expect((c.events().at(-1) as { reason: string }).reason).toMatch(/cleanup failed: .*EPIPE/);
     expect(await runner.done).toEqual({ ok: false });
     expect(stderr.mock.calls.map((a) => String(a[0])).join("")).toMatch(/cleanup failed/);

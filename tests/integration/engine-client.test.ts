@@ -78,7 +78,7 @@ describe.sequential("engine-client：启动与终止", () => {
     await client.start(task());
     const end = await client.waitForEnd();
     expect(end).toMatchObject({ type: "run.settled", sessionId: "s1" });
-    expect(types(events)).toEqual(["run.started", "text.delta", "text.delta", "message.completed", "run.settled"]);
+    expect(types(events)).toEqual(["run.started", "text.delta", "text.delta", "model.request.finished", "message.completed", "run.settled"]);
     expect(events.at(-1)).toBe(end);
     expect(await runner.done).toEqual({ ok: true });
     await client.close(); // 确保客户端已处理完 close 事件

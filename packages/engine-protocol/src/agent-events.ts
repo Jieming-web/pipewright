@@ -22,6 +22,13 @@ export const ProgressEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.started"), snapshot: RunSnapshotSchema }),
   z.object({ type: z.literal("text.delta"), text: z.string() }),
   z.object({ type: z.literal("message.completed"), role: z.literal("assistant"), text: z.string() }),
+  z.object({
+    type: z.literal("model.request.finished"),
+    stopReason: z.enum(["stop", "toolUse", "length", "error", "aborted"]),
+    // null = 未知（pi 没给或全为 0）；reasoning 是 output 的子集
+    usage: z.object({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), reasoning: z.number() }).nullable(),
+    errorMessage: z.string().optional(),
+  }),
   z.object({ type: z.literal("tool.started"), callId: z.string(), toolName: z.string(), input: json }),
   z.object({ type: z.literal("tool.finished"), callId: z.string(), toolName: z.string(), isError: z.boolean(), output: json }),
 ]);

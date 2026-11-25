@@ -128,7 +128,7 @@ describe.sequential("runner 进程：正常结束与空闲退出", () => {
     const exit = await r.exit;
     expect(exit.code).toBe(0);
     expect(exit.at - endAt).toBeLessThan(5000);
-    expect(checkFlow(events)).toEqual(["run.started", "text.delta", "text.delta", "message.completed", "run.settled"]);
+    expect(checkFlow(events)).toEqual(["run.started", "text.delta", "text.delta", "model.request.finished", "message.completed", "run.settled"]);
     expect(errors).toEqual([]);
     expect(scratchLeft()).toEqual([]);
   }, 20_000);

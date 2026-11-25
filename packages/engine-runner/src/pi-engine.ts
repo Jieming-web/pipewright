@@ -112,7 +112,8 @@ export class PiEngine {
           : lastAssistant?.stopReason === "error"
             ? { type: "run.failed", reason: lastAssistant.errorMessage ?? "model error" }
             : { type: "run.settled" };
-      if (!this.#stop) for (const e of convertPiEvent(raw)) events.publish(e);
+      // 清理阶段 abort 才会结束被中止的请求：只放行 model.request.finished，它先于 finish() 发出（engine.md 2.3）
+      for (const e of convertPiEvent(raw)) if (!this.#stop || e.type === "model.request.finished") events.publish(e);
     };
 
     // 诊断文件打不开属于启动失败（engine.md 第一事件规则）：创建会话、执行工具之前，等打开结果、时限与取消三者先到者

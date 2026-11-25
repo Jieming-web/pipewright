@@ -106,9 +106,9 @@ describe.sequential("PiEngine 运行", () => {
     const { engine, events, coordinator } = makeEngine();
     expect(engine.disposed).toBe(false);
     await engine.run(task());
-    expect(checkStream(events)).toEqual(["run.started", "text.delta", "text.delta", "message.completed", "run.settled"]);
+    expect(checkStream(events)).toEqual(["run.started", "text.delta", "text.delta", "model.request.finished", "message.completed", "run.settled"]);
     expect((events[0] as any).snapshot).toMatchObject({ engine: { name: "pi" }, model: { provider: "fake", id: "fake-model" }, contextFiles: [{ repo: "alpha", sha256: sha("rule alpha") }] });
-    expect((events[3] as any).text).toBe("Hello");
+    expect((events[4] as any).text).toBe("Hello");
     expect(engine.disposed).toBe(true);
     expect(coordinator.pendingCount).toBe(0);
     expect(scratchLeft()).toEqual([]);
@@ -121,9 +121,9 @@ describe.sequential("PiEngine 运行", () => {
     writeModels(s.baseUrl);
     const { engine, events, sent } = makeEngine();
     await engine.run(task());
-    expect(checkStream(events)).toEqual(["run.started", "tool.started", "tool.finished", "text.delta", "message.completed", "run.settled"]);
-    expect(events[1]).toMatchObject({ callId: "call_1", toolName: "bash" });
-    expect(events[2]).toMatchObject({ callId: "call_1", isError: false });
+    expect(checkStream(events)).toEqual(["run.started", "model.request.finished", "tool.started", "tool.finished", "text.delta", "model.request.finished", "message.completed", "run.settled"]);
+    expect(events[2]).toMatchObject({ callId: "call_1", toolName: "bash" });
+    expect(events[3]).toMatchObject({ callId: "call_1", isError: false });
     expect(sent.map((m) => m.type)).toEqual(["intercept_request"]);
     expect(readFileSync(p("work/allow.marker"), "utf8")).toBe("hi\n");
     expect(s.requests.length).toBe(2);
@@ -157,7 +157,7 @@ describe.sequential("PiEngine 运行", () => {
     writeModels(s.baseUrl);
     const { engine, events } = makeEngine();
     await engine.run(task());
-    expect(checkStream(events)).toEqual(["run.started", "text.delta", "message.completed", "run.settled"]);
+    expect(checkStream(events)).toEqual(["run.started", "model.request.finished", "text.delta", "model.request.finished", "message.completed", "run.settled"]);
     expect(s.requests.length).toBe(2);
   }, 10_000);
 
@@ -166,7 +166,7 @@ describe.sequential("PiEngine 运行", () => {
     writeModels(s.baseUrl);
     const { engine, events } = makeEngine();
     await engine.run(task());
-    expect(checkStream(events)).toEqual(["run.started", "run.failed"]);
+    expect(checkStream(events)).toEqual(["run.started", "model.request.finished", "model.request.finished", "model.request.finished", "run.failed"]);
     expect(terminal(events).reason).toMatch(/500/);
     expect(s.requests.length).toBe(3);
     expect(engine.disposed).toBe(true);
@@ -178,7 +178,7 @@ describe.sequential("PiEngine 运行", () => {
     writeModels(`http://127.0.0.1:${port}/v1`);
     const { engine, events } = makeEngine();
     await engine.run(task());
-    expect(checkStream(events)).toEqual(["run.started", "run.failed"]);
+    expect(checkStream(events)).toEqual(["run.started", "model.request.finished", "model.request.finished", "model.request.finished", "run.failed"]);
     expect(terminal(events).reason).toMatch(/ECONNREFUSED|Connection error/);
     expect(engine.disposed).toBe(true);
   }, 10_000);
@@ -239,6 +239,12 @@ describe.sequential("PiEngine 取消", () => {
     expect(Date.now() - t0).toBeLessThan(1500);
     await expectCancelled(engine, events, coordinator);
     expect(events.some((e) => e.type === "message.completed")).toBe(false);
+    const types = events.map((e) => e.type);
+    const i = events.findIndex((e) => e.type === "model.request.finished");
+    expect(events[i]).toMatchObject({ stopReason: "aborted" });
+    expect(i).toBeGreaterThan(-1);
+    expect(i).toBeLessThan(types.indexOf("run.cancelled"));
+    expect(types.filter((t) => t === "model.request.finished")).toHaveLength(1);
     await vi.waitFor(() => expect(s.stats.inFlight).toBe(0));
     expect(s.requests.length).toBe(1);
   }, 10_000);
