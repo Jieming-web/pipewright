@@ -122,6 +122,8 @@
 
 **会话根目录**：runner 启动时必须配置 `sessionsRoot`（CLI `--sessions-root`），没有默认值。`start_task.sessionDir` 只能是它下面的相对路径；绝对路径、`..` 越界、经软链接跳出根目录时，任务以带原因的 `run.failed` 结束，不创建会话（作者 2026-11-23 决定）。
 
+**传输：stdio 桥**：评测框架在容器里跑 runner、经 `docker exec -i` 通信，只有 stdin/stdout 可用，因此提供桥 `node stdio-bridge.js --runner <runner main.js> -- <runner 参数…>`（`packages/engine-client/src/stdio-bridge.ts`）。桥用启动者（`spawnRunner`）启动 runner，读到 `RUNNER_LISTENING` 端口后连接 `ws://127.0.0.1:<端口>`（不带 `Origin`）。stdin 的每一行原样作为一个 WebSocket 文本帧发出；收到的每个帧原样写成 stdout 的一行，stdout 只有协议行。桥不校验、不改写消息，校验留在两端（非法 JSON 行照常转发，runner 回 `invalid_message`）。帧里含换行时，桥向 stderr 写说明、终止 runner 并以 2 退出。stdin EOF 时桥关闭 WebSocket，runner 按断线取消并退出（见 3「进程退出」）；WebSocket 关闭后桥按启动者的停止时限等 runner 退出，桥的退出码等于 runner 的退出码，runner 被强杀（信号终止或到停止时限）时为 137。runner 的 stderr 在 runner 退出后原样写到桥的 stderr（不是实时流）。runner 在监听前退出时，桥写出其 stderr，以其退出码（没有则 1）退出（作者 2026-11-25 决定，T2-4）。
+
 ## 4. 示例
 
 正常：
@@ -165,3 +167,4 @@
 | 2026-11-25 | 诊断文件（`--record-pi-events`）打不开属于启动失败：创建会话前等打开结果，最多 5 秒，失败或超时只发 `run.failed`、不执行工具；等待中收到取消立即按 `run.cancelled` 收尾；超时表加「诊断文件打开」 | 作者 2026-11-25（T1 整体审查 M3，A2+3 方案） | T2-1、T2 评测框架（使用 `--record-pi-events` 的调用方） |
 | 2026-11-25 | 措辞更正：第一事件规则中等待期间取消一句，「此时没有打开任何文件」改为「此时打开尚未完成」（取消后底层打开仍可能稍后完成） | 作者 2026-11-25（T2-1 返修） | 无（不改行为） |
 | 2026-11-25 | 2.3：清理过程中放行 `model.request.finished`（终止事件之前）；强杀时进行中的请求没有该事件 | 评测框架需求（T2-3） | T2 评测框架 |
+| 2026-11-25 | 新增传输「stdio 桥」：stdin/stdout 行与 WebSocket 帧一一对应，退出码约定（runner 退出码，强杀为 137，帧含换行为 2） | 评测框架需求（T2-4） | T2 评测框架 |
