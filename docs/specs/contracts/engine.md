@@ -92,7 +92,7 @@
 | 任务结束后再启动 | `error{code:"run_finished"}` 并关闭 | 启动新 runner |
 | `policy` 或 `resume` | `error{code:"not_implemented"}` | T1 不支持，改用 `callback` 且不带 `resume` |
 | 迟到/重复/不匹配的决定或确认 | `error{code:"stale_response"}` | 忽略，已完成的决定不变 |
-| runner 内部错误（非任务失败） | `error{code:"internal"}` | 视为不可恢复，重启 runner |
+| runner 内部错误（非任务失败） | `error{code:"internal"}`（保留：T1 的 runner 还没有发出它的路径，见实现说明「T1 收尾」整体审查 M6） | 视为不可恢复，重启 runner |
 | 已接受任务的运行异常 | `run.failed{reason}` 事件 | 按终止事件处理 |
 
 ### 超时与默认值

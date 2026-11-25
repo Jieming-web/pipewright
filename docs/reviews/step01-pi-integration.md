@@ -2158,3 +2158,453 @@ index eb3777b..0e2002b 100644
 ```
 
 **更正（2026-11-25，追加）**：上一节"T2 修法"第 3 条的测试位置有误。`runner-process.test.ts` 的 346/356/380 是 `d73246c` 的行号，在 `be5a171` 上是 347/357/381；还漏了 `t1-real-run.test.ts:415`（`recordDir: no-such-dir`），受牵连的测试共 8 条。行号会随改动漂移，T2 开工时用 `git grep -n "no-such-dir\|mkfifo" -- tests/integration` 重新定位。
+
+
+## T1 收尾（2026-11-25，追加）——以本节为准
+
+本节取代本文开头 §1–3、§5–7 的占位内容（“待填写”“验收 1–5、7、10 都还没有开始”“按计划仍锁定 1.5.0”等）。那些段落按只追加规则不改，**以本节为准**：pi 实际锁定 **1.5.1**（见 §4 第 2 行与 0A-R 节），验收 1–11 已全部核对（见下文 5.2）。§4 原有 5 行偏差仍然有效，本节 4.1 只补充其后的偏差，并标出被推翻的那一行（思考关闭）。
+
+- **代码版本**：分支 `step-01-pi-integration`（从 `64d3422` 分出，到 `351b2ef` 共 128 个提交）；产品代码、脚本、测试的最终版本为 `c6d2513`（之后的 `1a8abf9`、`20bf35a`、`351b2ef` 只改了计划文件）。
+- **依据的规范版本**：最后一次改规范的提交 `dc875ae`（engine.md 第一事件规则标注 M3“尚未实现”、tasks.md T2 遗留项）。T1 期间改规范共 17 个提交，契约 `engine.md`、`agent-events.md` 由 T1 新建。
+- **执行账本**：`.superpowers/sdd/2026-11-09-T1-pi-integration/progress.md`（731 行）。其中的裁决、作者决定和修过的 bug 已转存到第 7 节与 4.2；账本删除后以本节为准。
+
+### 1. 做了什么（收尾）
+
+调用方（TS）通过一个语言无关的 WebSocket 协议驱动独立进程中的 pi 1.5.1 完成任务，拿到统一的事件流；pi 以未修改的确切版本依赖接入，只用 SDK 和扩展钩子。按能力列出：
+
+| 能力 | 交付 |
+|---|---|
+| 引擎契约与 TS 客户端 | `contracts/engine.md`（消息、生命周期、拦截/确认、取消、超时、进程退出、Claude Agent SDK 能力对照）；`engine-protocol` 用 zod 双向校验；`EngineClient` 按 requestId 关联启动、回答拦截与确认、`waitForEnd()` 返回唯一终止事件 |
+| runner 与 pi 适配 | `engine-runner` CLI（`--models --workdir --sessions-root --tools --thinking --record-pi-events` 等）、单客户端单任务的 WebSocket 服务、`PiEngine`（创建会话 → `run.started` → prompt → 选终止 → 清理） |
+| 事件协议与转换 | `contracts/agent-events.md`；转换器只读 `text_delta` 与 `message_end`，重试残留的增量照常透传、最终文本以 `message.completed` 为准；会话内连续序号、恰好一个终止事件 |
+| 拦截与确认 | pi `tool_call` 钩子 → 协调器 → 调用方决定；拦截默认等 30 秒、确认 600 秒，超时、发送失败、取消一律按 block；迟到应答得到 `stale_response` |
+| 取消与清理 | 引擎清理按步骤尽力执行、5 秒限时；runner 兜底 6 秒、等客户端关闭 1 秒；启动者从最早退出信号起 10 秒后强杀进程组 |
+| 受限资源加载与规则注入 | `DefaultResourceLoader` 关闭全部自动发现，cwd/agentDir 为每次运行新建的空 scratchDir，只注入调用方从 git 基准引用读出的 `AGENTS.md`（`agentsFilesOverride`）；会话显式使用加载器那份不信任项目的 `SettingsManager` |
+| 运行快照 | `run.started.snapshot`：引擎名与版本、实际注册的模型、从加载器回读的规则清单（仓库、路径、来源提交、sha256） |
+| 模型配置 | `config/models.example.json`（fake / qwen-api 百炼 / ollama 派生 16k 标签）；密钥只用 `$ENV` 引用；pi 的 auth 与 models-store 写进 scratchDir，配置目录只读 |
+| 验收脚本 | `t1-real-run`（只读五题运行、按题刹车、运行条件与哈希）、`t1-grade`（严格判分）、`t1-usage`（离线统计请求、用量、结束原因与上下文溢出）、`check-secrets`（密钥与本机路径）、`check-pi-pinned`（pi 锁定与未修改） |
+
+结果：API 模型 `qwen3.6-35b-a3b`（思考 low）五题 5/5（第 3 次运行，单次）；本地 `qwen3-4b-instruct-2507-ctx16k` 1/5，如实记录；两次运行的 21 个产品与脚本源文件 hash 相同，切换只改配置。
+
+### 2. 设计意图（收尾）
+
+| 设计 | 为什么 | 依据 |
+|---|---|---|
+| pi 作为未修改的依赖，只经 SDK 与扩展接入；“未修改”覆盖全部 `@earendil-works/pi-*` 子包 | 复用 pi 的 loop、工具、重试、会话、资源加载，不重做；fork 会让升级和对照失去意义 | ADR 001、014；验收 6；`check-pi-pinned.mjs`（作者决定 A7） |
+| 跨进程、语言无关的 JSON over WebSocket 协议，而不是在调用方进程内直接调用 SDK | T2 要有 Python 客户端；ADR 005 的 2×2 对照要求同一接口能换 Claude Agent SDK；pi 崩溃或卡死不拖垮调用方，进程可整体强杀 | ADR 005；engine.md 开头、§5 能力对照；0B.1 |
+| 第一事件规则：`accepted` 后第一个事件只能是 `run.started` 或 `run.failed`；加载器或会话创建失败只发 `run.failed` | `run.started` 携带的快照必须是 pi 实际持有的内容；没有会话就没有可如实报告的快照。启动失败压过更早的取消，因为取消在会话建好前无法生效，真实原因是失败 | engine.md §2.1、§2.3；`pi-engine.ts:117-129` |
+| 终止只取第一个原因；`run.settled`/`run.cancelled` 只在清理成功后发；清理失败改发带原因的 `run.failed` | 调用方看到“成功/已取消”时，工具已停、scratchDir（含 pi 的 auth 文件）已删；不让晚到的事件翻转结果 | agent-events.md §2.4；`pi-engine.ts:66-101` |
+| 结束判定只认 pi 的 `agent_settled` | 0B 实测：`agent_end` 在每次失败尝试后都会发，之后可能重试；`prompt()` 在模型最终失败时也 resolve | 0B.2；`pi-engine.ts:103-115` |
+| 退出码只反映清理结果，不反映任务成败 | 任务失败已经由 `run.failed` 表达；非零退出只用来告诉启动者“清理没完成，可能有残留” | engine.md 进程退出（作者 2026-11-23） |
+| 启动者停止时限 10 秒，从最早的退出信号（发出取消、SIGTERM、收到终止事件、连接关闭/断开）起用单调时钟计；启动被拒绝不算 | 清理卡在系统调用上时 Node 进程无法自行退出，只能外部强杀；10 秒 > 5+1+1 = 7 秒的内部收尾上限，避免误杀正常收尾的 runner | engine.md 进程退出；`runner-launcher.ts:73-105`；I1 |
+| 拦截决定在调用方，runner 不含策略；拿不到决定即拒绝 | 策略服务在 T3；fail closed：超时、发送失败、中止都按 block，原因用固定文字不泄露内部错误 | engine.md §2.2；`intercept-coordinator.ts` |
+| 规则由调用方从 git 基准引用读取，runner 不读 git；加载器自身的发现根是空目录 | 任务分支里的 `AGENTS.md` 可被 agent 或工单改写（ADR 008 的安全问题）；仓库 `.pi/` 扩展会在 pi 进程内执行代码 | ADR 008；验收 7、8、10；0A.4 与 Task 7 补充 |
+| 快照的规则清单从加载器回读并现算 sha256，映射不回调用方文件就抛错 | 证明“pi 实际收到的规则”，而不是照抄启动参数（ADR 016） | 验收 11；`restricted-resource-loader.ts:34-40` |
+| 验收运行的只读沙箱 fail closed：只声明 read/grep（`--tools`），拦截再按工具名与 realpath 落在本题副本内放行，不存在的路径、非对象输入一律拒绝；工作目录无 `.git` | 防止模型读到答案或副本外文件；“拿不准就拒绝”；声明清单只是第一道防线 | 作者决定 A34、A35、A48、A53；`t1-real-run.ts:156-184` |
+| 只用 `PI_OFFLINE=1`，rg 由部署方装 | pi 缺 rg 时会联网下载到 `~/.pi/agent/bin`（工作区之外） | engine.md 外部程序与离线（A49） |
+| 原始 pi 事件只进诊断文件，不进统一接口；用量与结束原因用离线脚本统计 | 统一事件暂不带请求边界与用量；契约层的“模型请求结束”事件推迟到 T2 评测框架 | A54；`t1-usage.ts` |
+
+### 3. 代码地图（收尾）
+
+行数为 `c6d2513` 时的实际行数。
+
+| 文件 | 负责什么 | 关键入口 |
+|---|---|---|
+| `packages/engine-protocol/src/engine-messages.ts`（151） | 客户端/runner 消息、`StartTask`、`ContextFile`、拦截与确认、错误码的 zod schema；按 `type` 分派解析 | `parseClientMessage`、`parseRunnerMessage`（:150-151）、`StartTaskSchema`（:47） |
+| `packages/engine-protocol/src/agent-events.ts`（45） | 事件与快照 schema | `RunSnapshotSchema`（:3）、`ProgressEventSchema`（:21）、`TerminalEventSchema`（:30）、`SequencedEventSchema`（:42） |
+| `packages/engine-runner/src/main.ts`（57） | runner CLI：参数校验（`--tools` 只收 pi 内置名、`--thinking` 只收 pi 级别名）、设 `PI_OFFLINE=1`、stdout 只写 `RUNNER_LISTENING <port>`、退出码 = 清理结果 | 顶层脚本 |
+| `packages/engine-runner/src/runner-server.ts`（153） | 127.0.0.1 单客户端服务；拒绝带 Origin 的握手；状态 idle→running→stopping→finished；统一收尾 `finish()`（兜底 6 秒、等关闭 1 秒） | `startRunnerServer`（:28）、`finish`（:89） |
+| `packages/engine-runner/src/pi-engine.ts`（141） | 一次任务：创建会话、发 `run.started`、prompt 与 `stopping` 竞速、选终止、逐步清理 | `PiEngine.run`（:43）、`cancel`（:48）、`#execute`（:55）、`stop`（:66） |
+| `packages/engine-runner/src/pi-session.ts`（76） | 校验 `sessionDir` 在 `sessionsRoot` 内（含软链接）；载入模型、提前取鉴权；用受限加载器与它的 settingsManager 建会话；生成快照 | `createPiSession`（:36）、`PI_BUILTIN_TOOLS`（:11） |
+| `packages/engine-runner/src/restricted-resource-loader.ts`（42） | 0A.4 组合 + `systemPrompt: ""`；只注入调用方规则；回读规则清单 | `createRestrictedResourceLoader`（:7）、`loadedContextFiles`（:35） |
+| `packages/engine-runner/src/model-config.ts`（11） | `ModelRuntime`，auth 与 models-store 写进 stateDir | `loadModelRuntime` |
+| `packages/engine-runner/src/intercept-coordinator.ts`（76）、`intercept-extension.ts`（15） | 等待表（`intercept:<callId>`/`confirm:<id>`）、各自计时、重复 callId 拒绝、`cancelAll`；pi `tool_call` 钩子只调用 `decide` | `createInterceptCoordinator`、`createInterceptExtension` |
+| `packages/engine-runner/src/pi-event-converter.ts`（36）、`run-events.ts`（23） | pi 原始事件 → 进度事件；序号分配与唯一终止 | `convertPiEvent`、`createRunEvents` |
+| `packages/engine-runner/src/raw-event-recorder.ts`（20） | `--record-pi-events` 的 JSONL 诊断文件（0600）；错误在 `close()` 时抛出（M3 遗留） | `createRawEventRecorder` |
+| `packages/engine-client/src/engine-client.ts`（210） | TS 客户端：发送前校验、启动拒绝可重试、并发启动不丢终止、回调异常写 stderr、拦截/确认处理器缺失或抛错时自动拒绝（`by: "engine-client"`）；`exitSignal` | `EngineClient.connect`、`start`（:79）、`waitForEnd`（:104）、`exitSignal`（:45） |
+| `packages/engine-client/src/runner-launcher.ts`（107） | 启动者：detached 启动 runner、等 `RUNNER_LISTENING`、最早退出信号计时、到时 `kill(-pgid)`；处理 spawn 失败 | `spawnRunner`（:51）、`STOP_TIMEOUT_MS`（:5） |
+| `packages/engine-client/src/git-context.ts`（79） | 从基准引用读规则：参数数组调用 git、`--literal-pathspecs --no-replace-objects`、去掉 `GIT_*`、只收普通 blob（拒软链接）、256 KiB 上限、严格 UTF-8 | `readGitContextFiles`（:35） |
+| `scripts/t1-real-run.ts`（387） | 五题验收：每题新 runner、`checkout-index` 导出无 `.git` 的副本、规则取自副本 main、拦截判定与刹车、报告（分类、运行条件、hash）；退出码 0/1/2/3 | `runQuestion`（:221）、`runAll`（:305）、`toolDecision`（:170）、`createBrake`（:189）、`piResolve`（:156） |
+| `scripts/t1-grade.ts`（36） | 严格判分：JSON 数组、仓库相对 POSIX 路径、去重、不剥代码块 | `gradeAnswer`（:11） |
+| `scripts/t1-usage.ts`（128） | 离线读原始录制：请求数、中止、出错、用量、结束原因、四类溢出 | `countFile`（:40）、`summarizeDir`（:97） |
+| `scripts/check-secrets.ts`（94）、`scripts/check-pi-pinned.mjs`（97）、`scripts/record-pi-fixtures.ts`（117） | 密钥与本机路径扫描；pi 锁定检查（manifest、锁文件 importers/packages、overrides/patches、vendored）；经真实 pi + 假服务录制样本 | `checkSecrets`、`checkPiPinned` |
+| `config/models.example.json` | fake、qwen-api（百炼 compat + `thinkingTokenBudgetField`）、ollama（`maxTokensField: "max_tokens"`） | — |
+| `tests/helpers/fake-openai-server.ts` | 可编排假模型服务（文本、工具调用、错误、中途断开、挂起、思考流），记录请求与意外请求 | `startFakeOpenAIServer` |
+| `tests/unit/`（13 个文件） | 协议 schema、转换器（含真实录制样本）、序号、协调器、git 读取、判分、样例答案、t1-real-run 判定与刹车、t1-usage、check-secrets、check-pi-pinned、假服务 | — |
+| `tests/integration/`（8 个文件） | `restricted-loader`（六种敌意布局 + 正向对照）、`pi-session`、`pi-engine`（取消、清理、篡改）、`pi-recording`、`runner-server`、`engine-client`、`runner-process`（跨进程，9C）、`t1-real-run`（假模型端到端） | — |
+| `tests/fixtures/` | `sample-repo/` 与题集、审计记录；`hostile-repo/.pi/`；`pi-events/`（4 个 SDK 录制 + 4 个真实录制，脱敏规则见 README） | — |
+
+### 4. 与计划的偏差（收尾）
+
+§4 原表 5 行（pi 改锁 1.5.1、API 模型不带日期 ID、本地派生 16k 标签、API 关闭思考）仍然有效，其中“关闭思考”已被下表第 15 行推翻。作者决定与控制方裁决的逐条原文要点见第 7 节（编号 A*/R*）。
+
+#### 4.1 偏差一览
+
+| # | 偏差 | 原因 | 谁决定的 | 代价 / 影响 |
+|---|---|---|---|---|
+| 1 | 计划中途新增验收 11（运行快照）；sha256 由 runner 现算；`run.started` 推迟到加载器回读与会话创建之后 | ADR 016（2026-11-21 规格变更） | 作者 2026-11-21/22（A11） | 计划 Task 3/4/7/8A/8B 增加快照相关步骤；首事件规则由此成形 |
+| 2 | `check:pi` 的“未修改”扩大到全部 `@earendil-works/pi-*` 子包，并检查 packages/ 之外的工作区包 | 控制方演示子包 patch/override 与 apps/* 都能绕过 | 作者 2026-11-10（A7） | Task 1 返修第 2 轮；检查对不支持的 workspace 模式 fail closed |
+| 3 | 根目录也声明 pi 开发依赖，pi 出现在两个 manifest | 根目录脚本与测试要直接 import pi | 作者 2026-11-10（A8） | 升级 pi 要改两处，`check:pi` 强制一致 |
+| 4 | 假服务新增“中途断开”脚本，2B 多录 `retry-drop` 样本 | 计划 2B 的 Files 未列假服务，但要触发流中断后的重试 | 作者 2026-11-10（A9），计划先改（`62954d9`） | 多一个样本与一种假服务脚本 |
+| 5 | 重试残留的 `text.delta` 不撤回；只有工具调用的助手消息不发 `message.completed` | 协议没有重试/重置事件 | 作者 2026-11-22（A12、A13） | 调用方必须以 `message.completed` 为最终文本 |
+| 6 | 规则文件：软链接拒绝、256 KiB 上限、`--no-replace-objects` | 审查发现的安全缺口（软链接 blob、refs/replace 替换基准内容） | 作者 2026-11-23（A15、A16） | 合法的大规则文件会被拒（需要时再调上限） |
+| 7 | 确认等待默认 600 秒（计划原为 30 秒） | 与 Claude PreToolUse 默认一致 | 作者 2026-11-23（A17，先 30 分钟后改 10 分钟） | 无人应答时任务最长挂 10 分钟 |
+| 8 | 受限加载器接口多返回 `settingsManager`；0A.4 组合补 `systemPrompt: ""` | 不传时 `createAgentSession` 回退到信任项目的默认设置；agentDir 下的 SYSTEM.md 不需信任即被加载 | 作者 2026-11-23（A18）；事实补充见「Task 7 补充」节 | 计划 Task 7/8A 接口改动 |
+| 9 | 新增必填 `sessionsRoot`（`createPiSession`、`PiEngine`、`startRunnerServer`、CLI `--sessions-root`），`sessionDir` 只能是其下相对路径；pi 状态文件写 stateDir | `sessionDir` 来自调用方，可越界写；pi 默认把 auth/models-store 写在配置旁 | 作者 2026-11-23（A19、A20、A21） | 计划 8A/8B/9A 接口改动；无默认值 |
+| 10 | 生产保持 pi 默认重试（不可达时约 14 秒才 `run.failed`）；engine.md §2.3 写入“会话建好前的取消被随后的启动失败覆盖” | 现在不需要可配置重试；契约两条规则需对齐 | 作者 2026-11-23（A22） | 需要时再加配置 |
+| 11 | `startRunnerServer` 增加 `done`；增加 `--idle-timeout-ms`；握手拒绝带 Origin 的连接 | 进程入口需要知道清理结果；契约说空闲可配；浏览器页面可抢先连上并自批工具 | 作者 2026-11-23（A23、A24），R13 | 计划 9A 接口改动 |
+| 12 | 客户端捕获 onEvent/onError 同步抛错；自动拒绝确认的 `by` 为 `"engine-client"` | 回调抛错会让调用方进程崩溃 | 作者 2026-11-23（A25），R15 | 异步回调的 rejection 仍未捕获（声明为同步） |
+| 13 | 计划原写“启动者以进程组管理 runner 及其工具”，改为：启动者只杀 runner 组，工具由 pi abort/dispose 结束，runner 被强杀时工具可能残留；启动者 10 秒强杀；计时起点为最早退出信号 | pi bash 工具 detached、在自己的会话里；卡住的系统调用让 Node 无法自行退出 | 作者 2026-11-23/24（A26、A27、A28） | 已知限制，T5 沙箱用容器/cgroup 回收 |
+| 14 | 10A1 首轮先写判分再“补” RED（违反 TDD）；严格格式不剥代码块 | 实现者自报；作者要求以变异检查补证 | 作者 2026-11-24（A31、A32） | 不返工；格式错误单列并给具体原因 |
+| 15 | **推翻 0C.0 决定 3**：API 第 3 次运行开启思考 low（runner `--thinking`，默认仍 off） | 第 2 次运行证明流程缺陷已修，剩下的失败是推理写进最终回答 | 作者 2026-11-24（A55、A56） | 5/5 对应思考 low，与 0C 探测条件不同；费用与耗时约 1.2–2.3 倍 |
+| 16 | 新增小任务 10A3（刹车、运行条件、check-secrets）、10A4（`--tools`、grep、先读后答、rg 与离线）、10A5（离线用量）、10A6（思考级别） | 10B 首跑 0/5 暴露流程缺陷；作者对真实运行的要求 | 作者 2026-11-24（A41、A43、A47–A54），R23、R27 | 计划多 4 个小任务；10B 依赖它们 |
+| 17 | 验收运行只读工具：只放行 read（后加 grep），路径限于副本内；只声明 read/grep（把 T3 的“不声明不需要的工具”提前到 T1） | 只靠工具名放行时可读到答案文件；系统提示推 bash 而拦截拒 bash，互相矛盾 | 作者 2026-11-24（A34、A35、A43、A48） | 小模型可能工具不足（A37 推迟评估） |
+| 18 | 未声明工具的刹车上限放宽为 上限+2（已声明工具仍为 上限+1） | 未声明工具由 pi 直接回 “Tool X not found”，不经拦截，只能按事件计数 | 作者 2026-11-24（A52） | 最多多一个被中止的请求；T3 移入 runner 恢复 上限+1 |
+| 19 | 10B 真实运行 3 次（0/5、1/5、5/5），每次都经作者单独批准 | 计划预期一次 5/5 | 作者（A44、A55、A56），R26 | 合计约 0.283 元（原价估算，账单待核对）；5/5 只代表那一次 |
+| 20 | 已提交样本保留 macOS 每用户临时目录标识；第 3 次起用 `TMPDIR=/tmp/fp-t1` 避开；删除冗余的 `real-qwen-api-compute-total.jsonl` | 标识在流式增量中被拆分，替换会破坏一致性；不含用户名 | 作者 2026-11-24（A45、A56） | 公开仓库前在 T22 清理（M4） |
+| 21 | 10C 预检 (b) 未完全通过就跑了正式运行（流程偏差）；运行被认可、未重跑 | 静默丢弃最早消息只能用未入库脚本从原始录制看出 | 作者 2026-11-24（A59、A60） | 新增常设规则“预检不过就停”；溢出检测进 `t1-usage` |
+| 22 | Ollama 条目改发 `max_tokens`；10C 正式运行用的是旧配置（上限未生效），不重跑 | Ollama 0.40.15 忽略 `max_completion_tokens` | 作者 2026-11-24（A60） | 当前配置与 10C 运行时不同；10C 单次最大 1,918 token，不影响结论 |
+| 23 | 整体审查返修：I1 修复（`daaa1ef`、`41c8f59` 把测试停止时限放宽到 3000 ms）、rg 测试改为空 PATH（`be5a171`）；**M3 推迟到 T2 开工第一件事**（契约已写规则并标“尚未实现”） | M3 最小修法会引入无限挂起（见「推迟到 T2：M3」节） | 作者 2026-11-25（A62、A63、A64） | T1 交付时第一事件规则对诊断文件不成立；只影响 `--record-pi-events` 路径 |
+| 24 | M3 原计划改换 9C 的故障注入方式（FIFO 读端开后关 / 打开卡住）——随 M3 推迟一并未做 | 同上 | 作者 2026-11-25（A64） | 9C 仍以“目录不存在 / 无读端 FIFO”注入清理失败与超时 |
+| 25 | 每个小任务后加独立 ponytail-review；每个小任务后停下等作者审查 | 作者流程要求 | 作者 2026-11-10/22（A6、A14） | Task 1–4 的子 agent 实际没有加载 ponytail（钩子找不到 node，2026-11-22 修复后验证生效） |
+
+#### 4.2 修过的 bug（含复现测试）
+
+“RED”为修复前看到的失败；测试名取自提交中新增或修改的测试。
+
+| 小任务 / 轮次 | 问题 | 提交 | 复现测试（文件 › 名称） |
+|---|---|---|---|
+| 1 返修 1 | 锁文件 importer 缺 pi 时跳过检查；未比对 importer specifier；npm 别名换键名可绕过 | `03fc520` | `check-pi-pinned.test.ts` ›「锁文件 runner importer 缺 pi 条目失败」「锁文件缺 importers 失败」「锁文件 specifier 与确切版本不符失败」「别名 key 下引用 pi（%s）失败」（RED 5） |
+| 1 返修 2 | pi 子包 patch/override/版本、packages/ 外的工作区包不被检查 | `7bd2ea2` | 同文件 ›「pi 全部子包（@earendil-works/pi-*）」「工作区包路径来自 pnpm-workspace.yaml」两组（RED 12） |
+| 2A 返修 1 | 断线测试分辨不出服务端是否继续写；非 /chat/completions 请求不计入 errors | `a809bee` | `fake-openai-server.test.ts` ›「断线清理：客户端中途断开后服务端停止写入…」「意外请求（其它方法或路径）返回 404 并写入 errors」（RED 2；控制方变异确认） |
+| 2A 返修 2 | 根目录无法 import pi，测试按路径进 runner 的 node_modules | `a0c92d0` | 现有 pi 冒烟测试改为直接 import（RED: Cannot find package） |
+| 2B 返修 1 | scripts/ 与 tests/ 不在类型检查范围；断线测试固定 sleep 20 ms | `4790c85` | 变异 `maxRetries:"2"` → TS2322；改用 `vi.waitFor` |
+| 4 返修 1 | requestId 语义、`./a` 等路径绕过重复检测、未知字段、`input` 必填、纯空白 reason | `8b4056b` | `engine-messages.test.ts` ›「未知字段被忽略…」「纯空白的 reason / by 被拒」「input 键必须存在（null 可以）」「(repo,path) 重复被拒…」等（RED 13） |
+| 4 返修 2 | 转换器输出 `output: undefined`，JSON 丢键后客户端拒收事件 | `d863ad6` | `pi-event-converter.test.ts` ›「缺 args / result 时输出 null，且经 JSON 往返后仍通过 schema」（RED 1） |
+| 5 返修 1 | 无大小上限；继承的 `GIT_DIR` 让 git 读别的仓库；非 UTF-8 被有损解码 | `bc91882` | `git-context.test.ts` ›「accepts exactly 256 KiB and rejects 256 KiB + 1」「ignores inherited GIT_DIR」「rejects non-UTF-8 content」（RED 3）；软链接/目录为特征测试 |
+| 5 补丁 | `refs/replace/*` 可替换基准规则 blob | `822e06a` | 同文件 ›「ignores refs/replace so a replaced rule blob cannot be swapped in」（RED: evil ≠ original） |
+| 6 返修 1 | 重复 callId 覆盖等待项，前一个成孤儿 | `3c10fe6` | `intercept-coordinator.test.ts` ›「重复 callId：第二个立即 block 且不发送，第一个仍可正常结算」（RED 1），另 7 个计时器/监听清理测试经变异证明 |
+| 6 补丁 | 发送失败的 block 原因把内部报错（地址等）透给模型 | `52d542c` | 同文件发送失败用例断言 `reason: "send failed"`（RED: 得到 `send failed: ws closed`） |
+| 7 返修 1 | 按 0A.4 组合 agentDir 下的 SYSTEM.md 仍被加载；重复标签；settings 测试是空转 | `7e17369` | `restricted-loader.test.ts` ›「敌意资源位于 scratch-agentdir › 不加载规则/扩展/skill/提示词/系统提示覆盖」「两个输入文件的来源标签相同时抛错」「settings 行为不生效：会话 cwd 与加载器发现根都敌意，且不传 tools」（RED 3） |
+| 7 返修 2 | 未断言默认系统提示保留、预热关闭 | `1960e20` | 变异 `systemPrompt: " "` → 8 个失败；去掉 `cacheWarming` → 1 个失败 |
+| 8A 返修 1 | 加载 example 配置时 pi 在 `config/` 写 auth.json 与 models-store.json（已误提交）；根内绝对路径未测 | `cb9b94e` | `pi-session.test.ts` ›「加载配置不在 models 文件目录写任何文件，pi 状态文件落在 stateDir」「名为 ..foo 的合法子目录被接受并留在根内」 |
+| 8B 返修 1 | 清理遇第一个失败步骤即停（scratchDir 含 auth 泄漏）；清理失败覆盖原失败原因；第二次 `run()` 同步抛错 | `1d275d9` | `pi-engine.test.ts` ›「abort 抛错：后续步骤照常执行…」「启动失败后清理也失败：reason 同时保留清理原因与原失败原因」「第二次 run 返回被拒绝的 promise…」（RED 4） |
+| 8B 返修 2 | pi 的 `prompt()` 永不返回时 run/cancel 越过 5 秒清理时限 | `09d4165` | 同文件 ›「prompt 永不返回且 abort 挂起：…」「prompt 永不返回但清理成功：…」（RED: 2 个超时） |
+| 9A 返修 1 | 客户端不回 close 帧时 done 被 ws 30 秒握手拖住 | `3d1699e` | `runner-server.test.ts` ›「客户端不回 close 帧：done 仍在数秒内 resolve…」（RED 30001 ms → 1009 ms）；「收尾已开始…后到达的 start_task」为回归测试（原问题经核实不存在） |
+| 9A 返修 2 | 没有 Origin 检查，同机浏览器页面可先连并批准自己的工具调用 | `144183a` | 同文件 ›「带 Origin 头的连接在握手时被拒绝，且不占用唯一客户端位置」（RED: 101 并占住位置） |
+| 9B 返修 1 | 两个 start 同时挂起时终止结果丢失；`reasonOf` 对无 toString 的对象抛错 | `fcf7a93` | `engine-client.test.ts` ›「两个 start 同时挂起：第一个在 accepted 前被拒绝、第二个被接受时…」；「onConfirm 抛出无法转成字符串的值」用例（RED: 10 s 超时 + 未处理 rejection） |
+| 9B 返修 2 | onEvent/onError 回调抛错让进程崩溃 | `cb312bd` | 同文件 ›「onEvent / onError 回调抛错：被客户端捕获并写 stderr…」（RED: 超时 + Uncaught Exception） |
+| 9C 返修 1 | 测试把 pi 结束工具的效果归给启动者强杀；断线到退出没有时限断言 | `03c7a87`（只改测试） | `runner-process.test.ts` ›「清理超时且 runner 卡在退出：…工具已由 pi 在卡住前结束；启动者到停止时限强杀 runner 组」、断线类 4 例加时限、「已连接但一直不启动：…」 |
+| 9C 后补丁 | 4 个集成测试的 afterEach 在 close() 拒绝时跳过删除临时目录（遗留 8 个 fp-* 目录） | `22bc1a6` | 无单独测试（机械改为 try/finally；控制方确认无遗留） |
+| 10A1 返修 1 | 题面未写定义文件（legacy.py 有同名函数）；哈希遇 `__pycache__` 报 EISDIR | `d803f19` | `sample-repo-answers.test.ts` ›「question names the defining file and the uniform scope note」「alias calls are found mechanically…」（EISDIR 经临时回退复现） |
+| 10A1 返修 2 | 代码块包裹只报笼统的“not valid JSON” | `1f63fde` | `t1-grade.test.ts` › 代码块 it.each 与「tolerates surrounding whitespace and newlines」（RED 3） |
+| 10A2 返修 1 | read 只按工具名放行，可读到副本外的答案文件；退出码不分崩溃与答错等 | `c9b44ef` | `t1-real-run.test.ts`（unit）›「toolDecision：read 路径」（绝对路径、`../`、软链接、`copy-1`/`copy-10`、正常文件）「AGENTS.md 取自副本的 main 引用，而不是工作区」；integration ›「运行前出错（模型配置不存在）：…退出 3」 |
+| 10A2 返修 2 | runner 启动失败（spawn error）时启动者挂起、`kill(-undefined)` | `48255dd` | `runner-process.test.ts` ›「启动者：runner 进程未能启动 › listening 带原因 reject、exit 结算…」（RED: 挂 20 s + 未处理 ENOENT） |
+| 10A3 返修 1 | `.tmp/` 未忽略；模型条目 headers/apiKey 进报告；目录内软链接被静默跳过；采样参数与报告矛盾 | `d4311a5` | `check-secrets.test.ts` ›「目录内的软链接：不跟随，逐个报告为未检查」「读不了的文件记为问题…」「git 检查本身失败…」；`t1-real-run.test.ts` ›「只取所选模型；…headers 都不进报告」「samplingParamsByThinkingLevel 或 modelOverrides…直接报错」（RED 7+1） |
+| 10A4 返修 1 | 刹车计数只靠事件时可能漏判；请求数断言依赖时序；非对象输入未拒 | `9e1687d` | `t1-real-run.test.ts` ›「createBrake：tool.started 与拦截共用计数，按 callId 去重」三个顺序用例；integration 精确请求数两例；假服务 hang 脚本 |
+| 10A5 返修 1 | 目录拼错或为空时统计为全 0、退出 0 | `cfe6e0d` | `t1-usage.test.ts` ›「throws when the directory holds no .jsonl files…」 |
+| 10A6 返修 1 | 用户名按子串匹配误报；同一命中重复报告 | `f5b6682` | `check-secrets.test.ts` ›「短而常见的用户名（me）：…只按路径段匹配…」「仓库不在家目录内：单独报告仓库路径」（RED 4） |
+| 10B 返修 1–2 | 思考泄漏检查只比对每段思考前 40 字符；返修 1 又把范围缩到文本事件 | `e367524`、`4c7dd80` | `pi-event-converter.test.ts` ›「run3-thinking-send-notice：thinking 不进入 text.delta 与 message.completed，最终回答只有 JSON」（变异：把思考尾部追加进 `message.completed`、把思考写进 `tool.started` 都失败） |
+| 10C 返修 1 | Ollama 忽略 `max_completion_tokens`；溢出无离线信号 | `810f6b4` | `pi-session.test.ts` ›「ollama 条目（models.example.json）：输出上限以 max_tokens 发送…」（改配置前失败）；`t1-usage.test.ts` ›「countFile: context overflow (10C)」7 例 |
+| 10C 返修 2 | 辅助判据漏掉真实的静默丢弃；未计 cacheWrite；全 0 用量误报；中止请求无法判断 | `f7f2e9b` | `t1-usage.test.ts` ›「real pre-check (b) numbers: …caught by the auxiliary…」等 5 例（RED 5） |
+| 11 I1 | 启动被拒绝被当成退出信号，重试成功后 `stop()` 强杀正常收尾的 runner | `daaa1ef`、`41c8f59` | `runner-process.test.ts` ›「启动者：停止时限只从退出信号起算 › 启动被拒（not_implemented / 本地校验失败）后在同一连接重试并正常结束：stop() 不强杀，以 0 退出」（RED: `forced: true, code: null`；把 `runner-launcher.ts:84` 改回旧写法再次复现） |
+| 11 rg 测试 | “缺 rg”测试用 `PATH=/usr/bin:/bin` 模拟，Debian 的 rg 正在 /usr/bin，Linux 上失败 | `be5a171` | 同文件 ›「缺 rg 时 grep 以错误结果返回，不下载、不写 HOME/.pi」（Linux RED: 得到 `['No matches found']`；把真 rg 软链进空 PATH 目录后测试按预期失败） |
+
+#### 4.3 流程偏差
+
+- 10A1 首轮先写实现后补 RED（A31，以判分变异检查补证，7 个变异中 6 个被抓到，1 个为等价变异）。
+- 10C 预检 (b) 未完全通过就跑正式运行（A59、A60，见「Task 10C 返修第 1 轮」节）。
+- Task 1 与 2A 在同一会话连续执行，未在中间停下（A6 之后改正）。
+- Task 1–4 的实现者与审查者没有加载 ponytail（SubagentStart 钩子在子 agent 中找不到 node，2026-11-22 修复并验证）。
+
+### 5. 验证记录（收尾）
+
+#### 5.1 最终检查
+
+| 环境 | 代码版本 | 命令 | 结果 |
+|---|---|---|---|
+| macOS（Darwin 24.6.0，Node v24.15.0，pnpm 10.34.9，ripgrep 16.0.0 在 `/opt/homebrew/bin`） | `d73246c`（返修前） | `pnpm test`、`typecheck`、`build`、`check:pi` | 496/496；其余退出 0 |
+| 同上 | `c6d2513`（最终产品代码） | `pnpm test && pnpm typecheck && pnpm build && pnpm check:pi` | 497/497（21 个文件）；typecheck/build/check:pi 退出 0；`check:pi` 输出“pi 1.5.1 版本锁定检查通过” |
+| Linux 容器：Debian 12 bookworm，内核 6.12.76-linuxkit，aarch64，8 核，Node v24.15.0，pnpm 10.34.9，**ripgrep 13.0.0（本机为 16.0.0，版本不同）**，git 2.39.5；用户 `node` uid 1000（非 root）；镜像 `node:24.15.0-bookworm-slim` + apt ripgrep/git；仓库由 git bundle 克隆（含 `main` 与完整历史），`pnpm install --frozen-lockfile` + build | `c6d2513` | 9C（`runner-process.test.ts`）、`pnpm test`、`check:pi`、`typecheck` | 9C 39/39；`pnpm test` 497/497；check:pi、typecheck 退出 0。非 root 运行下 check-secrets 的 chmod-0 测试通过 |
+| Linux 容器（同上） | `d73246c`（返修前） | 9C、`pnpm test` | 9C 37/38，全量 495/496；唯一失败是“缺 rg”测试（测试可移植性问题，已由 `be5a171` 修复） |
+| Linux 第一次尝试（作废） | `d73246c` | 用 `git archive` 导出（没有 `.git`） | 8 个失败，其中 7 个是搭建错误（check-secrets 报 “not a git repository”、t1-real-run 需要 git 元数据）；改用 git bundle 重建 |
+| Docker 清理 | — | 删除 `fp-t1-linux9c:d73246c`、`:c6d2513` 与全部构建缓存 | 恢复到运行前：1 个镜像 223 MB、构建缓存 0 |
+| macOS，Step 2 | `1a8abf9`（产品代码同 `c6d2513`） | 4 组 vitest（G1–G4，见 5.2）+ `check:pi` | 497/497，退出 0 |
+
+**未在最终代码上重跑**：`typecheck`/`build` 在 `1a8abf9` 上沿用 `c6d2513` 的结果（产品代码相同）；10B/10C 真实模型运行没有重跑（结论取自 `.tmp/` 结果文件，影响分析见 5.4）；0A/0A-R/0B/0C 探测没有重做。
+
+#### 5.2 验收 1–11 逐条核对（Task 11 Step 2 核对表原文，执行账本中的副本将随账本删除）
+
+- 依据：`docs/specs/tasks.md` T1 验收标准 1–11 原文；产物定位用计划末尾「验收覆盖索引」。
+- 核对时 HEAD：`1a8abf9`（相对 `c6d2513` 只改了计划文件，产品代码、脚本、测试相同）。工作区干净。Node v24.15.0，pnpm 10.34.9，macOS（Darwin 24.6.0）。
+- 本步实际执行的测试命令（HEAD `1a8abf9`，均退出 0）。四组合计 21 个文件、497 个测试，等于全套：
+  - G1 `pnpm vitest run tests/integration/pi-engine.test.ts tests/integration/runner-server.test.ts tests/integration/engine-client.test.ts --reporter=verbose`：3 个文件，70/70 通过
+  - G2 `pnpm vitest run tests/integration/runner-process.test.ts tests/integration/restricted-loader.test.ts tests/integration/pi-session.test.ts tests/integration/pi-recording.test.ts --reporter=verbose`：4 个文件，85/85 通过
+  - G3 `pnpm vitest run tests/unit --reporter=verbose`：13 个文件，329/329 通过
+  - G4 `pnpm vitest run tests/integration/t1-real-run.test.ts --reporter=verbose`：1 个文件，13/13 通过
+  - `pnpm check:pi`：输出「pi 1.5.1 版本锁定检查通过」，退出 0
+- 本步**没有重跑**：`pnpm typecheck`、`pnpm build`，沿用 Step 1 在 `c6d2513` 上的结果（退出 0；产品代码与 HEAD 相同）；真实模型运行（10B、10C）没有重跑，结论引用 `.tmp/` 中的结果文件，见第 3 节。
+- 表中简称：「说明」指 `docs/reviews/step01-pi-integration.md`，引用的是节标题（该文件 §1–3、§5–7 是过期的占位内容，没有引用）。
+
+| 验收 | 子要求 | 证据（测试名 / 契约节 / 说明节） | 命令与结果 | 代码版本 | 结论 |
+|---|---|---|---|---|---|
+| 1 | a. 统一接口写入 `contracts/engine.md`，是与语言无关的跨进程协议 | engine.md 开头「JSON over WebSocket」，§1.1–1.4 列出全部消息 | 阅读 | HEAD | PASS |
+| 1 | b. 提供 TS 客户端（Python 客户端在 T2） | `packages/engine-client/src/engine-client.ts`；`engine-client.test.ts`「文本/终止：start 在 accepted 后 resolve…」 | G1 通过 | 1a8abf9 | PASS |
+| 1 | c. 启动参数含会话 ID、`resume.sessionFileRef`、调用方提供的 contextFiles | engine.md §1.1 `start_task`、§1.3 `ContextFile`；`engine-messages.test.ts`「接受完整消息、空 contextFiles、可选 resume/sessionDir」 | G3 通过 | 1a8abf9 | PASS with note：`resume` 已在协议中定义，T1 返回 `not_implemented`（engine.md §2.1，实现在 T5）；`runner-server.test.ts`「policy / resume 返回 not_implemented：不创建会话…」 |
+| 1 | d. 流式事件、工具执行前拦截、确认请求、取消 | engine.md §1.2、§2.2、§2.3；`runner-server.test.ts`「决定/确认往返…」；`engine-client.test.ts`「block 的拒绝原因透传给模型…」「确认：onConfirm 收到 ConfirmRequest…」「确认批准：工具执行」「cancel()：运行中取消得到 run.cancelled…」 | G1 通过 | 1a8abf9 | PASS |
+| 1 | e. 拦截的决策方可配置：回调给调用方，或由策略服务决定 | engine.md §1.1 `interceptMode: callback \| policy`、§2.1；`runner-server.test.ts`「policy / resume 返回 not_implemented…保持 idle 后可正常启动」 | G1 通过 | 1a8abf9 | PASS with note：`policy` 模式可以配置，T1 返回 `not_implemented`；规范写明策略直连属于 T3 |
+| 1 | f. 先查 Claude Agent SDK，按两者的公共能力设计，差异写进契约 | engine.md §5「0B 能力对照（pi 与 Claude Agent SDK）」；说明 0B.1「能力 × pi × Claude Agent SDK」 | 阅读 | 0B 于 2026-11-10 | PASS with note：Claude 一列只对照了 `sdk.d.ts` 0.3.322 和官方文档，没有实测（说明 §6 已写明） |
+| 1 | g. pi 适配器能发送任务、收到流式事件、正确判断结束（pi 还要继续时不提前结束） | `pi-engine.test.ts`「纯文本：run.started(snapshot) → 文本 → run.settled…」「重试后最终结束：中间失败不终止，只有一个 run.settled」「重试耗尽：run.failed 带模型错误」；`runner-process.test.ts`「正常结束：唯一 run.settled 在最后，此后无事件…」；判定依据见说明 0B.2「pi 1.5.1 生命周期：结束判定与清理的依据」；真实运行 10 题都以 `run.settled` 结束 | G1、G2 通过 | 1a8abf9；真实运行 c162786 / 5d8af7e | PASS |
+| 2 | a. pi 事件转换为本项目事件协议，写入 `agent-events.md`，含与 pi 的对应关系 | agent-events.md §2.1「pi 事件到本协议的对应」、§2.2 重试残留规则 | 阅读 | HEAD | PASS |
+| 2 | b. 序号规则 | agent-events.md §2.3；`run-events.test.ts`「started/文本/工具/终止共享一个序号，从 1 连续递增…」「只发一次终止…」「终止后 publish 无效」 | G3 通过 | 1a8abf9 | PASS |
+| 2 | c. 转换有单元测试，使用录制的 pi 事件，不调用真实模型 | `pi-event-converter.test.ts`：16 个测试，覆盖 4 个 SDK 录制（text-only / tool-call-then-text / retry / retry-drop）和 4 个真实录制（3 个 qwen-api、1 个 ollama），包括「全部样本都不产生终止事件」「run3-thinking-send-notice：thinking 不进入 text.delta 与 message.completed」；样本来源用 `pi-recording.test.ts`「现场经真实 pi 录制…」「仓库中的样本满足同样的断言」核对（真实 pi 加假服务） | G3、G2 通过 | 1a8abf9 | PASS |
+| 3 | a. 通过配置使用 Qwen 主模型候选的 API 版本完成任务 | 说明「Task 10B 第 3 次运行…5/5，开启思考 low」；`.tmp/t1-api-run3-result.json`：model `qwen-api/qwen3.6-35b-a3b`，`source.commit c162786…`，`dirty:false`，5 题都是 `run.settled`，runner 以 0 退出、没有强杀 | 读结果文件（本步没有重跑） | c162786 | PASS with note：开启了思考（`--thinking low`），与 0C.0 决定 3（关闭思考）不同，作者已批准，见说明「Task 10A6」和 10B 第 3 次 |
+| 3 | b. 用 Mac 上 Ollama 部署的 Qwen 小模型尝试一个任务，结果如实记录 | 说明「Task 10C 本地五题验收与配置切换…1/5」；`.tmp/t1-local-result.json`：`ollama/qwen3-4b-instruct-2507-ctx16k`，`source.commit 5d8af7e…`，`dirty:false`，通过 audit_event，另外 4 题是内容错误，逐题原因已记录 | 读结果文件（本步没有重跑） | 5d8af7e | PASS（规范写明完成不了不算阻塞） |
+| 3 | c. API 与本地之间切换只改配置、不改代码 | 两份报告的 `versions.sources` 都是 21 个文件，hash 完全相同（本步用脚本比对：`sources 21 identical true`）；`sampleRepoHash`/`questionsHash` 相同；不同的只有 `--models` 中的条目、`--model` 参数和 `--thinking` 运行参数 | 本步比对两个结果文件 | c162786 → 5d8af7e | PASS |
+| 3 | d. 开工前核实平台、价格、经 pi 的工具调用、训练截止日期 | 说明 0C.1「公开资料」（百炼北京可用；原价输入 1.8 / 输出 10.8 元每百万 token；训练截止日期「未公开」）；0C.3「经 pi 的探测」（API 与 Ollama 各完成一次 `read` 往返）；0C.5 关卡核对 | 阅读 | 0C 于 2026-11-10，pi 1.5.1 | PASS with note：训练截止日期已核实为官方未公开；Qwen3-Coder-Next 在本 key 下不可用，留到 T2 |
+| 3 | e. 模型版本锁定 | 本地：派生标签 digest `7f091551…0ffc`，权重层 `85e4a5b7…18b9`（0C.2）。API：百炼没有带日期的快照 ID，按作者决定 4 记录不带日期的 ID 加观察日期，列为说明 §4 偏差行 | 阅读 | — | PASS with note：API 模型实际上无法锁定版本，这是已记录的偏离（ADR 015「所有模型锁定版本」）。按作者决定，该偏离要到 T2 才追加进 ADR 015，目前 ADR 正文还没有这一条 |
+| 4 | a. tests/fixtures 中的小仓库加 5 个「某函数在哪里被调用」问题 | `tests/fixtures/sample-repo/`、`sample-repo-questions.json`；`sample-repo-answers.test.ts`「has 5 questions over 6-8 modules…」以及每题的「answers equal the audit's CALL entries」等 | G3 通过 | 1a8abf9 | PASS |
+| 4 | b. API 版本 5 题全部答对 | `.tmp/t1-api-run3-result.json`：`summary.allCorrect: true`，passed 5 题，formatErrors、contentErrors、serviceFailures、limitExceeded 都为空；判分为 `scripts/t1-grade.ts`（`t1-grade.test.ts` 通过） | 读结果文件；G3 通过 | c162786 | PASS with note：这是第 3 次运行的结果，只运行了一次。第 1 次 0/5、第 2 次 1/5，之后修了流程（`--tools`、提示词、思考级别），每一处都经作者批准；采样没有固定，模型 ID 不带日期，重跑结果可能不同（说明已如实写明） |
+| 4 | c. 本地小模型结果如实记录；两者都写进实现说明 | 说明 10C 一节的逐题表（1/5）；10B 第 1–3 次各有一节 | 阅读 | 5d8af7e | PASS |
+| 5 | 能取消正在运行的任务，引擎实例被正确清理（测试） | `pi-engine.test.ts`「慢流中取消…」「等待拦截决定时取消…」「等待确认时取消…」「正在运行的延迟 marker 工具被取消…」「取消幂等…」「结束竞态…」「prompt 永不返回但清理成功…」；`runner-process.test.ts`「工具运行时取消：run.cancelled，工具进程组被终止、延迟 marker 不出现，以 0 退出」「正常结束：…scratchDir 已清理」及取消、断线 8 例；`runner-server.test.ts`「等待决定时 cancel（重复两次）…」「运行中客户端断线…」 | G1、G2 通过 | 1a8abf9（Linux 容器另在 c6d2513 跑过 9C 39/39） | PASS |
+| 6 | pi 以锁定版本的依赖形式引入，没有修改或 fork 源码（S3） | `package.json` 与 `packages/engine-runner/package.json` 中都是确切版本 `1.5.1`；`scripts/check-pi-pinned.mjs` 与 `check-pi-pinned.test.ts`（38 个用例）；另做了 5 项额外检查，见第 2 节 | `pnpm check:pi` 退出 0；G3 通过；额外检查见第 2 节 | 1a8abf9 | PASS |
+| 7 | a. 关闭 pi 对 `AGENTS.md` 的自动发现 | `restricted-resource-loader.ts`（`noContextFiles` + `agentsFilesOverride`）；`restricted-loader.test.ts`「敌意资源位于 {worktree, ancestor, user, scratch-project, scratch-agentdir, git-above-scratch}」6 例：`agentsFiles` 只有 `/alpha`、`/beta`，请求里没有 `HOSTILE_`；正向对照「对照：pi 默认加载会加载同一棵敌意树（证明 fixture 可检测）」 | G2 通过 | 1a8abf9 | PASS |
+| 7 | b. 平台从受保护分支（基准引用）读取并经 `resourceLoader` 提供；任务分支修改 `AGENTS.md` 不改变 pi 收到的规则（测试） | `git-context.test.ts`「reads from base ref, not the checked-out task branch or worktree」；`pi-engine.test.ts`「修改任务分支后启动两次独立引擎：规则不变，两次 snapshot 哈希相同且等于基准引用内容」（任务分支提交和未提交的篡改都不进请求） | G1、G3 通过 | 1a8abf9 | PASS |
+| 8 | a. 不加载仓库内 `.pi/` 的配置、提示词追加、扩展、skill | fixture `tests/fixtures/hostile-repo/.pi/{settings.json, SYSTEM.md, APPEND_SYSTEM.md, extensions/marker.ts, prompts/, skills/}`；`restricted-loader.test.ts` 6 例「不加载规则/扩展/skill/提示词/系统提示覆盖」（marker 目录为空，extensions/skills/prompts 都为空）；「settings 行为不生效…」；`pi-session.test.ts`「端到端：敌意仓库作为 workDir…项目不受信任」 | G2 通过 | 1a8abf9 | PASS |
+| 8 | b. 具体开关开工时核实 | 说明 0A.4「SDK 配置组合（已用敌意目录树实测…）」；0A-R 在 1.5.1 上复核；「Task 7 补充…需要再加 `systemPrompt: ""`」 | 阅读 | 0A/0A-R 于 2026-11-10 | PASS |
+| 9 | 开工时核实内置 MCP 客户端（pi-mcp）的配置方式，结果写进实现说明 | 说明 0A.5「内置 MCP（验收 9）」：配置文件位置与格式、`createMcpExtension({ loadConfig })` 注入方式、`bindExtensions`；用临时 stdio MCP 服务实测了加载、列出工具（`mcp__platform__echo/add`）和调用；0A-R「pi 1.5.1 复核」的 `locked` 与 `locked-default-mcp` 组结论相同，另补了 `validateMcpServerConfig` | 阅读（探测脚本全文在附录 A；本步没有重跑探测） | pi 1.5.0 实测，1.5.1 复核，2026-11-10 | PASS with note：证据是开工时的探测记录，不是仓库里的自动化测试（规范只要求核实并记录） |
+| 10 | a. `AGENTS.md` 由调用方读取后作为 contextFiles 传入（注明来源仓库，支持多个） | engine.md §1.3 `ContextFile`（repo、同名 path 可以出现在不同 repo）；`git-context.test.ts`「returns files from two repos with correct labels」；`engine-messages.test.ts`「多仓库同名文件合法」；`restricted-loader.test.ts`「调用方规则出现在首个请求，同名规则带来源标签…」 | G2、G3 通过 | 1a8abf9 | PASS |
+| 10 | b. 经 `resourceLoader` 提供给 pi；运行器自己不从 git 引用读取规则 | `restricted-resource-loader.ts`；`packages/engine-runner/src` 中没有 `child_process`、`spawn`、`git` 调用（本步 grep 无匹配） | grep | 1a8abf9 | PASS |
+| 10 | c. 测试：在沙箱内修改本地分支上的 `AGENTS.md` 不改变 pi 收到的规则；本任务中调用方从本地 git 引用读取 | `pi-engine.test.ts`「修改任务分支后启动两次独立引擎…」（workDir 就是被篡改的仓库）；`t1-real-run.test.ts`「五题各用新 runner…规则取自 main…」；`t1-real-run` 单元「AGENTS.md 取自副本的 main 引用，而不是工作区」 | G1、G3、G4 通过 | 1a8abf9 | PASS |
+| 11 | a. `run.started` 报告引擎名称与版本、模型提供方与 ID、规则文件（仓库、路径、来源提交、sha256） | agent-events.md §1.1 snapshot；`agent-events.test.ts`「run.started snapshot 校验」8 例；`pi-session.test.ts`「两份 fake provider 配置…snapshot.model 是实际注册的模型」（`engine = {name:"pi", version: pi 导出的 VERSION}`）；真实运行报告中 `engine {"name":"pi","version":"1.5.1"}` | G2、G3 通过 | 1a8abf9 | PASS |
+| 11 | b. 清单由运行器从加载器回读，不照抄启动参数 | `loadedContextFiles()` 回读 `loader.getAgentsFiles()`；`restricted-loader.test.ts`「pi 持有的标签映射不回输入文件时抛错，不编造条目」；`pi-session.test.ts`「workDir 只影响工具；contextFiles 的 sha256 与首个请求里的规则一致…」 | G2 通过 | 1a8abf9 | PASS |
+| 11 | c. 测试：哈希与基准引用中的文件内容一致；任务分支被篡改的 `AGENTS.md` 不出现在清单中 | `pi-engine.test.ts`「修改任务分支后启动两次独立引擎…」：断言 sha256 = `sha(git show main:AGENTS.md)`、sourceCommit = `rev-parse main`；首事件规则见 `pi-engine.test.ts`「初始化失败：只有 run.failed，没有 run.started」、`engine-client.test.ts`「accepted 后第一个事件就是 run.failed…」 | G1 通过 | 1a8abf9 | PASS |
+
+#### 5.3 验收 6 额外检查（不只靠 check:pi）
+
+| 项 | 命令（节选） | 输出（节选） | 结论 |
+|---|---|---|---|
+| (i) 锁文件一致性 | 在 一个临时目录 中复制根目录的 `package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml` 和 `packages/*/package.json`，执行 `pnpm install --frozen-lockfile --offline --ignore-scripts`，再用 `cmp` 与仓库中的锁文件比对 | `resolved 176, reused 176, downloaded 0, added 176, done`，`+ @earendil-works/pi-coding-agent 1.5.1`，退出 0；`cmp` 结果：锁文件未变 | PASS（manifest 与锁文件一致；只在临时副本中执行，仓库没有改动） |
+| (ii) 依赖来源 | `pnpm config get registry`；`grep -c "tarball:" pnpm-lock.yaml`；对 8 个 `@earendil-works/pi-*@1.5.1` 执行 `npm view … dist.integrity dist.tarball`，与锁文件比对 | registry 为 `https://registry.npmjs.org/`；锁文件中没有 `tarball:`（全部从默认 registry 解析）；8 个包（pi-agent-core、pi-ai、pi-codemode、pi-coding-agent、pi-mcp、pi-schema、pi-telemetry、pi-tui）的 integrity 全部与 registry 一致，tarball 都是 `https://registry.npmjs.org/@earendil-works/<pkg>/-/<pkg>-1.5.1.tgz`；pi-coding-agent 为 `sha512-rdu4pRvp…7ejYw==`，与 0A-R、0C 记录的相同 | PASS |
+| (iii) patch / override / vendored | `grep -nE "patchedDependencies\|overrides\|pnpm\.patches\|packageExtensions"`，范围是根目录和各包的 package.json、pnpm-workspace.yaml、pnpm-lock.yaml；`ls patches`；`git ls-files` 中查 patch、vendor、diff 和 pi 包名；`git log main..HEAD -- patches '*.patch'`；查名为 `@earendil-works/*` 的非 node_modules package.json | grep 无匹配（退出 1）；没有 `patches/` 目录，也没有 `.npmrc`；`git ls-files` 中没有 node_modules、patch 文件或 vendored pi；分支历史中没有 patch 提交；没有名为 `@earendil-works/*` 的工作区包 | PASS |
+| (iv) 已安装内容与发布包一致 | 在 scratch 中执行 `npm pack @earendil-works/<pkg>@1.5.1`（8 个包），解压后 `diff -rq <tarball>/package node_modules/.pnpm/@earendil-works+<pkg>@1.5.1*/node_modules/@earendil-works/<pkg>` | 每个包在 node_modules 中只有一份；8 个包的文件内容全部相同（pi-coding-agent 共 1324 个文件）。唯一的差异是 pi-agent-core、pi-ai、pi-coding-agent、pi-tui 下多出 `node_modules/.bin`，里面是 pnpm 为依赖生成的命令入口（如 `pi`、`pi-ai`、`jiti`、`marked`），不是 pi 的源文件。根目录和 engine-runner 的 `@earendil-works/pi-coding-agent` 都是指向这一份的软链接 | PASS（已联网执行） |
+| (v) 源码复用 | 在 `packages/*/src` 和 `scripts` 中 grep `@earendil-works/pi-coding-agent/`、`dist/core`、`.pnpm`、「照 pi」「mirror」「resolveToCwd」；同时 grep 是否重新定义了 pi 的核心 API（DefaultResourceLoader、createAgentSession、resolvePath 等） | 产品代码只从包根导入 pi，没有深路径导入。`pi-session.ts:10` 只是一份内置工具名清单，由测试 `pi-session.test.ts`「runner 自带的内置工具名单与 pi 内部 allToolNames 一致…」按文件路径导入 pi 做比对、防止升级后漂移（只读，不改 pi）。没有重新定义 pi 的 API。唯一照 pi 写的代码是 `scripts/t1-real-run.ts:155-163` 的 `piResolve`（约 7 行），对应 pi 1.5.1 `dist/utils/paths.js` 的 `resolvePath`（以及 `core/tools/path-utils.js` 的 `resolveToCwd`） | PASS with note：`piResolve` 只在验收脚本里用来做调用方的拦截判定，按 pi 的规则解析路径。它不修改 pi，也不替代 pi 的功能（pi 仍按自己的规则执行 read/grep），不属于修改或 fork pi。风险：没有防漂移测试，pi 升级改了路径规则时拦截判定可能失准（整体审查 M5，已推迟） |
+
+#### 5.4 真实运行后的代码变更影响
+
+`git diff --stat c162786 HEAD -- packages scripts config package.json pnpm-lock.yaml` 与从 `5d8af7e` 起的结果完全相同（`c162786..5d8af7e` 之间这些路径没有改动）：
+
+| 文件 | 提交 | 改动 | 是否影响 10B/10C 结论 |
+|---|---|---|---|
+| `packages/engine-client/src/runner-launcher.ts`（1 行）、`engine-client.ts`（+9 行） | `daaa1ef`（I1） | 启动者的停止时限改为只从 `client.exitSignal` 起算：收到终止事件，或连接关闭/失败（`fail()`）时 resolve；启动被拒绝不再计入 | **不影响**。`scripts/t1-real-run.ts` 的 `runQuestion`（221–300 行）每题新起一个 runner，在 `try` 里只调用一次 `client.start(...)`；启动被拒绝时 `await` 抛错，进入 `catch` → `runner.terminate()`（SIGTERM 本身就是退出信号）→ `finally` → `stop()`，不会在同一连接上重试。新旧代码只在「拒绝后重试」时有差别，这条路径脚本不会走。对接受后的路径，新旧代码等价：终止事件时，旧代码是 `waitForEnd` resolve → signalled，新代码是 `signalExit`；连接失败时，旧代码是 reject → signalled，新代码是 `fail()` → `signalExit`。实测佐证：两次运行共 10 题都是 `run.settled`，runner `exitCode 0`、`forced false`、`stopWaitMs` 13–29 ms |
+| `scripts/t1-usage.ts`（+82/−15） | `810f6b4`、`f7f2e9b` | 增加离线溢出统计 | **不影响**。这是离线统计工具，不在 `t1-real-run` 的运行路径上，也不在报告的 21 个 `versions.sources` 文件里。10C 返修第 2 轮用新版本对 10C 和 10B 三次录制重跑了统计，五类全为 0 |
+| `config/models.example.json`（+1 行：ollama 条目加 `compat.maxTokensField: "max_tokens"`） | `810f6b4` | Ollama 改为发送 `max_tokens` | **不影响结论，但当前配置与 10C 运行时的配置不同**。10C 用的是被 git 忽略的 `config/models.local.json`，当时没有 compat（报告 `modelEntry` 中没有 compat），说明 10C 返修第 1 轮已写明。输出上限没有生效，但 10C 全部 10 次请求的输出合计只有 290 token、单次最大 1,918 token，远低于 4096，所以不会改变结果；作者已决定不重跑。10B 用的是 qwen-api 条目，这一条没有改 |
+
+结论：真实运行之后的代码变更不影响验收 3、4 的结果。
+
+#### 5.5 未执行 / 未通过与规范差距
+
+**未通过（NOT PASSED）**：无。
+
+**未执行（NOT EXECUTED）**：没有哪条验收未执行。以下是本步没有重做、沿用已有记录的检查（不计为本步验证）：
+- `pnpm typecheck`、`pnpm build` 没有在 HEAD 上重跑，沿用 Step 1 在 `c6d2513` 上的结果（退出 0；产品代码相同）。
+- 10B 和 10C 的真实模型运行没有重跑，结论取自 `.tmp/t1-api-run3-result.json` 和 `.tmp/t1-local-result.json`（本步已读过）。
+- 0A.5 和 0A-R 的 MCP 探测、0C 的平台与价格核实、0B 的能力对照没有重做，取自实现说明的记录。
+
+**规范原文与证据之间的差距（已记录，不阻塞，需要作者知悉）**：
+1. 验收 1：`policy` 拦截模式和 `resume` 在 T1 返回 `not_implemented`，分别在 T3、T5 实现。协议中已定义，规范也把它们归到后续任务。
+2. 验收 1/11（第一事件规则）：engine.md §2.1 已写入「诊断文件打不开属于启动失败」，但**尚未实现**，推迟到 T2 开工第一件事（契约中已标注「尚未实现」，实现说明有「推迟到 T2：M3」一节）。影响范围只限于使用 `--record-pi-events` 的诊断路径。
+3. 验收 3：API 模型没有带日期的快照，「模型版本锁定」对 API 侧无法完全做到，已按作者决定作为偏差记录。向 ADR 015 追加这一偏离要等到 T2，目前 ADR 正文中还没有。训练截止日期核实的结果是「官方未公开」。API 运行开启了思考 low，不同于 0C.0 决定 3，作者已批准。
+4. 验收 4：5/5 来自第 3 次运行，只运行了一次（前两次分别为 0/5、1/5，之间修了流程，均经作者批准）；采样没有固定，可复现性没有验证。
+5. 验收 7/10/11：样例仓库 `sample-repo` 中没有 `AGENTS.md`，两次真实运行的 `contextFiles` 都是 `[]`。所以规则注入、回读和防篡改的证据全部来自假模型的集成测试，真实模型运行没有覆盖这一点（规范对这几条要求的是「测试」，所以不影响结论）。
+6. 验收 9：证据是开工时的探测记录（附录 A 有脚本），仓库中没有对应的自动化测试。
+7. 验收 6(v)：`piResolve` 没有防漂移测试（M5，已推迟）。
+8. 实现说明 §1–3、§5–7 仍是过期的占位内容，按计划在 Step 4 追加收尾节、以收尾节为准；本表追加进实现说明时，应放在该收尾节中。
+
+（第 8 项由本节处置。）
+
+### 6. 已知限制与推迟项（收尾）
+
+本文开头 §6 中 0A–0C 的条目仍然有效，但第一条“按计划仍锁定 1.5.0”已过期（实际锁定 1.5.1）。
+
+#### 6.1 整体审查（opus，`64d3422..d73246c`，“修复后可合并”：Critical 0 / Important 1 / Minor 8）的处置
+
+| 项 | 内容 | 处置 |
+|---|---|---|
+| I1 | 启动者把“启动被拒绝”当成退出信号，重试成功后 `stop()` 强杀健康 runner | **已修复**（`daaa1ef`、`41c8f59`），复审 Approved |
+| M1 | 实现说明 §1–3、§5–7 过期，tasks.md T1 的计划/实现说明字段为空 | 本节即是处置；tasks.md 字段在 Step 5 填 |
+| M2 | Linux 上的 9C 未执行 | **已执行**：`c6d2513` 在 Linux 容器 9C 39/39、全量 497/497（5.1）。`runner-launcher.ts:11` 对 EPERM 的 macOS 特判在 Linux 上是否被走到，没有单独核实 |
+| M3 | 诊断文件打不开要到清理时才报出 | **推迟到 T2 开工第一件事**（A64），见「推迟到 T2：M3」节及其「更正」；契约已写规则并标“尚未实现” |
+| M4 | 已提交样本含 macOS 每用户临时目录标识；本文 `:526`、`:1521` 含 `/Users/<用户名>/…/.env` 路径；脱敏脚本未入库 | 推迟到 T22（公开仓库前清理，脱敏脚本一并入库）；不是密钥 |
+| M5 | `piResolve`（`t1-real-run.ts:156`）照抄 pi 1.5.1 路径规则，没有防漂移测试 | 推迟到 T2（未纳入返修，A62；2026-11-25 按主控建议归 T2，作者回复"继续"）。升级 pi 前必须补 |
+| M6 | 错误码 `internal` 在契约与 schema 中存在，但 runner 从不发出 | 推迟（无可观察错误行为）；待在契约标“保留”或包 try/catch |
+| M7 | `loadedContextFiles()` 抛错时已创建的会话不被 dispose（现有代码不可达） | 推迟 |
+| M8 | `agent-events.md` §1.2 写“ISO 8601”，schema 与 engine.md 要求 UTC `Z` | 推迟；属于规范措辞不一致，Step 5 收尾一致性检查时请作者决定是否顺带改 |
+
+#### 6.2 账本中“推迟”的次要项分拣（转自整体审查报告，账本行号已无意义，按内容列出）
+
+- **已修复或已执行**：typecheck 与 build 分开（`tsc -p tsconfig.json`）；假服务意外请求计入 errors（`a809bee`）；根目录 import pi（`a0c92d0`）；scripts 纳入类型检查（`4790c85`）；协议测试文件、`SequencedEventSchema`、requestId 按计划、`input` 必填与 UTC `Z`、判别联合（Task 4）；第二个连接 `close(1008)`；转换器 `?? null`；去 `GIT_*` 与严格 UTF-8；重复 callId；默认提示与预热断言（`1960e20`）；删除 `bindExtensions`、`inside()` 写法；`run()` 返回被拒绝的 promise、原始录制不含密钥；runner 的 send 永不抛错；`--idle-timeout-ms`；客户端自动拒绝身份；启动者 spawn error（`48255dd`）与启动失败时不再写退出码原因；10A3/10A4/10A6/10C 的裁决项。
+- **部分修复**：check-pi-pinned 非确切版本测试覆盖了直接依赖与其他工作区，其余组合可推迟；转换器 `isError:true` 已测，非数组 content 由 `Array.isArray` 防御、无专门测试。
+- **推迟到具体任务**：录制文件打开失败（M3）→ T2；“模型请求结束”契约事件（stopReason + usage）→ T2；pi 升级时重新录制样本并与已提交样本比对 → pi 升级时 / T2；审计 `by`、协调器泛型 `wait`、策略直连 → T3；对端不回应时 `close()` 等 30 秒 → T4（调度器复用前）；样本临时目录标识与脱敏脚本 → T22。
+- **可推迟、无需处理**（fail closed、措辞、测试卫生或有界）：0A/0B/0A-R 报告的措辞与导航；`hasPi` 宽松匹配；锁文件 YAML 格式错误时未捕获（仍非零退出）；`./packages/*` 模式、`!` 排除模式、锁文件 v6 键格式（均 fail closed）；pnpm 10 跳过的构建脚本（@google/genai、esbuild、protobufjs）；假服务若干测试卫生；drop 脚本依赖 `res.write("",cb)` 后 destroy（与 Node 版本有关）；`json` 辅助函数两处重复；SequencedEvent 错误信息不够具体；close 码不区分成败、空闲刷新未测、stderr 可能丢失；runner stderr 无上限；编码后的密钥形式检测不到、配置 JSON 解析错误可能把片段写进 stderr；极小概率的刹车测试竞态；`[]` 行被静默跳过、零字节录制计 0 请求（控制方已逐题核对请求数 > 0）；出错请求理论上可同时计入两类溢出（pi 1.5.1 总给全 0 用量，不会发生）。
+
+#### 6.3 推迟清单（来自账本最后一份交接说明与本轮）
+
+| 去向 | 事项 |
+|---|---|
+| T2 开工第一件事 | M3：先改契约（打开诊断文件限时，建议 5 秒，超时按启动失败），再改代码，再改换 8 条以“目录不存在 / 无读端 FIFO”注入的测试（用 `git grep -n "no-such-dir\|mkfifo" -- tests/integration` 重新定位） |
+| T2 | 契约“模型请求结束”事件（stopReason + usage）；向 ADR 015 追加“API 模型无带日期快照”的偏离；另一个 Qwen 主模型候选（Qwen3-Coder-Next 在本 key 下不可用）的接通与比较；Python 客户端；评测框架衡量稳定性（5/5 只是单次） |
+| T3 | runner 侧刹车，恢复未声明工具 ≤ 上限+1；未声明工具调用若频繁，评估用 customPrompt 替换系统提示；发送前估算上下文长度、接近窗口主动停止；产品默认不声明不需要的工具（验收运行已用 `--tools` 做到）；策略直连（`interceptMode: "policy"`）；stdio MCP 继承全部环境变量（含 API key）的安全决定（T3/T7），可用 pi-mcp 的 `validateMcpServerConfig` |
+| T4/T8 | 调用方身份鉴权（runner 只挡浏览器 Origin）；`close()` 对端不回应时的 30 秒 |
+| T5 | `resume`；用容器/cgroup 回收 runner 被强杀后残留的工具进程 |
+| T22 | 样本中的临时目录标识、本文中的本机路径、脱敏脚本入库 |
+| 未定 / 作者保留 | 宽松诊断分（剥代码块后重判，只作分析，A33）；小模型的更多搜索工具（A37）；`/tmp/fp-t1/tsx-501` 保留（作者决定）；百炼控制台账单核对（三次约 0.283 元，原价估算）；`cacheWarming: "idle"` 本身未实测（平台设置为 off） |
+
+#### 6.4 其他已知限制
+
+- runner 被强杀时，pi bash 工具（自己的会话与进程组）可能残留；`session.abort` 与 `dispose` 单独去掉任一个时测试抓不到（两者合起来才被验证，A29）。
+- 5/5 是第 3 次单次运行：采样未固定、模型 ID 不带日期，重跑可能不同；思考 low 与 0C 的探测条件不同。
+- 两次真实运行的 `contextFiles` 都是 `[]`（样例仓库没有 `AGENTS.md`），规则注入、回读与防篡改的证据全部来自假模型集成测试。
+- pi 系统提示随每个请求把本机绝对路径（pi 安装目录在家目录下、含用户名；cwd 为临时副本）发给 API 提供方。
+- `check-secrets` 只做明文匹配；离线溢出检测有盲区：新追加内容多于被丢弃内容且前缀保留过半时，主判据识别不出，统计干净不等于没有溢出。
+- Claude Agent SDK 一侧只对照了 0.3.322 的类型与文档，没有实测。
+- Linux 只在 aarch64 容器、ripgrep 13.0.0 上验证过；macOS 上 ripgrep 为 16.0.0。
+
+### 7. 执行账本转存
+
+`grep -c "Ruling:" progress.md` = 19 行；含 “Ruling” 的行共 35 行，去掉 2 行非裁决（项目覆盖规则第 8 行、Task 11 派发记录）后为 33 条裁决，另有 1 条写在作者决定行内的“controller ruling”（R34），共 34 条，全部列在 7.2。`grep -c "AUTHOR DECISION\|AUTHOR RULE"` = 52 行（其中 0C 一行含 4 项决定）；另有 14 行作者输入不带这两个标记（AUTHOR CORRECTION / OK / REQUIREMENTS / REMINDERS / GO / “AUTHOR:”、“Deferred (author)”、规格变更评审中的作者决定）。合并后共 64 条，列在 7.1：52 行决定拆合为 54 条（0C 一行拆成 A2–A5，确认等待的两行合为 A17），其余 14 行合为 10 条（作者安装 ripgrep 一行并入 A49，ADR 016 获批一行并入 A11，两行 AUTHOR: 合为 A46，10B 前的作者提醒与 GO 两行合为 A42）。
+
+#### 7.1 作者决定与规则
+
+“如果错了”指这条决定若被证明不对，要付出的代价。
+
+| # | 日期 | 决定（要点） | 如果错了 |
+|---|---|---|---|
+| A1 | 11-10 | pi 锁定 1.5.1 而非候选 1.5.0：1.5.1 修了 #9126（dispose 先拆扩展再中止工具）与 #8635（懒加载 provider 期间取消报错），都在取消/清理路径上；两项破坏性变更不影响 T1 | 回退 1.5.0 需重做 0B，并改两个 manifest |
+| A2 | 11-10 | 本地模型 `qwen3:4b-instruct-2507-q4_K_M`（也是 T6/T13 的基座）；作者自己 `ollama pull` | 换模型需重跑 0C 与 10C |
+| A3 | 11-10 | 不改规格（本地也跑五题并记录）；上下文用派生模型 `num_ctx 16384`，不改全局 Ollama | 派生标签与基础标签行为不同时，结果不代表基础模型 |
+| A4 | 11-10 | T1 API 模型关闭思考——**已被 A55 推翻** | — |
+| A5 | 11-10 | 版本记为不带日期的 `qwen3.6-35b-a3b` + 观察日期；ADR 015 偏离在 T2 追加 | 平台换模型后结果不可复现且无从察觉 |
+| A6 | 11-10 | 每个小任务后都停下等作者审查，不连续执行 | 进度慢（有意取舍） |
+| A7 | 11-10 | (A) “pi 未修改”覆盖全部 `@earendil-works/pi-*`；(B) 立即修工作区路径漏检 | 检查过严时合法布局被拒（fail closed） |
+| A8 | 11-10 | 根目录加 pi 1.5.1 开发依赖，测试直接 import | 升级时漏改一处（`check:pi` 会拦） |
+| A9 | 11-10 | 2B 同时录 retry（HTTP 错误后成功）与 retry-drop（部分文本后断线再成功），假服务加 drop 脚本 | 多维护一个样本 |
+| A10 | 11-10 | 2B 返修：scripts/tests 纳入类型检查、去掉固定 sleep | — |
+| A11 | 11-21/22 | ADR 016 获批；无法复现的失败只问一次、不自动修（NEEDS_HUMAN）；同意两处偏差：sha256 由 runner 计算、`run.started` 在加载器回读与会话创建之后 | 快照语义需改契约与测试 |
+| A12 | 11-22 | 重试残留的 `text.delta` 原样透传；最终文本 = `message.completed` | 只看增量的调用方会显示失败尝试的文字 |
+| A13 | 11-22 | 只有工具调用的助手消息不发 `message.completed`（保留实现者的做法） | 调用方拿不到“空完成”信号 |
+| A14 | 11-22 | 每个小任务的 SDD 审查后另派 ponytail-review；Must/Should 进返修（计入 3 轮），Nice 记账本 | 返修轮次更快用完 |
+| A15 | 11-23 | 软链接规则文件报错拒绝；规则文件上限 256 KB，超出报仓库/路径/大小 | 合法的大规则文件或软链接布局被拒 |
+| A16 | 11-23 | git 调用加 `--no-replace-objects`；发送失败的 block 原因固定为 “send failed” | — |
+| A17 | 11-23 | 确认等待默认先改 30 分钟，随即改为 600 秒（与 Claude PreToolUse 默认一致）；拦截与空闲仍 30 秒 | 人工确认慢于 10 分钟时被当作拒绝 |
+| A18 | 11-23 | 加载器返回自己的 settingsManager，8A 必须显式传给会话，项目信任显式关闭；8A 加敌意 `.pi/settings.json` 端到端测试 | 接口多一个返回值 |
+| A19 | 11-23 | `createPiSession` 加 `sessionsRoot`，`sessionDir` 必须是其下相对路径；绝对、`..`、软链接越界一律报错且不建会话 | 合法的外部会话目录不可用 |
+| A20 | 11-23 | `loadModelRuntime(modelsPath, stateDir)`：auth 与 models-store 写 stateDir，配置目录只读 | — |
+| A21 | 11-23 | `sessionsRoot` 在 PiEngine、startRunnerServer、CLI 都必填，无默认值 | 部署必须配置 |
+| A22 | 11-23 | (1) 生产沿用 pi 默认重试；(2) engine.md §2.3：会话建好前的取消被随后的启动失败覆盖；(3) sessionsRoot 写进契约；(4) 修 prompt 挂起（run/cancel 须在清理时限内结束） | 不可达模型约 14 秒才失败 |
+| A23 | 11-23 | `done: Promise<{ok}>` 永不 reject；清理失败或超时 `ok:false`；外部 close() 也 resolve；SIGTERM = close → 等 done → 退出；退出码只反映清理 | — |
+| A24 | 11-23 | 握手拒绝带 Origin 的连接，被拒连接不占唯一位置；确认 `idleTimeoutMs` 裁决（R13） | 带 Origin 的合法非浏览器客户端连不上 |
+| A25 | 11-23 | EngineClient 捕获 onEvent/onError 抛错写 stderr；确认 `by: "engine-client"` | 调用方 bug 被吞成 stderr |
+| A26 | 11-23 | 修订计划：启动者只杀 runner 组；工具由 pi abort/dispose 结束；runner 被强杀时可能残留 → 沙箱任务 | 残留工具继续占资源或写文件，直到 T5 |
+| A27 | 11-23 | 契约写明启动者强杀：卡住的系统调用可能让 runner 无法退出；停止时限默认 10 秒（≥ 清理 5 + 关闭 1），强杀进程组按非零处理；`run.failed` 仍先发；10A2 实现 | — |
+| A28 | 11-24 | 停止时限从最早退出信号起算：发出取消/SIGTERM、收到终止事件、连接关闭/断开；不必覆盖 runner 空闲超时；单调时钟；契约写不等式 5+1+1 = 7 < 10 | 计时起点错会误杀或晚杀（I1 正是这一条的实现缺陷） |
+| A29 | 11-24 | 最终审查必做：至少在一个 Linux 环境跑 9C；abort/dispose 只记录（两者合起来被测，单独任一个未验证） | — |
+| A30 | 11-24 | 遗留 fp-* 目录：先查再删；原因是 afterEach 未用 finally → 补丁 `22bc1a6` | — |
+| A31 | 11-24 | 接受 10A1 首轮 TDD 违规，条件是判分变异检查（已做：6 个被抓、1 个等价变异） | — |
+| A32 | 11-24 | 严格格式确认，另三点：提示词写明“只输出 JSON 数组，不要用代码块包裹，不要加任何解释文字”并给格式示例（不含真答案）；报告把格式错误（带具体原因）与 missing/extra 分开；首尾空白允许并有测试 | 代码块包裹的正确答案判错（第 1 次运行 2 题如此） |
+| A33 | 11-24 | 推迟：可选的宽松诊断分（只作分析，不影响通过与否） | — |
+| A34 | 11-24 | read 只在 realpath 落在本题副本内时放行，否则拒绝并记录；至少 5 个测试（副本外绝对路径、`../`、副本内软链接指向外部、前缀相似目录、正常文件） | 合法读取被拒 |
+| A35 | 11-24 | 只给 read + 由副本自动生成的文件清单，不改 8A 去激活 grep/find/ls；拒绝原因写明可用工具 | 模型无行号工具（第 1 次运行的行号错误由此而来，后由 A43 改） |
+| A36 | 11-24 | 不向模型声明 bash/edit/write 推迟到 T3（后被 A48 部分提前） | — |
+| A37 | 11-24 | 推迟：本地小模型若只读不够，再评估开放搜索工具并加路径限制 | — |
+| A38 | 11-24 | 接受 3 条 ponytail Should；启动者 spawn 与组杀只留一份（engine-client），10 秒计时在共享代码里；每次派发与复审前控制方自己重跑完整验证 | — |
+| A39 | 11-24 | 10B 之前修启动者 spawn error（监听 error、listening reject、exit 结算、stop 不得 `kill(-undefined)` 或挂起）并加测试 | — |
+| A40 | 11-24 | Linux 9C 仍为最终审查必做；10A2 其余验收通过（只在任务分支，合并 main 需整体审查与作者同意） | — |
+| A41 | 11-24 | 10B 前置要求：(1) 按题刹车，失败并写原因；(2) 录制的密钥检查做成脚本与测试，`.env` 在 `.gitignore`；(3) 从录制核对思考关闭；(4) 报告运行条件，一次通过只算“这一次通过”；(5) 未全对不得针对这五题调提示词，先分类，改动记账；(6) 检查拒绝记录。系统提示含本机路径要写进实现说明 | — |
+| A42 | 11-24 | 提醒刹车只计工具调用，要确认每次回答的输出上限（8192）；批准跑 10B，运行后顺序：check-secrets → 分类 → 思考核对 → 拒绝分析 → 未全对只分析 | — |
+| A43 | 11-24 | 行号问题：只加 pi 内置 `grep`，路径限制与 read 一致，确认不跟随软链接、不搜 `.git` | — |
+| A44 | 11-24 | 重跑前先查实际送达的提示词；同一模型只重跑一次；仍失败则先开思考，再考虑换模型 | — |
+| A45 | 11-24 | 样本中的临时路径接受，README 说明原因并写准规则 | 公开前需清理（M4） |
+| A46 | 11-24 | 方向定了再恢复两次审查；账单以后核对；样例无 `AGENTS.md` 不是失败原因 | — |
+| A47 | 11-24 | 提示词改为“先读后答”：只写步骤不给方法提示；格式要求限定为最终回答；工具句由工具清单生成；“一次只改一个变量”针对模型旋钮，不针对修已知流程缺陷 | 被视为针对题目调提示词 |
+| A48 | 11-24 | 会话只声明 read + grep；拦截仍拒绝其他工具（保留 bash/write 拒绝测试）；重跑前从录制确认工具定义与系统提示；把 T3 的“不声明不需要的工具”提前到 T1 | — |
+| A49 | 11-24 | 作者装 ripgrep 16.0.0；runner 要求 PATH 上有 rg、设 `PI_OFFLINE=1`；报告记录 rg 版本；契约补“外部程序与离线” | 部署漏装 rg 时 grep 报错（不下载） |
+| A50 | 11-24 | 刹车：`tool.started` 与拦截共用计数、按 callId 去重、拦截判定前先更新；测试覆盖一次 read 只计一次、越限 read 被拒、反复 bash 记为超出上限 | — |
+| A51 | 11-24 | 接受 pi 固定前言（“run commands”“Additional tools may be available”）；重跑后统计未声明工具调用，频繁则 T3 评估 customPrompt | — |
+| A52 | 11-24 | 刹车由 T3 移入 runner 恢复 ≤ 上限+1；现在接受未声明工具 ≤ 上限+2 且最多一个被中止的请求；断言必须稳定，计划数字 = 测试数字 = 实际行为；费用统计含被中止请求 | 极端时多一个计费请求 |
+| A53 | 11-24 | read/grep 输入不是对象即拒绝（拿不准就拒绝）；grep 不给 path 时按 “.” 放行并测试；rg 版本在 runner 环境中探测 | — |
+| A54 | 11-24 | 用量用离线统计脚本（b）做成小任务后再重跑 10B；契约事件（a）推迟到 T2；重跑后顺序：check-secrets → 分类 → 拒绝与未声明调用 → 费用 | — |
+| A55 | 11-24 | 下一步开思考：runner `--thinking`（默认 off），在计划中写明推翻 0C 的理由；检查思考 token 与输出上限、截断可识别且不混入格式错误、判卷只读最终回答、隐私检查覆盖思考内容；记录级别、从录制核对、统计推理 token；5/5 也只是这一次 | — |
+| A56 | 11-24 | 思考 low；时限保持 120 秒（第 2 次各题耗时为基准）；旧样本保留并在 README 写明标识不含用户名；第 3 次用 `TMPDIR=/tmp/fp-t1` | — |
+| A57 | 11-24 | 10C 提醒：先确认本地模型真的调用工具；如实分类格式/内容/截断/溢出；16k 溢出必须能在报告或离线统计中识别，否则跑之前停下；先测再定，一次只改一个条件 | — |
+| A58 | 11-24 | 10C 正式运行前两项预检分开报告：(a) 真实工具调用；(b) 构造 > 16k 输入，判断服务报错还是静默截断、能否被识别；任一不过就停；保留 tsx 缓存（运行时为热缓存） | — |
+| A59 | 11-24 | **常设规则**：预检不通过一律停下报告；“只能用未入库脚本从原始录制看出”不算通过 | — |
+| A60 | 11-24 | 认可 10C 运行（单次请求上下文最多 1,918 token）；实现说明追加预检 (b) 偏差；`t1-usage` 加溢出检测（主判据输入总量下降、辅助 cacheRead 骤降、HTTP 400 单列，三种情形都测）；ollama 条目加 `maxTokensField: "max_tokens"`，不重跑；`text_utils.py:6` 是 slugify 的普通调用，题目不改 | — |
+| A61 | 11-24 | 溢出检测修订：输入总量 = input + cacheRead + cacheWrite；辅助判据 cacheRead < 上一次输入总量 − 16（只在服务端回报缓存时）；中止或缺用量请求按估算标“可能溢出（无法核实）”；全 0 用量跳过；注释写明盲区；根本办法 T3 | 按块缓存的服务可能误报 |
+| A62 | 11-25 | 一轮返修 = I1 + M3 + rg 测试，每项先写复现测试；I1 测试断言 runner 未被强杀；rg 测试用空 PATH 目录与空 HOME/PI_CODING_AGENT_DIR，并验证“放入真 rg 测试必须失败”；返修后 Linux 重跑，全过再清理 Docker；记录 rg 版本差异 | — |
+| A63 | 11-25 | M3 选 A：现在修，先改契约；清理失败改用 FIFO 读端开后关（EPIPE），清理超时改用打开卡住 + 取消；先验证，不成立就停 | （前提实测不成立，见 A64） |
+| A64 | 11-25 | M3 推迟到 T2 开工第一件事（带未提交的复现测试与最小实现、无限挂起的发现、A2+3 方案）；本轮只交付 I1（测试停止时限 3000 ms）与 rg 测试，然后联合复审与 Linux 重跑 | T1 交付时第一事件规则对诊断文件不成立 |
+
+#### 7.2 控制方裁决
+
+| # | 小任务 | 裁决（要点） | 如果错了 |
+|---|---|---|---|
+| R1 | 2A | 审查 Minor #1（非 /chat/completions 请求返回 404 但不计入 errors）提升进返修：计划 Review Focus 5 “测试不掩盖额外调用” | 一行代码加一个测试 |
+| R2 | 3 | 由作者决定 ① 推出：`message.completed` 只来自 stopReason 不是 error/aborted 的助手 `message_end`；转换器只读 delta/message_end，不读 `partial` | — |
+| R3 | 3 | 协议 schema 测试放新文件 `tests/unit/agent-events.test.ts`（Files 未列） | 多一个测试文件 |
+| R4 | 4 | `SequencedEventSchema` 加进 engine-protocol（事件消息需要运行时校验） | 小的跨文件改动 |
+| R5 | 4 | 撤回实现者给 intercept/confirm 请求加的 requestId，以计划接口表为准 | 以后再加字段 |
+| R6 | 4 | 便宜的次要项并入返修：缺 `input` 键拒绝、纯空白 reason 拒绝、`at` 为 UTC Z、判别联合 | 几行 |
+| R7 | 4 | 复审次要项 #2 升为 Important：`output: undefined` 经 JSON 丢键使客户端拒收 → 转换器 `?? null` + 测试 + 契约说明；类型改由逐消息 map 推导，删未用的导出联合；engine.md “ISO” → UTC Z | 几行 |
+| R8 | 5 | 并入返修：spawn git 时去掉 `GIT_*`；`TextDecoder` fatal；测试软链接文件、目录、软链接目录（返回 []，写明）、空 baseRef；文档建议 baseRef 用 `refs/heads/main` | 约 20 行 |
+| R9 | 6 | 修 I1（计时器/监听清理无测试）、I2（确认独立计时未证明）；并入：重复 callId 拒绝且 settle 只删自己、确认阶段 send 抛错与 abort 测试、abort 断言原因 | 几行 + 测试 |
+| R10 | 7 | 加两条便宜断言：系统文本含 pi 默认提示片段；`getCacheWarmingMode() === "off"`（防 pi 升级风险） | 两行 |
+| R11 | 8A | 删除 `bindExtensions` 及误导注释（会话构造时已绑定；MCP 不在 T1 范围，需要 session_start 的扩展时再加回并配测试）；`inside()` 用 `r === ".." \|\| startsWith(".." + sep)` 并保留词法检查 + “..foo” 用例；去掉多余的 mkdirSync；测试展开 example 的 compat 而不复制 | — |
+| R12 | 8B | 并入返修：ponytail Should 2 只加注释（0B 与审查者确认 settled 先于 prompt resolve）；`run()` 返回被拒绝的 promise；原始录制断言不含密钥（若含则停下按安全处理） | 几行 + 测试 |
+| R13 | 9A | 加 `idleTimeoutMs?` / `--idle-timeout-ms`（默认 30000）：契约超时表说空闲可配，计划接口漏了 | 一个可选参数 |
+| R14 | 9A | 返修范围：关闭中的启动竞态（置 finished + 测试）；限制客户端关闭等待（小 closeTimeout + 竞速后 terminate，用不回 close 帧的客户端测试）；CLI 端口占用退出 1、非法整数参数测试；`STOP_BACKSTOP_MS` 注释 | — |
+| R15 | 9B | onConfirm 处理器缺失或抛错时自动拒绝的 `by` 为 `"engine-client"`（`Confirmation.by` 必填） | 一个字符串 |
+| R16 | 9B | 返修：拦截/确认 fail-closed 去重；并发启动丢终止结果的修复 + 测试；`reasonOf` 永不抛；用等待 close 替换 50 ms sleep | 约 10 行 + 1 测试 |
+| R17 | 9C | 返修（只改测试）：重写降级测试并在组杀前断言工具组已不在；4 个断线测试限定断线到退出的时间；共享 TOOL 辅助；3 个测试补 scratchLeft；L401 断言、监听内不放 expect、marker 短等待、已连接未启动的空闲退出 | 约 30 行测试 |
+| R18 | 10A1 | 人工完整性审计放在样例仓库之外：`tests/fixtures/sample-repo-audit.md` | 多一个 fixture 文件 |
+| R19 | 10A1 | 严格格式：字符串先 trim 再 `JSON.parse`；已解析的数组可接受；不剥 markdown 代码块，不做模糊提取；条目为仓库相对 POSIX 路径（不含 `./`、`..`）与 ≥1 的整数行号；去重、忽略顺序；10A2 提示词须要求裸 JSON 数组 | API 模型用代码块包裹会判错（已报作者，A32 确认） |
+| R20 | 10A1 | 返修：每题写明定义文件与“不含定义行与 import 行”，别名说明全题统一；哈希只算 .py/.md；别名机械搜索；`tests/fixtures/** eol=lf`；判分边界用例；去掉 `target.name` | — |
+| R21 | 10A2 | 共享启动者模块放 `packages/engine-client`（启动者是调用方职责，调度器会复用） | 以后移一个文件 |
+| R22 | 10A2 | spawn error 测试用不存在的 cwd 触发（与缺可执行文件同为 ENOENT），不为测试加 executable 选项 | 以后加选项 |
+| R23 | 10A3 | 新建小任务 10A3（调用方按工具调用计数刹车，默认 30，“超出上限”单列；运行条件；check-secrets + 测试），不重开 10A2 第 3 轮；按工具调用数而非 token 数刹车 | 只是重新编号；以后加 token 上限 |
+| R24 | 10A3 | 思考关闭的核对 = 对已提交真实样本的测试 + 10B 对全部原始录制 grep | — |
+| R25 | 10A3 | `.tmp/` 加进 `.gitignore`；模型条目去掉 headers/apiKey；目录内软链接报为问题、二进制文件测试、git 错误单独说明；所选条目的 samplingParams 并入报告，按思考级别或 modelOverrides 覆盖时退出 3；刹车测试含一次放行的 read；读不了的文件记为问题但仍输出已有命中 | 一行忽略规则 |
+| R26 | 10B | 没有作者再次同意时只跑一次真实运行；不是 5/5 就停下报告（不悄悄重跑，避免挑结果与多花钱） | 多一次往返 |
+| R27 | 10A4 | 另立小任务 10A4（不作 10B 返修）：改动产品代码（8A 会话、9A CLI）与契约 | 只是重新编号 |
+| R28 | 10A5 | 采纳 ponytail Should 1（非对象 JSON 行报文件与行号）、Should 2（无 .jsonl 或目录不存在时非零退出，保护 10B 费用记录）与 Nice 3（测试名） | 约 6 行 |
+| R29 | 10A6 | 截断用 `t1-usage` 的结束原因计数与每题最后结束原因识别（统一事件没有 stopReason，契约字段推迟到 T2）；check-secrets 加本机路径检查，作用于 fixtures，不作用于 `.tmp` 原始录制（系统提示本就含本机路径） | 信号位置小返工 |
+| R30 | 10B | 现在不开返修（SDD Approved，10A6 正在改重叠文件）；ponytail Should 1–3 与精简的第 3 次运行小节带进第 3 次派发；Should 4（每用户临时目录标识）问作者 | — |
+| R31 | 10A6 | I1（实现说明追加做法）进返修 1；I2（本地配置缺 `thinkingTokenBudgetField`）在作者确认级别后由控制方只改被忽略的本地配置，并在报告 modelEntry 中可见 | 漏加则思考无上限 |
+| R32 | 10B | 返修 1：采纳 Should 2（思考泄漏检查覆盖全文）与 Should 3 + Nice 5（README 精简）；Should 1、4 只记录 | 测试与 README 几行 |
+| R33 | 10C | 在预检之前把 example 中的 ollama provider 原样复制进被忽略的本地配置：这是计划允许的“只改模型选择与配置”，不是失败后调参 | 无（本地、被忽略） |
+| R34 | 10C | “三种情形都测”解释为预检 (b) 的三种情形：HTTP 400、静默丢弃消息、输出越过窗口（input+cacheRead+output > 给定窗口），两种读法都覆盖 | — |
+
+#### 7.3 早期核实与失败尝试（已在本文中，不重复）
+
+- 开工核实：「0A 环境、资源隔离与 MCP 核实」「0B 引擎公共能力核实」「0A-R pi 1.5.1 复核」「0C 模型资料与真实调用探测」（含「0C.0 作者决定」「0C.5 Task 0 关卡核对」），探测脚本全文在附录 A–C。
+- 事实更正：「Task 7 补充：0A.4 推荐组合需要再加 `systemPrompt: ""`」。
+- 失败与重试：「Task 10B API 五题验收：0/5，未达标」「Task 10B 第 2 次运行：1/5，未达标」「Task 10A6 思考级别与输出上限」「Task 10B 第 3 次运行：5/5，开启思考 low」「Task 10C 本地五题验收与配置切换：1/5」「Task 10C 返修第 1 轮」「Task 10C 返修第 2 轮」。
+- 推迟与更正：「推迟到 T2：M3 诊断文件打不开要到清理时才报出」（含未提交的复现测试、最小实现 diff 与探针输出）及其「更正」。
+- 没有写进本文的失败尝试：10A4 首次派发因缺 rg、未声明工具不经拦截而停下（无提交，见 A49–A51）；Task 11 Linux 第一次用 `git archive` 搭建作废（5.1）；M3 修复半成品未提交（全文已在「推迟到 T2：M3」节）。
+
+### 8. 讲解自测题（收尾）
+
+作者不看代码作答。这里只列题目和答案所在位置；及格要点在自测前不公开，Step 6 自测后随结果一并追加（2026-11-25 按主控建议处理以保持自测严格，作者回复"继续"，未另提异议）。
+
+1. **启动被拒绝后在同一连接上重试成功，任务正常跑完，这时调用 `stop()` 会发生什么？为什么停止时限不能从“启动被拒绝”开始计？契约认的退出信号有哪几种？**
+   - 位置：engine.md「进程退出」；`runner-launcher.ts:73-105`（:84）；`engine-client.ts:43-45、81-87、141-147、163-166`；测试 `runner-process.test.ts:491-505`。
+2. **为什么加载器或会话创建失败时只能发 `run.failed`，不能先发 `run.started`？如果失败之前调用方已经发了取消，终止事件是什么，为什么？**
+   - 位置：engine.md §2.1、§2.3；`pi-engine.ts:24、48-53、117-131`；`restricted-resource-loader.ts:34-40`；测试 `pi-engine.test.ts:185`、`engine-client.test.ts:89`。
+3. **agent 在任务分支上改了 `AGENTS.md` 并提交，或者只改了工作区不提交，下一次运行 pi 收到的规则是什么？列出防止篡改的每一层，并说明测试如何证明。**
+   - 位置：`git-context.ts:9-10、20-35、65-67`；`restricted-resource-loader.ts`；`pi-session.ts:56-71`；测试 `pi-engine.test.ts:442`、`restricted-loader.test.ts`（六种布局与 `:178` 对照）、`git-context.test.ts`；验收 7、10、11。
+4. **工具正在运行时调用方取消任务，跨进程的清理链是怎样的？每一层的时限是多少？清理之后还可能残留什么？**
+   - 位置：`pi-engine.ts:66-101`；`runner-server.ts:9-11、89-110`；`runner-launcher.ts:97-105`；engine.md「进程退出」「工具进程」；测试 `runner-process.test.ts:189、380`。
+5. **M3 的最小修法是在创建会话前 `await` 诊断文件打开完成。为什么作者把它推迟到 T2，这个修法会在什么情况下引入无限挂起？T2 的修法是什么？**
+   - 位置：本文「推迟到 T2：M3」节及「更正」；engine.md §2.1 第一事件规则（“尚未实现”）；`pi-engine.ts:58、117-129`；`raw-event-recorder.ts`。
+
+- **自测结果**：未进行（Step 6 进行，结果在 Step 7 追加）。

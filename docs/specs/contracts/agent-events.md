@@ -39,7 +39,7 @@
 
 ### 1.2 带序号的事件
 
-`SequencedEvent = AgentEvent & { sessionId: string; seq: number; at: string }`，`at` 为 ISO 8601 时间。`tool.started.input` 与 `tool.finished.output` 键始终存在，`null` 表示 pi 没有给出值。
+`SequencedEvent = AgentEvent & { sessionId: string; seq: number; at: string }`，`at` 为以 `Z` 结尾的 UTC ISO 8601 时间（与 `engine.md` 一致，schema 为 `z.string().datetime()`）。`tool.started.input` 与 `tool.finished.output` 键始终存在，`null` 表示 pi 没有给出值。
 
 ### 1.3 函数
 
