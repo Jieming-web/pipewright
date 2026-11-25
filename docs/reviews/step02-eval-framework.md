@@ -7,6 +7,8 @@
 
 > 记录"实际发生了什么"。完成后不修改正文，后续变化只在开头追加说明。本文目前只有「0. 开工核实」，其余章节在后续任务收尾时补写。
 
+> 更正（追加）：0.8 及之后依据规范 c815ffc（ADR 017）。
+
 ## 0. 开工核实（2026-11-25，T2-0）
 
 `<S>` = `/private/tmp/claude-501/-Users-chenjieming-Desktop-coding-agent/6d9b209b-b45a-4fac-b58e-ee4f74986389/scratchpad/t2-0`。只在 scratch 中实验，没有改动任何受控文件。密钥只通过 `node --env-file=<绝对路径>/.env` 注入探测进程，没有打印或写入；每次探测末尾扫描输出目录，均为 `clean`。
@@ -177,6 +179,22 @@ Moonshot 官方文档（<https://platform.kimi.com/docs/guide/kimi-k2-6-quicksta
 - 第 20 项中 Qwen3-Coder-Next 与 Moonshot 官方价格：随上两项不适用；Kimi 价格采用百炼的 6.5 / 27 元。
 
 **更新后的关卡结论：关卡通过（含 2 项不适用、1 项未执行但不阻塞）。**
+
+### 0.8a 更正与重新判定（追加，T2-0 审查返修）
+
+1. **结论以 0.8 为准**：0.8 的「关卡通过」取代 0.7 汇总行（通过 15 / 不通过 1 / 未执行 2）。0.7 表实际有 20 行，准确计数为：通过 16（第 1、2、4 至 16、19 项；汇总行的「15」没有把补充项第 19 项算进去）、不通过 1（第 17 项）、未执行 2（第 3、18 项）、部分未核实 1（第 20 项）。按 ADR 017，第 17、18 项不适用，第 3 项不阻塞。
+2. **第 20 项重新判定**：价格与发布日期。价格：Qwen3.6 与百炼 Kimi 都有来源；Qwen3-Coder-Next 与 Moonshot 官方价格随 ADR 017 不适用。发布日期按「未核实」接受，不阻塞（留出集已暂缓，发布日期目前只用于以后重新启用留出集的条件）。
+3. **更正 0.3「未来提交泄漏风险」一行**：该行中关于 `git tag --contains HEAD` 的句子自相矛盾，不作为证据。准确的证据是 `git rev-list --all | wc -l` 大于 `git rev-list HEAD | wc -l`，即有些提交从 HEAD 不可达，但仍可从其他引用（分支、标签、远端引用）到达：requests 6299 对 3690，astropy 45556 对 32967，django（Epoch）48985 对 26747。各实例的其他细节分开看：requests 与 astropy（swebench 镜像）HEAD 是额外提交 `SWE-bench`，标签 154 / 168；django（Epoch）HEAD 就是 base commit，标签 422。
+
+### 0.9 交接给后续任务的事实
+
+- arm64 镜像命名与回退：先试 `swebench/sweb.eval.arm64.<instance_id 中 __ 换成 _1776_>:latest`，不存在（denied）则回退到 `ghcr.io/epoch-research/swe-bench.eval.arm64.<instance_id>:latest`（保留 `__`）；`django__django-11099` 只在 Epoch 有。
+- 数据集 `image` 字段只给 x86 名称（`swebench/sweb.eval.x86_64.…`），arm64 名称要自己推导。
+- 本机已拉取的 3 个实例（requests-2317、astropy-12907、django-11099）是 smoke-v1 候选。
+- 用量口径：有缓存命中时 `totalTokens = input + cacheRead + output`（`input` 已扣除缓存），无命中时等于 `input + output`；`reasoning` 含在 `output` 内（0.6）。
+- swebench 5.0.2 的导入路径以 0.2 表为准，不要照计划里的猜测。
+- Kimi 经百炼：`kimi-k2.6`，价格 6.5 / 27 元（输入 / 输出）。
+- 已被取代：0.6 的 Qwen3-Coder-Next 列、Moonshot 官方各行、0.7 的「需要作者决定 1、2」已被 ADR 017 取代，下游只看 Qwen3.6 与百炼 Kimi；T2 不使用 `MOONSHOT_API_KEY`。
 
 ## 附录 A：Step 6 探测脚本全文（均在 `<S>/probe/` 下运行；`node_modules` 指向 runner 的依赖，pi 1.5.1）
 
@@ -356,3 +374,8 @@ docker exec fp-b node -e "fetch('https://dashscope.aliyuncs.com').then(r=>consol
 docker run --rm --network fp-probe curlimages/curl -sS -m 8 http://fp-b:8080
 docker rm -f fp-b; docker network rm fp-probe fp-probe-out
 ```
+
+## 附录补注（追加）
+
+- 附录 A `probe-model.mjs` 中 `entry.responseRaw = raw.slice(-1500) + (raw.length > 1500 ? "" : "");` 的三元表达式是空操作，且没有任何结论读取 `responseRaw` 之外的内容；脚本原文不改，它是实际运行内容的证据。
+- 运行包的组装命令（把 node、rg、fd 解压到 `/fp`）没有保留；Task 6 会写进 `build-eval-bundle.sh`。
