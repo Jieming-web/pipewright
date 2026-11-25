@@ -10,7 +10,7 @@ describe("piResolve 与 pi resolveToCwd 一致", () => {
   const cwd = "/tmp/work dir";
   // 组 a：逐个覆盖 piResolve 的分支（Unicode 空白替换、@ 前缀、~、~/、file://、最终 resolve），@~/a.py 验证处理顺序
   const branchCases = [
-    "a b.py", "a b b b.py", "a b b.py", "a　b.py",
+    "a\u00A0b.py", "a\u2000b\u2009b\u200Ab.py", "a\u202Fb\u205Fb.py", "a\u3000b.py",
     "@a.py", "@/abs/a.py", "~", "~/a.py", "@~/a.py", "file:///abs/a.py", "a.py",
   ];
   // 组 b：pi 将来可能自行改变行为的路径形态，防 pi 升级后 resolveToCwd 变了而 piResolve 不知道
