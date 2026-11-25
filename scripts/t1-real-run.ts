@@ -153,7 +153,7 @@ export const readRules = (dir: string): Promise<ContextFile[]> =>
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 /** 照 pi 1.5.1 read/grep 的解析（utils/paths.js resolvePath）：统一空白、去掉开头 @、展开 ~、file:// 转路径，再相对 cwd 解析 */
-function piResolve(input: string, cwd: string): string {
+export function piResolve(input: string, cwd: string): string {
   let s = input.replace(UNICODE_SPACES, " ");
   if (s.startsWith("@")) s = s.slice(1);
   if (s === "~") s = homedir();
