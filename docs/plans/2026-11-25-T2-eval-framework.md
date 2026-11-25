@@ -115,9 +115,9 @@
 
 **Files:** 新建 `tests/unit/pi-resolve-drift.test.ts`；`scripts/t1-real-run.ts` 导出 `piResolve`。
 
-- [ ] **Step 1：写测试**：对一组输入（`a.py`、`./a.py`、`/abs/a.py`、`~/a.py`、`@a.py`、含普通空格和 Unicode 空格的路径、`../x`），断言 `piResolve(input, cwd)` 与 pi 1.5.1 的 `core/tools/path-utils.js` 中 `resolveToCwd(input, cwd)`（工具实际使用的那个，带去掉 `@` 前缀和统一 Unicode 空白）结果相同；按文件路径导入，做法同 `pi-session.test.ts` 的工具名单比对。
-- [ ] **Step 2：运行**：`pnpm vitest run tests/unit/pi-resolve-drift.test.ts`，预期直接通过。不通过时，先把差异记进实现说明，再停下问作者：是修 `piResolve`，还是改对照对象。用变异确认测试有效：删掉 `piResolve` 对 `~` 的处理，测试必须失败，确认后恢复。
-- [ ] **Step 3：提交** `test(step02): piResolve 与 pi 路径规则的防漂移测试`。
+- [x] **Step 1：写测试**：对一组输入（`a.py`、`./a.py`、`/abs/a.py`、`~/a.py`、`@a.py`、含普通空格和 Unicode 空格的路径、`../x`），断言 `piResolve(input, cwd)` 与 pi 1.5.1 的 `core/tools/path-utils.js` 中 `resolveToCwd(input, cwd)`（工具实际使用的那个，带去掉 `@` 前缀和统一 Unicode 空白）结果相同；按文件路径导入，做法同 `pi-session.test.ts` 的工具名单比对。 — 2026-11-25：对照 resolveToCwd，输入分两组注明用途（分支覆盖 / pi 可能单独变化的路径形状，作者决定不删用例），Unicode 空白用转义；共用 tests/helpers/pi-internal.ts。
+- [x] **Step 2：运行**：`pnpm vitest run tests/unit/pi-resolve-drift.test.ts`，预期直接通过。不通过时，先把差异记进实现说明，再停下问作者：是修 `piResolve`，还是改对照对象。用变异确认测试有效：删掉 `piResolve` 对 `~` 的处理，测试必须失败，确认后恢复。 — 2026-11-25：首跑 18/18 通过；删 ~ 处理 3 例失败、去掉 Unicode 空白替换 4 例失败，均已恢复。
+- [x] **Step 3：提交** `test(step02): piResolve 与 pi 路径规则的防漂移测试`。 — 2026-11-25：403b595、78e6af3、eafcea9；任务审查 Approved，ponytail 返修 2 轮后复审通过；全量 520 通过（第 1 轮后）。
 
 ### Task 3：模型请求结束事件（D3）
 
