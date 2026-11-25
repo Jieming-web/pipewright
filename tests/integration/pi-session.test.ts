@@ -8,6 +8,7 @@ import type { StartTask } from "../../packages/engine-protocol/src/index.js";
 import type { FinalDecision } from "../../packages/engine-runner/src/intercept-coordinator.js";
 import { loadModelRuntime } from "../../packages/engine-runner/src/model-config.js";
 import { createPiSession, PI_BUILTIN_TOOLS, PI_THINKING_LEVELS } from "../../packages/engine-runner/src/pi-session.js";
+import { importPiInternal } from "../helpers/pi-internal.js";
 import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
 
 // 与 runner 进程同一设置（engine.md 外部程序与离线）：本文件在进程内建会话，缺 rg 时也不得下载到 ~/.pi
@@ -239,8 +240,7 @@ describe.sequential("createPiSession", () => {
   });
 
   it("runner 自带的内置工具名单与 pi 内部 allToolNames 一致（pi 未导出它，按文件路径导入，防升级漂移）", async () => {
-    const pkg = realpathSync(join(import.meta.dirname, "../../packages/engine-runner/node_modules/@earendil-works/pi-coding-agent"));
-    const { allToolNames } = await import(join(pkg, "dist/core/tools/index.js"));
+    const { allToolNames } = await importPiInternal("dist/core/tools/index.js");
     expect([...PI_BUILTIN_TOOLS].sort()).toEqual([...allToolNames].sort());
   });
 
