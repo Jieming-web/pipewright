@@ -2156,3 +2156,5 @@ index eb3777b..0e2002b 100644
    it("清理失败（诊断文件目录不存在）：run.failed 带清理原因，以 1 退出", async () => {
      const r = await launch([{ kind: "text", chunks: ["ok"] }], ["--record-pi-events", p("no-such-dir/raw.jsonl")]);
 ```
+
+**更正（2026-11-25，追加）**：上一节"T2 修法"第 3 条的测试位置有误。`runner-process.test.ts` 的 346/356/380 是 `d73246c` 的行号，在 `be5a171` 上是 347/357/381；还漏了 `t1-real-run.test.ts:415`（`recordDir: no-such-dir`），受牵连的测试共 8 条。行号会随改动漂移，T2 开工时用 `git grep -n "no-such-dir\|mkfifo" -- tests/integration` 重新定位。
