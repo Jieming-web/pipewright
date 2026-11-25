@@ -156,11 +156,11 @@
 - `Policy(cfg: PolicyConfig)`，`PolicyConfig(tools, danger_patterns, max_tool_calls)`；`decide(req) -> Decision`；`exhausted: bool`（计数超限后返回 `block` 并置为 True，调用方经 `run_task` 的 `should_cancel` 取消任务）。
 - `fake-openai-cli.ts <turns.json> [--host 0.0.0.0]`：stdout 打印 `FAKE_LISTENING <baseUrl>`。
 
-- [ ] **Step 1：建 venv**：`/usr/local/bin/python3.13 -m venv eval/.venv && eval/.venv/bin/pip install -r eval/requirements.txt`。
-- [ ] **Step 2：写失败测试**。
+- [x] **Step 1：建 venv**：`/usr/local/bin/python3.13 -m venv eval/.venv && eval/.venv/bin/pip install -r eval/requirements.txt`。 — 2026-11-25：`eval/.venv/bin/python --version` → Python 3.13.1；`pip freeze` 与 requirements.txt 逐行一致（只锁 pytest 及其依赖）。
+- [x] **Step 2：写失败测试**。
   - `test_policy.py`：D8 每条规则各一个命中样例和一个不该命中的样例，例如 `grep -rn "curl" .`、`echo git pushd`、`ls; curl x`（命中）；`powershell` 被拒；第 101 次调用被拒，且 `exhausted` 为 True。
   - `test_engine_client.py`：本机用 node 跑桥 + runner + 假模型，不用 Docker。正常结束拿到 `run.settled`，`seq` 从 1 开始连续；拦截被拒时工具不执行；`timeout_s=1` 配慢流，得到 `timed_out=True` 和 `run.cancelled`；假桥（一个忽略 stdin、永不输出的 Python 脚本）在 `timeout_s + grace_s + 2` 秒内返回，且 `kill` 被调用过；桥进程被杀时得到 `failure`，不挂起。
-- [ ] **Step 3：运行确认失败**：`eval/.venv/bin/pytest eval/tests -q`；**Step 4：实现**；**Step 5：通过后提交** `feat(step02): Python 引擎客户端与评测拦截策略`。
+- [x] **Step 3：运行确认失败**：`eval/.venv/bin/pytest eval/tests -q`；**Step 4：实现**；**Step 5：通过后提交** `feat(step02): Python 引擎客户端与评测拦截策略`。 — 2026-11-25：80f1959、5dc3a93（作者决定：should_cancel、D8 补 & 与引号规则，计划 b9983f8）、c24da09（rm 规则带引号）、efd5f33（审查返修：EOF 后不退出也记 failure、缺配对字段按协议错误）；D8 已知不拦补全见 443996d。`eval/.venv/bin/pytest eval/tests -q` → 81 passed（控制会话复跑，无残留进程）；`pnpm test` 531 通过（80f1959 时，之后未改 TS）。
 
 ### Task 6：运行包与启动脚本
 
