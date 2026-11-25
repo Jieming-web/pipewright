@@ -127,9 +127,9 @@
 
 **Interfaces:** 事件 `model.request.finished`（进度类）：`stopReason: "stop" | "toolUse" | "length" | "error" | "aborted"`；`usage: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number } | null`（pi 没给用量或全部为 0 时为 `null`，表示未知；`reasoning` 是 `output` 的子集，pi 没给时为 0）；`errorMessage?: string`（只在 `stopReason` 为 `error` 时出现，原样截断到 500 字符）。来源是 pi 的每条 `role=assistant` 的 `message_end`。
 
-- [ ] **Step 1：改契约**：agent-events.md 的事件表和 pi 映射表各加一行，并加一条例子；engine.md 2.3 写明：清理过程中不再发布进度事件，唯一的例外是 `model.request.finished`，它在终止事件之前发出；runner 被强杀时，正在进行的请求不会有这个事件。提交 `docs(step02): 契约新增模型请求结束事件`。
-- [ ] **Step 2：写失败测试**：转换器用现有样本 `retry.jsonl`、`retry-drop.jsonl`（失败尝试 `stopReason: "error"`，各一条）、`tool-call-then-text.jsonl`（`toolUse` 和 `stop` 各一条，用量与样本一致）；用量全为 0 → `usage: null`。用 T1 第 3 次真实录制 `real-qwen-api-run3-thinking-send-notice.jsonl` 断言：每条有用量的事件 `reasoning > 0` 且 `reasoning ≤ output`，`input + output` 等于录制中的 `totalTokens`（证明推理 token 已含在 `output` 里，花费不能再加 `reasoning`）。schema 拒绝未知的 `stopReason`。集成测试：慢流中途取消，事件序列里有一条 `stopReason: "aborted"` 的 `model.request.finished`，并且排在 `run.cancelled` 之前。
-- [ ] **Step 3：运行确认失败**；**Step 4：实现**；**Step 5：全量验证并提交** `feat(step02): 模型请求结束事件`。
+- [x] **Step 1：改契约**：agent-events.md 的事件表和 pi 映射表各加一行，并加一条例子；engine.md 2.3 写明：清理过程中不再发布进度事件，唯一的例外是 `model.request.finished`，它在终止事件之前发出；runner 被强杀时，正在进行的请求不会有这个事件。提交 `docs(step02): 契约新增模型请求结束事件`。 — 2026-11-25：249c50b；映射表矛盾行在 aefecb1 拆分更正。
+- [x] **Step 2：写失败测试**：转换器用现有样本 `retry.jsonl`、`retry-drop.jsonl`（失败尝试 `stopReason: "error"`，各一条）、`tool-call-then-text.jsonl`（`toolUse` 和 `stop` 各一条，用量与样本一致）；用量全为 0 → `usage: null`。用 T1 第 3 次真实录制 `real-qwen-api-run3-thinking-send-notice.jsonl` 断言：每条有用量的事件 `reasoning > 0` 且 `reasoning ≤ output`，`input + output` 等于录制中的 `totalTokens`（证明推理 token 已含在 `output` 里，花费不能再加 `reasoning`）。schema 拒绝未知的 `stopReason`。集成测试：慢流中途取消，事件序列里有一条 `stopReason: "aborted"` 的 `model.request.finished`，并且排在 `run.cancelled` 之前。 — 2026-11-25：实现前 7 个失败；run3 断言按缓存口径写为 input+cacheRead+output===totalTokens（控制会话据 T2-0 推广），并保留为作者要求的计费口径证据。
+- [x] **Step 3：运行确认失败**；**Step 4：实现**；**Step 5：全量验证并提交** `feat(step02): 模型请求结束事件`。 — 2026-11-25：(Step 3–5) 9a0c26e、aefecb1；StopReasonSchema 单一来源；全量 526 通过、typecheck/build/check:pi 通过；任务审查 + ponytail 返修 1 轮后复审通过。
 
 ### Task 4：stdio 桥（D2）
 
