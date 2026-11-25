@@ -14,7 +14,7 @@ export function createRawEventRecorder(path: string): { record(raw: unknown): vo
         error ??= e;
       }
     },
-    // 先报最早的错误（如打开时的 ENOENT），而不是随后的 end-after-destroy
-    close: () => new Promise<void>((ok, fail) => out.end((e?: Error | null) => ((error ?? e) ? fail(error ?? e) : ok()))),
+    // 先报最早的错误（如打开时的 ENOENT），而不是随后的 end-after-destroy；'error' 事件要等流销毁完成才发出，此前最早的错误只在 out.errored 里
+    close: () => new Promise<void>((ok, fail) => out.end((e?: Error | null) => { const first = error ?? out.errored ?? e; return first ? fail(first) : ok(); })),
   };
 }
