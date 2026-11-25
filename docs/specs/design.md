@@ -565,6 +565,7 @@ bug_triage：agent 在隔离工作区编写复现测试，控制器在基准提�
 - `decisions/014-pi-package-choice.md`：引擎用 pi-coding-agent，非 agent 的模型调用用 pi-ai
 - `decisions/015-model-selection.md`：模型选型
 - `decisions/016-repair-loop-and-rsi-refinements.md`：bug 修复循环与 RSI 细化（补充 013）
+- `decisions/017-main-model-without-selection.md`：主模型直接定为 Qwen3.6-35B-A3B，Kimi 经百炼调用（部分取代 015）
 
 计划中的决策记录：子 agent 只读、深度为 1。
 

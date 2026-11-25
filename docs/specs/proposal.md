@@ -138,7 +138,7 @@ R1 至 R15 的全部内容。具体工作项见 `tasks.md`。
   - **2026 年 11 月底**：完成 T1–T5（里程碑 v0.5），写进简历、投递寒假实习。
   - 之后按 `tasks.md` 的依赖推进，不预设每个任务的完成日期。
 - **语言**：后端（编排层、引擎适配器、会话服务、策略服务、审批、沙箱管理）与工作台前端都用 TypeScript；微调与评测用 Python。决策见 `decisions/003-typescript-as-main-language.md`。
-- **模型**：全部使用国内厂商的模型（Claude Code 对照组除外）。开发与日常评测用**可本地部署的 Qwen 开源编码模型的 API 版本**（候选 Qwen3.6-35B-A3B、Qwen3-Coder-Next，T2 用评测选定）；产品默认将同一模型部署在本地；本地小模型用 Qwen 3.x 的 4B 左右指令模型；评测对照用 Kimi K2.6；合成数据生成用 DeepSeek V4.x。所有模型锁定版本。决策见 `decisions/015-model-selection.md`。
+- **模型**：全部使用国内厂商的模型（Claude Code 对照组除外）。开发与日常评测用**可本地部署的 Qwen 开源编码模型的 API 版本**（Qwen3.6-35B-A3B；原定在 T2 与 Qwen3-Coder-Next 比较后选定，因后者在百炼不可用改为直接使用，见 `decisions/017-main-model-without-selection.md`）；产品默认将同一模型部署在本地；本地小模型用 Qwen 3.x 的 4B 左右指令模型；评测对照用 Kimi K2.6（经百炼调用）；合成数据生成用 DeepSeek V4.x。所有模型锁定版本。决策见 `decisions/015-model-selection.md`、`017-main-model-without-selection.md`。
 - **作者背景**：前后端基础偏弱，熟悉 Agent 概念与评测，已有 Agent Harness 经验。
 
 ## 6. 待确认问题

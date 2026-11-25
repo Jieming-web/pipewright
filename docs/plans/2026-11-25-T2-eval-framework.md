@@ -2,18 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 执行方式遵守 `docs/workflow.md` 和作者指示，不因本行自行启动多 agent 编排。
 
-**Goal:** 一条命令在 Docker 中跑完一个版本化的 SWE-bench 任务集：Python 评测框架经统一引擎接口驱动容器内的 pi runner，在新容器中评分，输出成功率（均值、波动与置信区间）、token、轮数、耗时、失败类型、花费和完整轨迹；据此选定主模型并产出开发集基线报告。
+**Goal:** 一条命令在 Docker 中跑完一个版本化的 SWE-bench 任务集：Python 评测框架经统一引擎接口驱动容器内的 pi runner，在新容器中评分，输出成功率（均值、波动与置信区间）、token、轮数、耗时、失败类型、花费和完整轨迹；产出 Qwen3.6-35B-A3B 与 Kimi K2.6 的开发集基线报告。
 
 **Architecture:** 每个任务、每次重复一个容器，镜像用 SWE-bench 官方实例镜像（Mac 冒烟用 arm64 镜像）。runner、Linux 版 node、rg、fd 和启动脚本打成运行包，只读挂载到容器 `/fp`。评测框架用 `docker exec -i` 运行启动脚本：脚本先激活 testbed 的 conda 环境，再启动 stdio 桥；桥启动 runner，并把 WebSocket 帧与 stdin/stdout 的 JSON 行互转，所以 runner 仍只监听容器内 127.0.0.1。任务容器只接 Docker internal 网络，模型请求经旁路的模型代理转发，API key 只在代理容器里。token 与轮数来自新增的「模型请求结束」协议事件。agent 结束后取出补丁，用 swebench 5.x 在新容器里评分。正式评测在 x86 服务器上克隆本仓库后运行同一条命令。
 
-**Tech Stack:** TypeScript（runner、stdio 桥、模型代理，沿用 T1 的 pnpm 工作区与 vitest）；Python 3.13 venv（`eval/`：pytest、swebench 5.x、PyYAML）；Docker（本机 Docker Desktop 29.3 arm64；x86 云服务器正式评测）；Qwen API（百炼）、Kimi K2.6 API。T2 不跑本地模型（作者 2026-11-25 决定，见 tasks.md T2 验收 6）。
+**Tech Stack:** TypeScript（runner、stdio 桥、模型代理，沿用 T1 的 pnpm 工作区与 vitest）；Python 3.13 venv（`eval/`：pytest、swebench 5.x、PyYAML）；Docker（本机 Docker Desktop 29.3 arm64；x86 云服务器正式评测）；Qwen3.6-35B-A3B 与 Kimi K2.6，都经百炼 API 调用（ADR 017）。T2 不跑本地模型（作者 2026-11-25 决定，见 tasks.md T2 验收 6）。
 
 **Spec:**
 - `docs/workflow.md`：3.2–3.6、4.1–4.6。
 - `docs/specs/tasks.md`：T2，验收 1–10（验收 1 含留出集暂缓与重新启用条件，验收 6 含不跑本地模型，均为作者 2026-11-25 决定）；T2「T1 遗留」M3、M5。
 - `docs/specs/design.md`：3.11 评测（全节，含 2026-11-25 追加的远程运行与网络两段）、5.1、5.2；第 2 节统一引擎接口。
 - `docs/specs/proposal.md`：R2、R4、S1、S8；第 5 节模型与硬件。
-- `docs/specs/decisions/005`、`011`、`015`、`016`（运行快照）。
+- `docs/specs/decisions/005`、`011`、`015`、`016`（运行快照）、`017`（主模型直接用 Qwen3.6-35B-A3B，不做选型；Kimi 经百炼调用）。
 - 契约：`docs/specs/contracts/engine.md`（本任务修改：M3 打开时限、取消竞速、stdio 桥传输、停止阶段的模型请求结束事件）、`docs/specs/contracts/agent-events.md`（本任务新增 `model.request.finished`）。
 - 前置代码：`packages/engine-runner`（`pi-engine.ts`、`pi-event-converter.ts`、`runner-server.ts` 的 `STOP_BACKSTOP_MS`）、`packages/engine-client`（`spawnRunner`、`STOP_TIMEOUT_MS`）、`scripts/check-secrets.ts`、`tests/helpers/fake-openai-server.ts`；T1 实现说明「推迟到 T2：M3」及其更正，以及收尾节中推迟到 T2 的「模型请求结束」事件（2205、2448、2456 行附近）。
 - 计划审查：2026-11-25 子 agent 审查（资深 agent 工程师视角）的"必须改"与"建议改"全部采纳，作者另补 8 条（下文标「作者补」）；同日作者第二轮意见（预算取消、续跑一致性、推理 token、复用选型记录、Kimi 2 次等）经复核后采纳（下文标「作者补 2」）。
@@ -24,17 +24,17 @@
 |---|---|
 | D1 | 任务容器不能上网，也访问不到宿主机：只接 Docker `--internal` 网络。模型请求发给旁路的模型代理容器，代理只放行 `POST /<route>/chat/completions`，把 `model` 改写为该路由固定的模型 ID，删除联网搜索类参数（`enable_search`、`search_options`、`web_search`、`tools` 里 `type` 不是 `function` 的条目），并由代理加 API key。评分容器不运行 agent，使用默认网络。已写进 design 3.11。 |
 | D2 | Python 经 stdio 桥连 runner：`docker exec -i <容器> /fp/bin/fp-entry <runner 参数>`，一行一条协议消息，消息本身不变。关停不依赖 stdin EOF：Python 侧设硬截止，最终兜底是删除容器。 |
-| D3 | 新增契约事件 `model.request.finished`：每次模型请求结束都发，包括失败和被中止的请求，停止阶段也发（在终止事件之前）；用量缺失或全为 0 时为 `null`，报告中显示「未知」。用量带 `reasoning`，它是 `output` 的子集（T1 第 3 次录制：`totalTokens = input + output`，`reasoning ≤ output`），只用于单列展示；花费只按 `output` 计，不再加 `reasoning`。T1 的原始录制只作诊断，不再用来统计。 |
+| D3 | 新增契约事件 `model.request.finished`：每次模型请求结束都发，包括失败和被中止的请求，停止阶段也发（在终止事件之前）；用量缺失或全为 0 时为 `null`，报告中显示「未知」。用量带 `reasoning`，它是 `output` 的子集（T1 第 3 次录制：无缓存时 `totalTokens = input + output`；T2-0 实测：有缓存命中时 `totalTokens = input + cacheRead + output`；两次都是 `reasoning ≤ output`），只用于单列展示；花费只按 `output` 计，不再加 `reasoning`。T1 的原始录制只作诊断，不再用来统计。 |
 | D4 | 用 swebench 5.x 与 `SWE-bench/SWE-bench_Verified` 数据集（自带 `image`、`eval_script` 等字段）。评分在新建的同镜像容器里进行：沿用 swebench 的补丁回退链，打补丁后跑测试，设测试超时。不信任 agent 容器里的任何结果。 |
-| D5 | 开发集 40 个、选型子集 20 个（从开发集按仓库分层抽）。两个 Qwen 候选每题重复 3 次；Kimi K2.6 在开发集上重复 2 次（作者补 2：它只是对照，不参与选型；n=2 的样本标准差参考价值低，Kimi 的波动以按题 bootstrap 区间为准，报告注明两组重复次数不同）。成功率报告每次重复的均值与样本标准差（ddof=1），再加一个按题 bootstrap 的 95% 置信区间；报告写明 20 题能分辨的最小差距。 |
+| D5 | 开发集 40 个。Qwen3.6-35B-A3B 每题重复 3 次；Kimi K2.6 重复 2 次（作者补 2：它只是对照；n=2 的样本标准差参考价值低，Kimi 的波动以按题 bootstrap 区间为准，报告注明两组重复次数不同）。成功率报告每次重复的均值与样本标准差（ddof=1），再加一个按题 bootstrap 的 95% 置信区间；报告写明 40 题开发集能分辨的最小差距（供以后比较改动时用）。不做主模型选型（ADR 017）。 |
 | D6 | 留出集暂缓（tasks.md T2 验收 1），T2 不建、不跑；本计划只在 Task 0 记录核实结果。 |
-| D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别按模型配置，Qwen3-Coder-Next 只有非思考模式，设为 `off`；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
+| D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
 | D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`$(`、反引号之后）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
 | D9 | 本机用 `/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
 | D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error` 与 `rate_limited`（429）最多重试 2 次，仍失败就从分母中排除并逐条列出；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
-| D11 | 选型决策规则开跑前写进选型报告：在同一批 20 题上做逐题配对比较，只用两边都有有效结果的题（任一边被排除的题两边都不计，并列出）。差值的 bootstrap 95% 置信区间不含 0，就选成功率高的；含 0，就选花费低的；花费差距在 10% 以内时，选工具调用出错率低的；仍分不出时，选 Qwen3.6-35B-A3B（015 的倾向）。结论限定：两个候选的思考设置不同（Qwen3.6 为 `low`，Qwen3-Coder-Next 只有非思考模式），比较的是「模型加它可用的设置」，不是单纯比模型，选型报告的结论必须写明这一点。 |
+| D11 | 已删除：不做主模型选型（作者 2026-11-25，ADR 017）。 |
 
-**需要作者准备**：Kimi K2.6 的 API key（Moonshot 开放平台，写进根目录 `.env`，变量名 `MOONSHOT_API_KEY`）；Qwen3-Coder-Next 的可用渠道（T1 时当前百炼 key 调不了，Task 0 复核）；x86 服务器到 Task 15 才租，租之前先报价。
+**需要作者准备**：x86 服务器到 Task 15 才租，租之前先报价。两个模型都用 `.env` 里的 `DASHSCOPE_API_KEY`，T2 不使用 `MOONSHOT_API_KEY`（ADR 017）。
 
 ## Global Constraints
 
@@ -76,7 +76,7 @@
 | 12 单任务运行 | 75 分钟 | 5、9、10 | 2、3、4 |
 | 13 汇总、花费、并发与一条命令 | 90 分钟 | 11、12 | 2、5 |
 | 14 Mac 冒烟与花费校准 | 60 分钟 | 13 | 3、7、8、9 |
-| 15 远程 x86、任务集定版与主模型选型 | 120 分钟＋运行 | 14、作者同意租用 | 1、9、10 |
+| 15 远程 x86 与任务集定版 | 90 分钟＋运行 | 14、作者同意租用 | 1、9 |
 | 16 开发集基线与报告 | 60 分钟＋运行 | 15 | 6 |
 | 17 收尾关卡 | 60 分钟 | 以上全部 | 1–10 逐条核对 |
 
@@ -134,7 +134,7 @@
 
 ### Task 4：stdio 桥（D2）
 
-**Files:** Create `packages/engine-client/src/stdio-bridge.ts`、`tests/integration/stdio-bridge.test.ts`；Modify `docs/specs/contracts/engine.md`（新增「传输：stdio 桥」与变更记录）、`packages/engine-client/package.json`（加 `files: ["dist"]`，供 Task 6 的 deploy 使用）。
+**Files:** Create `packages/engine-client/src/stdio-bridge.ts`、`tests/integration/stdio-bridge.test.ts`；Modify `docs/specs/contracts/engine.md`（新增「传输：stdio 桥」与变更记录）。
 
 **Interfaces:**
 - 命令行：`node stdio-bridge.js --runner <runner main.js> -- <runner 参数…>`。
@@ -165,14 +165,14 @@
 
 ### Task 6：运行包与启动脚本
 
-**Files:** Create `scripts/build-eval-bundle.sh`、`eval/runtime/fp-entry.sh`、`eval/tests/test_bundle.py`；Modify `packages/engine-runner/package.json`（加 `files: ["dist"]`）。
+**Files:** Create `scripts/build-eval-bundle.sh`、`eval/runtime/fp-entry.sh`、`eval/tests/test_bundle.py`。
 
 **Interfaces:**
 - `scripts/build-eval-bundle.sh <linux-x64|linux-arm64>` 生成 `eval/.cache/bundle-<arch>/`，包含：
   - `node/`：node 24 官方 Linux 发行包，版本与 sha256 写死在脚本里并校验；
   - `bin/rg`、`bin/fd`：官方发行包，同样校验 sha256；
   - `bin/fp-entry`：即 `fp-entry.sh`；
-  - `app/runner/`、`app/client/`：两次 `pnpm deploy --legacy --prod` 的产物；
+  - `app/runner/`、`app/client/`：先 `pnpm -r build`，再两次 `pnpm deploy --legacy --prod` 的产物（T2-0 实测：先构建时不需要 `files` 字段，`dist/` 会被带上）；
   - `VERSION`：内容为 `<git commit> pi@1.5.1 node@<版本>`。
   - 下载缓存放在 `eval/.cache/downloads/`；sha256 不符时脚本失败退出。
 - `fp-entry.sh`：存在 `/opt/miniconda3/bin/activate` 时，先执行它并 `conda activate testbed`（失败就退出 3）；然后 `export PATH=/fp/bin:/fp/node/bin:$PATH`，最后 `exec node /fp/app/client/dist/stdio-bridge.js --runner /fp/app/runner/dist/main.js -- "$@"`。pi 的子 shell 会继承这些环境变量。
@@ -245,7 +245,7 @@
 
 ### Task 11：任务集与金标准预检（验收 1，作者补 8）
 
-**Files:** Create `eval/forgepilot_eval/taskset.py`、`eval/tests/test_taskset.py`、`eval/tasksets/smoke-v1.json`。开发集与选型子集在 Task 15 定版。
+**Files:** Create `eval/forgepilot_eval/taskset.py`、`eval/tests/test_taskset.py`、`eval/tasksets/smoke-v1.json`。开发集在 Task 15 定版。
 
 **Interfaces:**
 - `stratified_sample(rows: list[dict], n: int, seed: int) -> list[str]`：按 `repo` 分层，每个仓库至少 1 个；其余名额按仓库条数比例分配，余数按种子随机分；仓库内按种子随机抽；结果按 `instance_id` 排序。`n` 大于可选条数时抛错。
@@ -259,7 +259,7 @@
 
 ### Task 12：单任务运行（验收 2、3、4，作者补 6、7）
 
-**Files:** Create `eval/forgepilot_eval/{run_task,config}.py`、`eval/configs/{qwen3.6,qwen3-coder-next,kimi-k2.6}.yaml`、`eval/prompts/swe-v1.txt`、`eval/tests/test_run_task.py`。
+**Files:** Create `eval/forgepilot_eval/{run_task,config}.py`、`eval/configs/{qwen3.6,kimi-k2.6}.yaml`（两者的 `base` 都是百炼端点、`keyEnv` 都是 `DASHSCOPE_API_KEY`）、`eval/prompts/swe-v1.txt`、`eval/tests/test_run_task.py`。
 
 **Interfaces:**
 - `EvalConfig`（从 YAML 读取）字段：
@@ -312,10 +312,8 @@
   - 按题 bootstrap 95% 置信区间：先算每题在各次重复中的平均成功，再对题目重抽样 10000 次，种子固定；
   - 每次运行的 token、轮数、耗时：均值与中位数；
   - `failure_type` 计数（含 `rate_limited`、`budget_cancelled`）、排除清单、「未运行」清单；状态为 `complete` / `incomplete`（有 `budget_cancelled` 或未运行）/ `invalid`（D10 的 5% 阈值），未完成与无效分开报告。
-- `paired_diff(summary_a, summary_b) -> PairedDiff(diff, ci_low, ci_high, used: list[str], dropped: list[str])`：同一批题的逐题配对 bootstrap，只用两边都有有效结果的题，其余列进 `dropped`。
-- `merge_records(*record_sets) -> list[TaskRecord]`：合并多次评测的记录（Task 16 复用选型记录用）；所有记录的 `config_hash`、`bundle_version` 必须相同，同一实例的 `image_digest` 必须相同，否则抛错并列出不一致处。
 - `reconcile_proxy(records, proxy_logs) -> dict`：代理记下的请求总数与 `model.request.finished` 总数对账（按整次评测），差值写进 summary；被强杀的运行没有事件，差值不为 0 时列出这些运行。
-- `min_detectable_diff(n_tasks, repeats, p) -> float`：按配对 bootstrap 的半宽估计（用冒烟或选型数据的 p），写进报告。
+- `min_detectable_diff(summary) -> float`：用按题 bootstrap 区间的半宽估计这批题能分辨的最小差距，写进报告。
 - 命令：`eval/.venv/bin/python -m forgepilot_eval run --config <yaml> --taskset <json> --repeats N --out eval/runs/<名字> --budget <元> [--workers K] [--resume] [--yes]`。
   1. 先打印预计花费和预算，等确认（`--yes` 跳过）；
   2. 输出目录已存在且没有 `--resume` 时拒绝运行；带 `--resume` 时，先核对已有记录的 `config_hash`、`taskset_version`、`taskset_sha256`、`bundle_version` 与当前一致，任何一项不一致就拒绝并列出（作者补 2），一致才跳过已有 `record.json` 的运行；`--budget` 不参与核对，续跑时可以提高；
@@ -329,8 +327,6 @@
   - 3 次重复的成功率为 [0.5, 0.25, 0.75] 时，均值 0.5，样本标准差 0.25；
   - bootstrap：全对时区间为 [1, 1]；同一种子结果相同；
   - D10：`patch_apply_failed` 在分母里；3 个 `infra_error` 排除后，排除比例超过 5% 时状态为 `invalid`；有 `budget_cancelled` 或未运行时状态为 `incomplete`，二者都不进分母并被列出；
-  - `paired_diff` 在两组完全相同时区间包含 0；一边被排除的题出现在 `dropped`，不参与计算；
-  - `merge_records`：`bundle_version` 不同时抛错；
   - `actual_cost`：用量 `{output: 100, reasoning: 80}` 只按 100 计输出；
   - `reconcile_proxy`：代理 5 次、事件 4 次时差值为 1；
   - `estimate_cost` 与 `actual_cost` 的数值样例；
@@ -348,15 +344,14 @@
   - 容器内 `curl` 外网和访问 `host.docker.internal` 都失败；
   - `docker top` 里能看到 agent 的命令，而宿主机上没有对应的进程（验收 3；Docker Desktop 下命令跑在虚拟机里）；
   - `proxy-fields.json` 与配置一致；`check-secrets` 干净。
-- [ ] **Step 3：校准**：用这次的每次运行 token（取 p90）更新三个配置文件的 `assumed_tokens_per_run`，`source` 写为 `smoke-<日期> p90`（作者补 4）。
+- [ ] **Step 3：校准**：用这次的每次运行 token（取 p90）更新两个配置文件的 `assumed_tokens_per_run`，`source` 写为 `smoke-<日期> p90`（作者补 4）。
 - [ ] **Step 4：提交** `docs(step02): Mac 冒烟与花费校准`。
 
-### Task 15：远程 x86、任务集定版与主模型选型（验收 1、9、10）
+### Task 15：远程 x86 与任务集定版（验收 1、9）
 
 - [ ] **Step 1：报价**：写给作者以下内容，**作者同意后才租**：
   - 金标准预检的时长：60 个候选；
-  - 选型的 token 花费：20 题 × 2 个候选 × 3 次，按校准后的 p90 计；
-  - 开发集基线的预估：供 Task 16 使用；
+  - 开发集基线的 token 花费：Qwen 40 题 × 3 次、Kimi 40 题 × 2 次，按校准后的 p90 计；
   - 服务器规格与价格：只需 CPU，建议 16 vCPU / 64 GB / 500 GB 盘；按小时价格、`--workers` 取值和预计时长；
   - 每次运行的 `--budget`。
 - [ ] **Step 2：服务器准备**（作者决定）：
@@ -365,25 +360,17 @@
   - `.env` 经 scp 传上去，并 `chmod 600`；
   - 所有评测在 tmux 里运行；结果用 `rsync -a` 拉回本机 `eval/runs/`；
   - 先跑 `smoke-v1` 的 x86 版本，确认同一条命令可用（验收 9）。
-- [ ] **Step 3：任务集定版**：在服务器上执行 `build_taskset`，生成 `dev-v1`（40 个，种子 20261125，候选 60）和 `select-v1`（从 dev-v1 中分层抽 20）。预检结果和金标准 blob 在这一步一起写进任务集文件（x86 上算出），不拆开。两个文件拉回本机提交；开发集规模写进实现说明（验收 1）。
-- [ ] **Step 4：选型**：先把 D11 的决策规则写进 `docs/evals/<日期>-T2-model-selection.md`（模版 `docs/templates/eval.md`），再开跑。两个候选各在 `select-v1` 上跑 3 次。报告的指标：
-  - 成功率（均值 ± 样本标准差，以及 bootstrap 区间）、逐题配对差值区间、20 题能分辨的最小差距；
-  - 工具调用出错率：只计调用层面的错误，即参数校验失败、未知工具、edit 找不到原文；bash 非零退出和策略拦截各自单列；
-  - token、花费、`rate_limited` 次数；
-  - 配对比较实际使用和丢弃的题；
-  - 按 D11 得出的结论，以及思考设置不同这一结论限定。
-- [ ] **Step 5：选型后对账**（作者补 2，必须在 Task 16 报价之前）：作者在百炼控制台查选型期间的实际账单，与 `actual_cost` 对比，差异与原因（缓存折扣、推理 token 计价等）写进选型报告；差异超过 10% 时先修正计费口径，再给 Task 16 报价。
-- [ ] **Step 6：记决定**：新写一份决策记录，记录选定的主模型（ADR 只追加，不改 015 正文），同时记下 T1 遗留的偏离：API 模型没有带日期的快照，版本锁定只能做到模型 ID。作者确认后提交。
+- [ ] **Step 3：任务集定版**：在服务器上执行 `build_taskset`，生成 `dev-v1`（40 个，种子 20261125，候选 60）。预检结果和金标准 blob 在这一步一起写进任务集文件（x86 上算出），不拆开。文件拉回本机提交；开发集规模写进实现说明（验收 1）。
 
 ### Task 16：开发集基线与报告（验收 6，作者补 4）
 
-- [ ] **Step 1：报价并经作者同意**：选定的 Qwen 主模型复用它在 `select-v1` 上的 3 次记录，只补跑 `dev-v1` 中其余 20 题 × 3 次；Kimi K2.6 跑 `dev-v1` 40 题 × 2 次（作者补 2）。每组设 `--budget`。
-- [ ] **Step 2：运行**：在服务器上，每组一条命令（Qwen 用一个只含其余 20 题的任务集 `dev-v1-rest`，从 dev-v1 派生，记下派生关系）。
-- [ ] **Step 2b：合并**：用 `merge_records` 合并 Qwen 的选型记录与补跑记录，`config_hash`、`bundle_version`、`image_digest` 不一致就停下报告，不合并。
-- [ ] **Step 3：对账**：作者在百炼和 Moonshot 控制台查到实际账单，与 `actual_cost` 对比；差异和可能的原因（缓存折扣、思考 token 计价等）写进报告。
-- [ ] **Step 4：写报告** `docs/evals/<日期>-T2-baseline.md`，内容包括：
-  - 两组的成功率（均值、样本标准差、bootstrap 区间）、token、轮数、耗时、失败类型（含 `rate_limited`）、排除清单与是否无效、花费与对账结果；
-  - 注明：Qwen 结果由选型与补跑两批合并（时间不同，API 背后的模型可能已更新），Kimi 只跑 2 次，两组重复次数不同；开发集分数可能偏高；T2 没有留出集数字，留出集重新启用后要重跑本基线（tasks.md T2 验收 1）；本地模型基线在 T13；
+- [ ] **Step 1：Qwen 组**：报价经作者同意后，在服务器上跑 `dev-v1` 40 题 × 3 次（`eval/configs/qwen3.6.yaml`，设 `--budget`）。
+- [ ] **Step 2：对账**（作者补 2，必须在 Kimi 组之前）：作者在百炼控制台查 Qwen 组期间的实际账单，与 `actual_cost` 对比，差异与原因（缓存折扣、推理 token 计价等）写进报告；差异超过 10% 时先修正计费口径，再给 Kimi 组报价。
+- [ ] **Step 3：Kimi 组**：报价经作者同意后，跑 `dev-v1` 40 题 × 2 次（`eval/configs/kimi-k2.6.yaml`，设 `--budget`），跑完同样对账。
+- [ ] **Step 4：写报告** `docs/evals/<日期>-T2-baseline.md`（模版 `docs/templates/eval.md`），内容包括：
+  - 两组的成功率（均值、样本标准差、bootstrap 区间）、40 题能分辨的最小差距、token、轮数、耗时、失败类型（含 `rate_limited`）、排除清单、评测状态（完整 / 未完成 / 无效）、花费与对账结果；
+  - 工具调用出错率：只计调用层面的错误，即参数校验失败、未知工具、edit 找不到原文；bash 非零退出和策略拦截各自单列；
+  - 注明：主模型按 ADR 017 直接选定，没有经过选型；Kimi 只跑 2 次，两组重复次数不同；开发集分数可能偏高；T2 没有留出集数字，留出集重新启用后要重跑本基线（tasks.md T2 验收 1）；本地模型基线在 T13；
   - 写明任务集版本、配置 hash、运行包版本、镜像 digest 与运行快照的核对结果。
 - [ ] **Step 5：提交** `docs(step02): 开发集基线报告`。
 
