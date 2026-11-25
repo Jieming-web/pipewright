@@ -2,9 +2,34 @@
 import re
 from dataclasses import dataclass
 
-# 命令位置：行首，或 ;、&&、||、|、$(、反引号之后（D8）；命令词之后不能紧跟词字符、. 或 -（curl 不命中 curlie、ssh-keygen）
-_START = r"(?:^|;|&&|\|\||\||\$\(|`)\s*"
+# 命令词之后不能紧跟词字符、. 或 -（curl 不命中 curlie、ssh-keygen）
 _END = r"(?![\w.-])"
+
+
+def command_positions(cmd: str) -> list[int]:
+    """D8 的命令位置：开头，或 ;、&、|、换行、$(、开反引号之后（&&、|| 由单字符覆盖）。
+    单引号里都不算；双引号里只有 $( 与开反引号算（与 bash 一致）。"""
+    positions, quote, ticks, i = [0], None, 0, 0
+    while i < len(cmd):
+        c = cmd[i]
+        if quote == "'":
+            quote = None if c == "'" else quote
+        elif c == "\\":
+            i += 1  # 转义的下一个字符不是分隔符也不是引号
+        elif c == "`":
+            ticks += 1
+            if ticks % 2:
+                positions.append(i + 1)
+        elif cmd.startswith("$(", i):
+            positions.append(i + 2)
+        elif quote == '"':
+            quote = None if c == '"' else quote
+        elif c in "'\"":
+            quote = c
+        elif c in ";&|\n":
+            positions.append(i + 1)
+        i += 1
+    return positions
 
 
 @dataclass(frozen=True)
@@ -19,7 +44,7 @@ class Policy:
         self.cfg = cfg
         self.calls = 0
         self.exhausted = False  # 超限后为 True，由调用方取消任务
-        self._danger = [(p, re.compile(_START + f"(?:{p})" + _END, re.M)) for p in cfg.danger_patterns]
+        self._danger = [(p, re.compile(rf"\s*(?:{p}){_END}")) for p in cfg.danger_patterns]
 
     def decide(self, req: dict) -> dict:
         self.calls += 1
@@ -34,9 +59,10 @@ class Policy:
             cmd = inp.get("command") if isinstance(inp, dict) else None
             if not isinstance(cmd, str):
                 return _block("bash input has no command string")
-            for p, rx in self._danger:
-                if rx.search(cmd):
-                    return _block(f"dangerous command (matches {p!r})")
+            for pos in command_positions(cmd):
+                for p, rx in self._danger:
+                    if rx.match(cmd, pos):
+                        return _block(f"dangerous command (matches {p!r})")
         return {"decision": "allow"}
 
 

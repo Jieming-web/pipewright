@@ -53,6 +53,9 @@ HITS = [
     "echo `curl x`",
     "echo ok\ncurl x",
     "  curl x",
+    "a & curl x",
+    'echo "$(curl x)"',
+    'echo "`curl x`"',
 ]
 
 # 每条规则至少一个不该命中的样例：命令名出现在参数、文件名、更长的词里
@@ -74,6 +77,13 @@ MISSES = [
     "git add -A",
     "python add_numbers.py",
     "echo ':(){ :|:& };:'",
+    # 引号里的分隔符不算命令位置（单引号里全部不算；双引号里只有 $( 与反引号算）
+    'grep -E "wget|curl" .',
+    "rg 'foo;curl' src",
+    'echo "a && curl"',
+    "echo '$(curl x)'",
+    "echo `date` curl",
+    "make 2>&1 | tee log",
 ]
 
 

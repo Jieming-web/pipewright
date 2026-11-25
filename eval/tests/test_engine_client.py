@@ -8,6 +8,7 @@ import pytest
 
 from forgepilot_eval import engine_client
 from forgepilot_eval.engine_client import run_task
+from forgepilot_eval.policy import Policy, PolicyConfig
 
 # 本机用 node 跑桥 + runner（构建产物）+ 假模型（外部进程），不用 Docker；Python 侧只读写 JSON 行
 ROOT = Path(__file__).resolve().parents[2]
@@ -133,6 +134,19 @@ def test_timeout_sends_cancel_and_gets_cancelled(launch):
     assert r.timed_out is True
     assert r.terminal["type"] == "run.cancelled"
     assert r.failure is None and kills == []
+
+
+def test_should_cancel_takes_the_cancel_path_without_timed_out(launch, spawned):
+    # 第 2 次工具调用超限被拒，exhausted 变 True，随后经 should_cancel 取消
+    turns = [{"kind": "toolCall", "name": "bash", "args": {"command": f"echo {i}"}, "id": f"c{i}"} for i in range(5)]
+    policy = Policy(PolicyConfig(tools=["bash"], danger_patterns=[], max_tool_calls=1))
+    kills = []
+    r = run_task(launch(turns + [{"kind": "text", "chunks": ["done"]}]), START, policy.decide, lambda e: None,
+                 timeout_s=30, kill=lambda: kills.append(1), should_cancel=lambda: policy.exhausted)
+    assert policy.exhausted and policy.calls == 2
+    assert r.terminal["type"] == "run.cancelled"
+    assert r.timed_out is False and r.failure is None and kills == []
+    assert spawned[0].returncode is not None
 
 
 def test_silent_bridge_returns_in_time_and_calls_kill():

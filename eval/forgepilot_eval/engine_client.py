@@ -30,8 +30,10 @@ def run_task(
     timeout_s: float,
     kill: Callable[[], None],
     grace_s: float = 15,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> RunResult:
-    """kill 由调用方提供（如删除容器）；收尾超过 grace_s 时调用，随后杀掉桥子进程。"""
+    """kill 由调用方提供（如删除容器）；收尾超过 grace_s 时调用，随后杀掉桥子进程。
+    should_cancel 返回 True 时与超时走同一条取消收尾路径，但 timed_out 为 False（如工具调用超限）。"""
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding="utf-8", errors="replace")
     lines: queue.Queue[str | None] = queue.Queue()
 
@@ -68,12 +70,16 @@ def run_task(
             if kill_at is None and now >= deadline:
                 timed_out = True
                 shut_down(cancel=True)
+            if kill_at is None and should_cancel and should_cancel():
+                shut_down(cancel=True)
             if kill_at is not None and now >= kill_at:
                 kill()
                 proc.kill()
                 break
             try:
-                line = lines.get(timeout=max(0, (deadline if kill_at is None else kill_at) - now))
+                wait = (deadline if kill_at is None else kill_at) - now
+                # 有 should_cancel 时至少每秒检查一次，长时间没有输出（如工具运行中）也能及时取消
+                line = lines.get(timeout=max(0, min(wait, 1) if should_cancel else wait))
             except queue.Empty:
                 continue
             if line is None:
