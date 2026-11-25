@@ -10,6 +10,7 @@ import { createRawEventRecorder } from "./raw-event-recorder.js";
 import { createRunEvents } from "./run-events.js";
 
 export const CLEANUP_LIMIT_MS = 5000;
+export const RECORDER_OPEN_LIMIT_MS = 5_000;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
@@ -55,7 +56,7 @@ export class PiEngine {
   async #execute(task: StartTask): Promise<void> {
     const { coordinator } = this.opts;
     const events = createRunEvents(task.sessionId, this.opts.emit);
-    const recorder = this.opts.recordPiEventsPath ? createRawEventRecorder(this.opts.recordPiEventsPath) : undefined;
+    let recorder = this.opts.recordPiEventsPath ? createRawEventRecorder(this.opts.recordPiEventsPath) : undefined;
     const abort = new AbortController(); // 拦截扩展的信号：中止后新的 decide 立即按 block 返回，不会挂起
     let scratchDir: string | undefined;
     let session: AgentSession | undefined;
@@ -114,6 +115,26 @@ export class PiEngine {
       if (!this.#stop) for (const e of convertPiEvent(raw)) events.publish(e);
     };
 
+    // 诊断文件打不开属于启动失败（engine.md 第一事件规则）：创建会话、执行工具之前，等打开结果、时限与取消三者先到者
+    if (recorder) {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          recorder.opened,
+          new Promise<void>((r) => (this.#startStop = async () => r())), // cancel() 已置 #outcome，这里只结束等待
+          new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`timed out after ${RECORDER_OPEN_LIMIT_MS} ms`)), RECORDER_OPEN_LIMIT_MS))),
+        ]);
+      } catch (e) {
+        this.#outcome ??= { type: "run.failed", reason: `cannot open --record-pi-events file: ${message(e)}` };
+      } finally {
+        clearTimeout(timer);
+        this.#startStop = undefined; // 之后到会话建好前的取消，仍由 run 在建好后处理（engine.md 2.3）
+      }
+      if (this.#outcome) {
+        recorder = undefined; // 没打开成功：清理不关闭它，否则卡住的打开会让 close 拖到清理超时
+        return stop();
+      }
+    }
     try {
       scratchDir = await mkdtemp(join(tmpdir(), "fp-run-")); // 每次运行独占，pi 的 auth/models-store 写在这里
       const created = await createPiSession({

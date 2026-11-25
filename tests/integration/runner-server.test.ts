@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { connect as tcpConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { parseRunnerMessage, type RunnerMessage, type StartTask } from "../../pa
 import { PiEngine } from "../../packages/engine-runner/src/pi-engine.js";
 import { startRunnerServer } from "../../packages/engine-runner/src/runner-server.js";
 import { fakeModelsJson, startFakeOpenAIServer, TOOL, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
+import { fifoReader } from "../helpers/fifo.js";
 
 const TERMINAL = new Set(["run.settled", "run.failed", "run.cancelled"]);
 type Runner = Awaited<ReturnType<typeof startRunnerServer>>;
@@ -323,12 +324,14 @@ describe.sequential("runner 服务：取消、断线与退出", () => {
 
   it("引擎清理失败：只转发引擎发布的 run.failed，done ok:false，并在 stderr 记录", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const { runner } = await setup([{ kind: "text", chunks: ["ok"] }], { recordPiEventsPath: p("no-such-dir/raw.jsonl") });
-    const c = await connect(runner.port);
+    // 读端在工具拦截时关闭：此时写端必已打开，之后的录制写入得到 EPIPE
+    const reader = fifoReader(p("raw.fifo"));
+    const { runner } = await setup(TOOL("true"), { recordPiEventsPath: p("raw.fifo") });
+    const c = await connect(runner.port, (m, send) => { if (m.type === "intercept_request") closeSync(reader); allow(m, send); });
     c.send(start());
     await c.closed;
-    expect(checkFlow(c)).toEqual(["run.started", "text.delta", "message.completed", "run.failed"]);
-    expect((c.events().at(-1) as { reason: string }).reason).toMatch(/cleanup failed/);
+    expect(checkFlow(c)).toEqual(["run.started", "tool.started", "tool.finished", "text.delta", "message.completed", "run.failed"]);
+    expect((c.events().at(-1) as { reason: string }).reason).toMatch(/cleanup failed: .*EPIPE/);
     expect(await runner.done).toEqual({ ok: false });
     expect(stderr.mock.calls.map((a) => String(a[0])).join("")).toMatch(/cleanup failed/);
   }, 10_000);

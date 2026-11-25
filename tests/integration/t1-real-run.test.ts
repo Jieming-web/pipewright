@@ -1,12 +1,13 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { groupAlive } from "../../packages/engine-client/src/index.js";
 import { runAll, runQuestion, type Report } from "../../scripts/t1-real-run.js";
 import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
+import { fifoReader, fillFifo, writerOpened } from "../helpers/fifo.js";
 
 // 10A2：只用假模型跑通只读验收脚本；10B/10C 换真实模型时原样运行
 const REPO = join(import.meta.dirname, "../..");
@@ -395,11 +396,12 @@ describe.sequential("t1-real-run：超时与停止时限", () => {
     expect(leftovers()).toEqual([]);
   }, 30_000);
 
-  // 诊断文件指向没有读端的 FIFO：runner 的清理卡住、无法自行退出（与 runner-process 测试同一故障注入）
+  // 诊断文件是读端不读、已写满的 FIFO：runner 的录制写入与清理卡住、无法自行退出（与 runner-process 测试同一故障注入）
   it("runner 卡在退出：从最早的退出信号（超时取消）起按单调时钟计停止时限，到时强杀整个进程组并记为服务故障", async () => {
-    execFileSync("mkfifo", [p("records", `${Qs[0]!.id}.jsonl`)]);
+    const reader = fifoReader(p("records", `${Qs[0]!.id}.jsonl`));
+    fillFifo(p("records", `${Qs[0]!.id}.jsonl`));
     await fake([{ kind: "text", chunks: ["[]"] }]);
-    const r = await runQuestion(Qs[0]!, opts({ questionTimeoutMs: 3000, stopTimeoutMs: 1000 }));
+    const r = await runQuestion(Qs[0]!, opts({ questionTimeoutMs: 3000, stopTimeoutMs: 1000 })).finally(() => closeSync(reader));
     expect(r.serviceFailure).toMatch(/^timed out after 3000 ms; runner force-killed/);
     expect(r.runner.forced).toBe(true);
     expect(r.runner.signal).toBe("SIGKILL");
@@ -409,11 +411,16 @@ describe.sequential("t1-real-run：超时与停止时限", () => {
     expect(leftovers()).toEqual([]);
   }, 30_000);
 
-  // 录制目录不存在：runner 清理失败，发 run.failed 并以 1 退出（9A 退出码契约）
+  // 诊断文件是 FIFO，runner 打开写端后测试关闭读端：之后的录制写入得到 EPIPE，runner 清理失败，发 run.failed 并以 1 退出（9A 退出码契约）。
+  // 模型回答分块慢发，写端打开（先于会话创建）到最后一次写入之间留出数百毫秒
   it("runner 非零退出（未超时）：记为服务故障并写明退出码，不判分", async () => {
-    await fake([{ kind: "text", chunks: ["[]"] }]);
-    const r = await runQuestion(Qs[0]!, opts({ recordDir: p("no-such-dir") }));
-    expect(r.serviceFailure).toMatch(/^run\.failed: cleanup failed.*; runner exited with code 1/);
+    const reader = fifoReader(p("records", `${Qs[0]!.id}.jsonl`));
+    await fake([{ kind: "text", chunks: ["[", "]"], chunkDelayMs: 300 }]);
+    const run = runQuestion(Qs[0]!, opts());
+    await writerOpened(reader);
+    closeSync(reader);
+    const r = await run;
+    expect(r.serviceFailure).toMatch(/^run\.failed: cleanup failed: .*EPIPE.*; runner exited with code 1/);
     expect(r.grade).toBeUndefined();
     expect(r.runner).toMatchObject({ exitCode: 1, forced: false });
     expect(leftovers()).toEqual([]);

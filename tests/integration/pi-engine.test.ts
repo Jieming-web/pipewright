@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import { SequencedEventSchema, type RunnerMessage, type SequencedEvent, type Sta
 import { createInterceptCoordinator } from "../../packages/engine-runner/src/intercept-coordinator.js";
 import { PiEngine } from "../../packages/engine-runner/src/pi-engine.js";
 import { fakeModelsJson, startFakeOpenAIServer, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
+import { fifoReader } from "../helpers/fifo.js";
 
 type Coordinator = ReturnType<typeof createInterceptCoordinator>;
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -325,14 +326,16 @@ describe.sequential("PiEngine 取消", () => {
 });
 
 describe.sequential("PiEngine 清理失败", () => {
+  // 读端在 run.started 时关闭：此时写端已打开、还没有任何录制写入（同步回调，早于 prompt），之后的写入都得到 EPIPE
   it("录制关闭失败：同一发布器发一次带清理原因的 run.failed，run 拒绝，disposed=false", async () => {
     const s = await serve([{ kind: "text", chunks: ["ok"] }]);
     writeModels(s.baseUrl);
     const dispose = vi.spyOn(AgentSession.prototype, "dispose");
-    const { engine, events } = makeEngine({ recordPiEventsPath: p("no-such-dir/raw.jsonl") });
+    const reader = fifoReader(p("raw.fifo"));
+    const { engine, events } = makeEngine({ recordPiEventsPath: p("raw.fifo"), onEvent: (e) => { if (e.type === "run.started") closeSync(reader); } });
     await expect(engine.run(task())).rejects.toThrow(/cleanup/);
     expect(checkStream(events).at(-1)).toBe("run.failed");
-    expect(terminal(events).reason).toMatch(/cleanup.*no-such-dir|cleanup.*ENOENT/);
+    expect(terminal(events).reason).toMatch(/^cleanup failed: .*EPIPE/);
     expect(engine.disposed).toBe(false);
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(scratchLeft()).toEqual([]); // 录制失败也照样删除 scratchDir
@@ -359,13 +362,15 @@ describe.sequential("PiEngine 清理失败", () => {
     expect(existsSync(p("work/late.marker"))).toBe(false); // dispose 停掉了工具
   }, 10_000);
 
+  // 启动失败时没有录制写入，诊断文件注入不出清理失败：改让清理第一步抛错
   it("启动失败后清理也失败：reason 同时保留清理原因与原失败原因", async () => {
     const s = await serve([]);
     writeModels(s.baseUrl);
-    const { engine, events } = makeEngine({ recordPiEventsPath: p("no-such-dir/raw.jsonl") });
+    const { engine, events, coordinator } = makeEngine();
+    vi.spyOn(coordinator, "cancelAll").mockImplementation(() => { throw new Error("CANCEL_BOOM"); });
     await expect(engine.run(task({ model: { provider: "fake", id: "nope" } }))).rejects.toThrow(/cleanup failed/);
     expect(checkStream(events)).toEqual(["run.failed"]);
-    expect(terminal(events).reason).toMatch(/^cleanup failed: .*ENOENT.*; run failed: model not found: fake\/nope$/);
+    expect(terminal(events).reason).toMatch(/^cleanup failed: CANCEL_BOOM; run failed: model not found: fake\/nope$/);
     expect(engine.disposed).toBe(false);
     expect(scratchLeft()).toEqual([]);
   }, 10_000);

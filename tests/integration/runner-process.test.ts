@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { groupAlive, killGroup, spawnRunner, type EngineClient, type RunnerProcess } from "../../packages/engine-client/src/index.js";
 import { parseRunnerMessage, type ProtocolError, type RunnerMessage, type SequencedEvent, type StartTask } from "../../packages/engine-protocol/src/index.js";
 import { fakeModelsJson, startFakeOpenAIServer, TOOL, type FakeOpenAIServer, type ScriptedTurn } from "../helpers/fake-openai-server.js";
+import { fifoReader, fillFifo } from "../helpers/fifo.js";
 
 // 跨真实子进程边界：9A CLI 启动 runner，9B 客户端调用。退出证据只用退出码、工具进程组、延迟 marker 与临时目录，不加产品诊断消息
 const MAIN = join(import.meta.dirname, "../../packages/engine-runner/src/main.ts");
@@ -342,26 +343,77 @@ describe.sequential("runner 进程：协议异常不影响任务", () => {
   }, 20_000);
 });
 
-describe.sequential("runner 进程：清理失败与超时（故障注入）", () => {
-  it("清理失败（诊断文件目录不存在）：run.failed 带清理原因，以 1 退出", async () => {
-    const r = await launch([{ kind: "text", chunks: ["ok"] }], ["--record-pi-events", p("no-such-dir/raw.jsonl")]);
-    const { client } = await connect(r);
+describe.sequential("runner 进程：诊断文件打不开属于启动失败（engine.md 第一事件规则）", () => {
+  it("诊断文件目录不存在：只发 run.failed，工具不执行，以 0 退出", async () => {
+    const r = await launch(TOOL("touch ran.marker"), ["--record-pi-events", p("no-such-dir/raw.jsonl")]);
+    const { client, events } = await connect(r);
+    client.onIntercept(allow);
     await client.start(task());
-    expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed/) });
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/ENOENT.*no-such-dir/) });
+    expect(events.map((e) => e.type)).toEqual(["run.failed"]);
+    expect((await r.exit).code).toBe(0);
+    await neverRan("ran.marker");
+  }, 20_000);
+
+  // 没有读端的 FIFO：打开卡在线程池里，既不成功也不失败
+  it("诊断文件是无读端 FIFO：约 5 秒后发 run.failed（原因含 timed out），工具不执行", async () => {
+    execFileSync("mkfifo", [p("raw.fifo")]);
+    const r = await launch(TOOL("touch ran.marker"), ["--record-pi-events", p("raw.fifo")]);
+    const { client, events } = await connect(r);
+    client.onIntercept(allow);
+    await client.start(task());
+    const t0 = performance.now();
+    const end = await client.waitForEnd();
+    expect(end).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/timed out/) });
+    expect((end as { reason: string }).reason).not.toMatch(/cleanup/);
+    expect(performance.now() - t0).toBeGreaterThan(4500);
+    expect(events.map((e) => e.type)).toEqual(["run.failed"]);
+    // 卡住的打开可能让 runner 无法自行退出：启动者到停止时限强杀也算通过
+    const stopped = await r.runner.stop();
+    expect(stopped.forced || stopped.code === 0).toBe(true);
+    await neverRan("ran.marker");
+  }, 30_000);
+
+  it("等待打开时收到取消：立即以 run.cancelled 结束，工具不执行", async () => {
+    execFileSync("mkfifo", [p("raw.fifo")]);
+    const r = await launch(TOOL("touch ran.marker"), ["--record-pi-events", p("raw.fifo")]);
+    const { client, events } = await connect(r);
+    client.onIntercept(allow);
+    await client.start(task());
+    const t0 = performance.now();
+    r.runner.cancel();
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.cancelled" });
+    expect(performance.now() - t0).toBeLessThan(2000); // 远短于 5 秒打开时限
+    expect(events.map((e) => e.type)).toEqual(["run.cancelled"]);
+    const stopped = await r.runner.stop();
+    expect(stopped.forced || stopped.code === 0).toBe(true);
+    await neverRan("ran.marker");
+  }, 30_000);
+});
+
+describe.sequential("runner 进程：清理失败与超时（故障注入）", () => {
+  // 读端在工具拦截时关闭：此时写端必已打开（打开先于会话创建），之后的录制写入得到 EPIPE
+  it("清理失败（诊断文件读端关闭，写入 EPIPE）：run.failed 带清理原因，以 1 退出", async () => {
+    const reader = fifoReader(p("raw.fifo"));
+    const r = await launch(TOOL("true"), ["--record-pi-events", p("raw.fifo")]);
+    const { client } = await connect(r);
+    client.onIntercept(async () => (closeSync(reader), { decision: "allow" as const }));
+    await client.start(task());
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed: .*EPIPE/) });
     expect((await r.exit).code).toBe(1);
     expect(r.err()).toMatch(/cleanup failed/);
   }, 20_000);
 
-  // 故障注入不加产品开关：诊断文件指向没有读端的 FIFO，runner 打开它的线程池线程一直阻塞，录制的 close 永不完成，清理必然超过 5 秒时限
-  it("清理超时：run.failed 带超时原因；卡住的打开被解除后 runner 以 1 退出", async () => {
-    execFileSync("mkfifo", [p("raw.fifo")]);
+  // 读端打开但不读、管道已写满：runner 的录制写入卡在线程池里，录制的 close 永不完成，清理必然超过 5 秒时限
+  it("清理超时：run.failed 带超时原因；卡住的写入被解除后 runner 以 1 退出", async () => {
+    const fd = fifoReader(p("raw.fifo"));
+    fillFifo(p("raw.fifo"));
     const r = await launch([{ kind: "text", chunks: ["ok"] }], ["--record-pi-events", p("raw.fifo")]);
     const { client } = await connect(r);
     await client.start(task());
     expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed: timed out after 5000 ms/) });
-    // 阻塞的系统调用会让 process.exit 卡在 libuv 线程池的回收上：以非阻塞方式打开读端解除阻塞并持续读空，才能观察到 runner 自己给出的退出码。
-    // 读端在 runner 退出前一直保持打开：读到 EOF 就关闭会与写端的打开竞态，写端又会阻塞
-    const fd = openSync(p("raw.fifo"), constants.O_RDONLY | constants.O_NONBLOCK);
+    // 阻塞的系统调用会让 process.exit 卡在 libuv 线程池的回收上：持续读空管道解除阻塞，才能观察到 runner 自己给出的退出码。
+    // 读端在 runner 退出前一直保持打开：关闭会让写入改得 EPIPE，不再是本测试要观察的路径
     const buf = Buffer.alloc(65536);
     const drain = setInterval(() => {
       try {
@@ -378,23 +430,28 @@ describe.sequential("runner 进程：清理失败与超时（故障注入）", (
   }, 20_000);
 
   it("清理超时且 runner 卡在退出：发出带原因的 run.failed；工具已由 pi 在卡住前结束；启动者到停止时限强杀 runner 组", async () => {
-    execFileSync("mkfifo", [p("raw.fifo")]);
-    const r = await launch(SLOW_TOOL, ["--record-pi-events", p("raw.fifo")]);
-    const { client } = await connect(r);
-    client.onIntercept(allow);
-    await client.start(task());
-    const tool = await toolRunning();
-    const t0 = performance.now();
-    r.runner.cancel();
-    expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed: timed out after 5000 ms/) });
-    // 清理顺序是 session.abort/dispose 在前、关闭录制在后：工具在 FIFO 卡住之前就被 pi 结束，与启动者无关（组强杀也够不到工具组）
-    await toolGone(tool);
-    // 启动者的停止时限（engine.md 进程退出，默认 10 秒，从发出取消起算）：到时未退出就强杀 runner 的整个进程组，按非零退出处理
-    const stopped = await r.runner.stop();
-    expect(stopped.forced || stopped.code === 1).toBe(true); // 卡在退出（强杀）或自行以 1 退出
-    // 外部计时：终止事件约 5 秒后才到、stop() 更晚才调用，时限仍须从取消起算
-    expect(stopped.at - t0).toBeLessThan(10_000 + 1000);
-    expect(groupAlive(groups[0]!)).toBe(false);
+    const fd = fifoReader(p("raw.fifo"));
+    fillFifo(p("raw.fifo"));
+    try {
+      const r = await launch(SLOW_TOOL, ["--record-pi-events", p("raw.fifo")]);
+      const { client } = await connect(r);
+      client.onIntercept(allow);
+      await client.start(task());
+      const tool = await toolRunning();
+      const t0 = performance.now();
+      r.runner.cancel();
+      expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/cleanup failed: timed out after 5000 ms/) });
+      // 清理顺序是 session.abort/dispose 在前、关闭录制在后：工具在录制卡住之前就被 pi 结束，与启动者无关（组强杀也够不到工具组）
+      await toolGone(tool);
+      // 启动者的停止时限（engine.md 进程退出，默认 10 秒，从发出取消起算）：到时未退出就强杀 runner 的整个进程组，按非零退出处理
+      const stopped = await r.runner.stop();
+      expect(stopped.forced || stopped.code === 1).toBe(true); // 卡在退出（强杀）或自行以 1 退出
+      // 外部计时：终止事件约 5 秒后才到、stop() 更晚才调用，时限仍须从取消起算
+      expect(stopped.at - t0).toBeLessThan(10_000 + 1000);
+      expect(groupAlive(groups[0]!)).toBe(false);
+    } finally {
+      closeSync(fd);
+    }
   }, 30_000);
 });
 
