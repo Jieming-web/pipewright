@@ -101,15 +101,15 @@
 
 **Interfaces:** `createRawEventRecorder(path)` 新增 `opened: Promise<void>`；新常量 `RECORDER_OPEN_LIMIT_MS = 5_000`。
 
-- [ ] **Step 1：改契约**。engine.md 第一事件规则删掉「尚未实现」，改写为：等文件打开结果，最多 5 秒，期间收到取消就立即结束等待、按 `run.cancelled` 收尾；打开失败或超时，只发带原因的 `run.failed`，不执行工具；打开卡住导致进程无法自行退出时，由启动者到停止时限强杀。超时表加一行「诊断文件打开，5 秒，不可配置」。在「进程退出」一段写明：打开等待与取消竞速，不与清理时限叠加，所以「7 s < 10 s」的算术不变。变更记录加一行。提交 `docs(step02): 契约补诊断文件打开时限`。
-- [ ] **Step 2：写失败测试**（`runner-process.test.ts`）。
+- [x] **Step 1：改契约**。engine.md 第一事件规则删掉「尚未实现」，改写为：等文件打开结果，最多 5 秒，期间收到取消就立即结束等待、按 `run.cancelled` 收尾；打开失败或超时，只发带原因的 `run.failed`，不执行工具；打开卡住导致进程无法自行退出时，由启动者到停止时限强杀。超时表加一行「诊断文件打开，5 秒，不可配置」。在「进程退出」一段写明：打开等待与取消竞速，不与清理时限叠加，所以「7 s < 10 s」的算术不变。变更记录加一行。提交 `docs(step02): 契约补诊断文件打开时限`。 — 2026-11-25：41c2af1；措辞「打开尚未完成」的更正随 4c0ba73（作者同意）。
+- [x] **Step 2：写失败测试**（`runner-process.test.ts`）。 — 2026-11-25：三条新测试，另加录制关闭竞态的复现测试（a8b808d，作者同意）。
   - `it("诊断文件目录不存在：只发 run.failed，工具不执行，以 0 退出")`：事件类型序列为 `["run.failed"]`，`reason` 匹配 `/ENOENT.*no-such-dir/`，退出码 0，`ran.marker` 不出现。
   - `it("诊断文件是无读端 FIFO：约 5 秒后发 run.failed（原因含 timed out），工具不执行")`：事件序列为 `["run.failed"]`，marker 不出现；进程不能自行退出时，启动者强杀（`forced: true`）也算通过。
   - `it("等待打开时收到取消：立即以 run.cancelled 结束，工具不执行")`。
-- [ ] **Step 3：运行确认失败**：`pnpm vitest run tests/integration/runner-process.test.ts`。预期现象：第一条得到 `run.failed: cleanup failed: ENOENT…`，退出码 1，marker 出现；第二条的工具照常执行（marker 出现），到清理超时才发 `run.failed: cleanup failed`；第三条要等创建结束才处理取消。现象和这里写的不一样，就停下报告。
-- [ ] **Step 4：实现**：`pi-engine.ts` 在 `mkdtemp`/`createPiSession` 之前，让 `recorder.opened`、5 秒超时和取消信号三者竞速；打开失败或超时，就置空 recorder、`#outcome = run.failed`、`return stop()`；取消先到，就按取消收尾。
-- [ ] **Step 5：迁移旧的故障注入测试**：原来用「目录不存在」注入**清理失败**的，改为打开 FIFO 读端后立即关闭，让写入得到 EPIPE；原来用「无读端 FIFO」注入**清理超时**的，改为打开读端但不读，写满管道缓冲区。两种注入在 macOS 上各连跑 5 次，再在 `node:24` Linux 容器里跑一次（`pnpm install --frozen-lockfile` 在容器内执行，node_modules 不和宿主机共用）。任何一处不稳定，就停下报告作者。
-- [ ] **Step 6：全量验证并提交**：`pnpm test && pnpm typecheck && pnpm build && pnpm check:pi`；提交 `fix(step02): 诊断文件打不开属于启动失败`。
+- [x] **Step 3：运行确认失败**：`pnpm vitest run tests/integration/runner-process.test.ts`。预期现象：第一条得到 `run.failed: cleanup failed: ENOENT…`，退出码 1，marker 出现；第二条的工具照常执行（marker 出现），到清理超时才发 `run.failed: cleanup failed`；第三条要等创建结束才处理取消。现象和这里写的不一样，就停下报告。 — 2026-11-25：RED 现象与本步描述一致。
+- [x] **Step 4：实现**：`pi-engine.ts` 在 `mkdtemp`/`createPiSession` 之前，让 `recorder.opened`、5 秒超时和取消信号三者竞速；打开失败或超时，就置空 recorder、`#outcome = run.failed`、`return stop()`；取消先到，就按取消收尾。 — 2026-11-25：打开、5 秒计时、取消三者竞速，先到者决定结果。
+- [x] **Step 5：迁移旧的故障注入测试**：原来用「目录不存在」注入**清理失败**的，改为打开 FIFO 读端后立即关闭，让写入得到 EPIPE；原来用「无读端 FIFO」注入**清理超时**的，改为打开读端但不读，写满管道缓冲区。两种注入在 macOS 上各连跑 5 次，再在 `node:24` Linux 容器里跑一次（`pnpm install --frozen-lockfile` 在容器内执行，node_modules 不和宿主机共用）。任何一处不稳定，就停下报告作者。 — 2026-11-25：8 条迁移完成；macOS 5×12 全过，Linux node:24 103/103；「启动失败后清理也失败」改用 cancelAll 抛错注入（作者同意的偏差）。
+- [x] **Step 6：全量验证并提交**：`pnpm test && pnpm typecheck && pnpm build && pnpm check:pi`；提交 `fix(step02): 诊断文件打不开属于启动失败`。 — 2026-11-25：pnpm test 501/501（两次）、typecheck、build、check:pi 通过；4c0ba73；任务审查 Approved、ponytail Ship。
 
 ### Task 2：M5 路径规则防漂移测试
 
