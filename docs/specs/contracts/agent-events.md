@@ -58,7 +58,8 @@
 | `message_update` 且 `assistantMessageEvent.type === "text_delta"` | `text.delta{text: assistantMessageEvent.delta}` | 只读 `delta`，不读 `partial`（共享可变对象，可能比 `delta` 超前） |
 | `message_end`，`message.role === "assistant"` 且 `stopReason` 不是 `error`/`aborted` | `message.completed{role:"assistant", text}` | `text` 为 `message.content` 中所有 `type:"text"` 片段拼接；拼接后为空（例如只含工具调用的消息）则不产生 |
 | `message_end`，`message.role === "assistant"`（任何 `stopReason`） | `model.request.finished{stopReason, usage, errorMessage?}` | 每条助手 `message_end` 都产生，先于同一事件产生的 `message.completed`；`usage` 取自 `message.usage` |
-| `message_end`，role 为 user/system/toolResult，或助手消息 `stopReason` 为 `error`/`aborted` | 无 | 失败尝试的半截消息不产生 `message.completed` |
+| `message_end`，role 为 user/system/toolResult | 无 | |
+| `message_end`，助手消息 `stopReason` 为 `error`/`aborted` | 只有 `model.request.finished`（见上） | 失败尝试的半截消息不产生 `message.completed` |
 | `tool_execution_start{toolCallId, toolName, args}` | `tool.started{callId, toolName, input: args}` | |
 | `tool_execution_end{toolCallId, toolName, result, isError}` | `tool.finished{callId, toolName, isError, output: result}` | `callId` 与 `tool.started` 对应 |
 | `agent_start`、`agent_end`、`turn_start`、`turn_end` | 无 | `agent_end` 不是最终信号（重试时带 `willRetry:true`） |
@@ -121,3 +122,4 @@
 |---|---|---|---|
 | 2026-11-22 | 初版：事件定义、pi 映射、重试残留规则、序号与终止规则 | 作者决定 ①（重试残留文字） | Task 4、8B、9A |
 | 2026-11-25 | 新增进度事件 `model.request.finished`（每次模型请求结束的停止原因与用量，含失败尝试与被中止请求） | 评测框架需求（T1 推迟项，T2-3） | T2 评测框架、engine-client |
+| 2026-11-25 | 更正映射表：助手 `error`/`aborted` 的 `message_end` 仍产生 `model.request.finished`，只是不产生 `message.completed`（原行写“无”，与新增行矛盾） | T2-3 规格审查 | 无（不改行为） |

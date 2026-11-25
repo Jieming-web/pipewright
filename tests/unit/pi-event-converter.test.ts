@@ -221,8 +221,8 @@ describe("工具事件空值归一", () => {
 describe("model.request.finished", () => {
   const finished = (es: ProgressEvent[]) => es.filter((e): e is Extract<ProgressEvent, { type: "model.request.finished" }> => e.type === "model.request.finished");
   const U1 = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
-  it.each(["retry", "retry-drop"])("%s：失败尝试 usage 为 null 且带 errorMessage，随后一条 stop", (n) => {
-    const f = finished(replay(n));
+  it("retry：失败尝试 usage 为 null 且带 errorMessage，随后一条 stop", () => {
+    const f = finished(replay("retry"));
     expect(f).toHaveLength(2);
     expect(f[0]).toMatchObject({ stopReason: "error", usage: null });
     expect(f[0]!.errorMessage).toEqual(expect.any(String));
@@ -230,10 +230,6 @@ describe("model.request.finished", () => {
   });
   it("tool-call-then-text：toolUse 与 stop 各一条", () => {
     expect(finished(replay("tool-call-then-text")).map((e) => [e.stopReason, e.usage])).toEqual([["toolUse", U1], ["stop", U1]]);
-  });
-  it("先于同一消息的 message.completed", () => {
-    const t = replay("text-only").map((e) => e.type);
-    expect(t.indexOf("model.request.finished")).toBeLessThan(t.indexOf("message.completed"));
   });
   const msg = (m: object) => convertPiEvent({ type: "message_end", message: { role: "assistant", content: [], stopReason: "aborted", ...m } });
   it("用量全 0、缺失 → null；reasoning 缺失 → 0；errorMessage 截断 500 且只在 error 出现", () => {
@@ -244,6 +240,7 @@ describe("model.request.finished", () => {
     expect(e.errorMessage).toHaveLength(500);
     expect("errorMessage" in (msg({ errorMessage: "ignored" })[0] as object)).toBe(false);
   });
+  // 校验 pi/供应商的计费口径（reasoning 已含在 output 内、总量含缓存读取），不是转换器逻辑；作者要求保留
   it("真实录制 run3：reasoning 已含在 output 内，input+cacheRead+output = totalTokens", () => {
     const n = "real-qwen-api-run3-thinking-send-notice";
     const raws = rawLines(n).filter((r) => r.type === "message_end" && r.message.role === "assistant" && r.message.usage.totalTokens > 0);

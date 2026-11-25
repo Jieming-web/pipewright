@@ -1,14 +1,14 @@
-import type { ProgressEvent } from "@forgepilot/engine-protocol";
+import { StopReasonSchema, type ProgressEvent } from "@forgepilot/engine-protocol";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
-const STOP_REASONS = ["stop", "toolUse", "length", "error", "aborted"] as const;
 const num = (v: unknown) => (typeof v === "number" ? v : 0);
 
 function requestFinished(m: Obj): ProgressEvent[] {
-  const stopReason = STOP_REASONS.find((r) => r === m.stopReason);
-  if (!stopReason) return [];
+  const parsed = StopReasonSchema.safeParse(m.stopReason);
+  if (!parsed.success) return [];
+  const stopReason = parsed.data;
   const u = isObj(m.usage) ? m.usage : {};
   const usage = { input: num(u.input), output: num(u.output), cacheRead: num(u.cacheRead), cacheWrite: num(u.cacheWrite), reasoning: num(u.reasoning) };
   const unknown = !usage.input && !usage.output && !usage.cacheRead && !usage.cacheWrite;

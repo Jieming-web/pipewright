@@ -18,13 +18,15 @@ export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 // 键必须存在（任意 JSON 值，含 null）；JSON 解析不会产生 undefined
 const json: z.ZodType<unknown> = z.unknown().refine((v) => v !== undefined, "required");
 
+export const StopReasonSchema = z.enum(["stop", "toolUse", "length", "error", "aborted"]);
+
 export const ProgressEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.started"), snapshot: RunSnapshotSchema }),
   z.object({ type: z.literal("text.delta"), text: z.string() }),
   z.object({ type: z.literal("message.completed"), role: z.literal("assistant"), text: z.string() }),
   z.object({
     type: z.literal("model.request.finished"),
-    stopReason: z.enum(["stop", "toolUse", "length", "error", "aborted"]),
+    stopReason: StopReasonSchema,
     // null = 未知（pi 没给或全为 0）；reasoning 是 output 的子集
     usage: z.object({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), reasoning: z.number() }).nullable(),
     errorMessage: z.string().optional(),
