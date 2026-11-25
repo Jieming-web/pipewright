@@ -41,7 +41,7 @@ afterEach(async () => {
 });
 
 /** 启动者（engine-client 的 spawnRunner，与 t1-real-run 共用）：runner 放进独立进程组，等 stdout 的 RUNNER_LISTENING 行 */
-async function launch(turns: ScriptedTurn[], args: string[] = [], env: NodeJS.ProcessEnv = {}) {
+async function launch(turns: ScriptedTurn[], args: string[] = [], env: NodeJS.ProcessEnv = {}, stopTimeoutMs?: number) {
   const s = await startFakeOpenAIServer(turns);
   servers.push(s);
   writeFileSync(p("model/models.json"), JSON.stringify(fakeModelsJson(s.baseUrl)));
@@ -49,6 +49,7 @@ async function launch(turns: ScriptedTurn[], args: string[] = [], env: NodeJS.Pr
     args: ["--import", "tsx", MAIN, "--port", "0", "--models", p("model/models.json"), "--workdir", p("work"), "--sessions-root", p("sessions"), "--idle-timeout-ms", "10000", ...args],
     // TMPDIR 指向测试根目录：引擎 scratchDir 建在 os.tmpdir() 下，便于断言跨进程清理
     env: { ...process.env, TMPDIR: p("tmp"), ...env },
+    stopTimeoutMs,
   });
   if (runner.pid !== undefined) groups.push(runner.pid);
   exits.push(runner.exit);
@@ -483,6 +484,21 @@ describe.sequential("runner 进程：激活工具 --tools 与离线（engine.md 
     expect(readdirSync(p("home"))).toEqual([]);
     expect((await r.exit).code).toBe(0);
   }, 30_000);
+});
+
+describe.sequential("启动者：停止时限只从退出信号起算（engine.md 进程退出）", () => {
+  // 启动被拒绝不是退出信号：任务比停止时限跑得久，若从拒绝起算，stop() 时已过时限而强杀正常收尾的 runner
+  it("启动被拒（not_implemented / 本地校验失败）后在同一连接重试并正常结束：stop() 不强杀，以 0 退出", async () => {
+    const r = await launch([{ kind: "text", chunks: ["a", "b", "c", "d", "e"], chunkDelayMs: 300 }], [], {}, 1000);
+    const { client } = await connect(r);
+    await expect(client.start(task({ interceptMode: "policy" }))).rejects.toThrow(/not_implemented/);
+    await expect(client.start(task({ prompt: " " }))).rejects.toThrow(/prompt/);
+    await client.start(task());
+    expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
+    const stopped = await r.runner.stop();
+    expect(stopped).toMatchObject({ forced: false, code: 0 });
+    expect(stopped.signal).not.toBe("SIGKILL");
+  }, 20_000);
 });
 
 describe.sequential("启动者：runner 进程未能启动", () => {

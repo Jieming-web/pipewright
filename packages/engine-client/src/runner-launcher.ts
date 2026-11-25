@@ -81,7 +81,7 @@ export function spawnRunner(opts: { args: string[]; cwd?: string; env?: NodeJS.P
     stderr: () => err,
     async connect() {
       client = await EngineClient.connect(`ws://127.0.0.1:${await listening}`);
-      client.waitForEnd().then(signalled, signalled);
+      void client.exitSignal.then(signalled);
       return client;
     },
     cancel() {

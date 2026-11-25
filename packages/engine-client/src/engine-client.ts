@@ -40,6 +40,9 @@ export class EngineClient {
   private errorCb?: (e: ProtocolError) => void;
   private interceptCb?: (req: ToolRequest) => Promise<Decision>;
   private confirmCb?: (req: ConfirmRequest) => Promise<Confirmation>;
+  private signalExit!: () => void;
+  /** runner 该退出的信号：收到终止事件或连接关闭/失败时 resolve；启动被拒绝不算，重试也不替换它（engine.md 进程退出） */
+  readonly exitSignal = new Promise<void>((r) => (this.signalExit = r));
 
   private constructor(private readonly ws: WebSocket) {
     this.newEnd();
@@ -140,6 +143,7 @@ export class EngineClient {
     for (const p of this.starts.values()) p.reject(err);
     this.starts.clear();
     this.settleEnd?.(err);
+    this.signalExit();
   }
 
   private onMessage(raw: string): void {
@@ -156,7 +160,10 @@ export class EngineClient {
         this.starts.delete(m.requestId);
         return;
       case "event":
-        if (TERMINAL.has(m.event.type)) this.settleEnd?.(m.event);
+        if (TERMINAL.has(m.event.type)) {
+          this.settleEnd?.(m.event);
+          this.signalExit();
+        }
         return this.notify("onEvent", () => this.eventCb?.(m.event));
       case "intercept_request":
         return void this.answerIntercept(m);
