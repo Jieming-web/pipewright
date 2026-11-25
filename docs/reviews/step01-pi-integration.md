@@ -2053,3 +2053,106 @@ Task 7 把敌意资源放进了加载器自己的 `agentDir`，结果发现：�
   - `overflow`（预检 (b) 的静默丢弃）标为 `possibleOverflowUnverified [2]`；
   - `send_notice` 没有标记。
 - 另对 10B 的 3 次 API 录制跑了一遍（`--context-window 262144`），五类全为 0。
+
+
+### 推迟到 T2：M3 诊断文件打不开要到清理时才报出（2026-11-25，追加）
+
+**问题**（Task 11 整体审查 M3）：`--record-pi-events` 指向打不开的路径时（如目录不存在），`createWriteStream` 的打开错误要到清理时 `close()` 才抛出。任务会完整执行、工具照常执行（包括修改工作区），最后才发 `run.failed: cleanup failed: ENOENT…`，runner 以 1 退出。副作用已经发生，结果却记为失败。
+
+**作者决定**：契约（engine.md 第一事件规则）补"诊断文件打不开属于启动失败"，但实现推迟到 T2 开工第一件事；T1 本轮只交付 I1 与 rg 测试。
+
+**实测发现：最小修法会引入无限挂起。** 最小修法是在创建 pi 会话前 `await` 录制文件的打开结果。复现测试（目录不存在 + bash `touch ran.marker`）在旧代码上失败（事件序列 `run.started, tool.started, tool.finished, text.delta, message.completed, run.failed`，原因 `cleanup failed: ENOENT…`，退出码 1，marker 出现），最小修法后通过（只有 `run.failed`、退出 0、marker 不出现）。但诊断文件指向没有读端的 FIFO 时，打开会一直卡住：
+- 会话创建完成前收到的取消要等创建结束才处理（engine.md §2.2），而创建前一直卡在打开上，清理走不到；
+- 全程没有任何事件，6 s 后 runner 兜底（`STOP_BACKSTOP_MS`）关闭连接，线程池线程卡在 open 上，runner 无法自行退出，10 s 时被启动者强杀；
+- 不发取消时，任务一直静默，直到断线或外部关闭。旧代码在这种情况下至少会在清理超时后发出 `run.failed`。
+
+探针输出：
+
+```
+PROBE events before cancel []
+PROBE end {"err":"runner connection closed (code 1000)"} after ms 6310 events [] errors []
+PROBE stop {"code":null,"signal":"SIGKILL","forced":true,"stopWaitMs":10018} total ms 10321
+PROBE stderr "runner: engine cleanup failed or timed out\n"
+```
+
+**T2 修法（A2+3，作者建议）：**
+1. 先改契约：打开诊断文件设时限（建议沿用清理时限 5 秒），超时按启动失败只发带原因的 `run.failed`；卡住的打开让进程无法自行退出时，由启动者到停止时限强杀（与 engine.md "进程退出"现有规定一致）。
+2. 改代码：创建会话前等打开结果或时限，二者取先到者。
+3. 改换原来以"目录不存在"/"无读端 FIFO"注入清理失败与清理超时的测试（`runner-server.test.ts:326`、`runner-process.test.ts:346,356,380`、`pi-engine.test.ts:332,365`、`t1-real-run.test.ts:400`，行号为 2026-11-25 `be5a171`），不加产品开关：清理超时改为测试打开 FIFO 读端但不读，写满管道缓冲区后写入阻塞（契约"进程退出"段举的"诊断文件写入阻塞"）；清理失败可改为读端打开后关闭、写入得到 EPIPE。这些注入未实测，macOS 与 Linux 的管道缓冲区大小不同，实测不稳定则停下报告。
+
+**未提交的复现测试与最小实现**（基于 `be5a171`，只供 T2 参考，不含打开时限）：
+
+```diff
+diff --git a/packages/engine-runner/src/pi-engine.ts b/packages/engine-runner/src/pi-engine.ts
+index 453fb48..27659db 100644
+--- a/packages/engine-runner/src/pi-engine.ts
++++ b/packages/engine-runner/src/pi-engine.ts
+@@ -55,7 +55,7 @@ export class PiEngine {
+   async #execute(task: StartTask): Promise<void> {
+     const { coordinator } = this.opts;
+     const events = createRunEvents(task.sessionId, this.opts.emit);
+-    const recorder = this.opts.recordPiEventsPath ? createRawEventRecorder(this.opts.recordPiEventsPath) : undefined;
++    let recorder = this.opts.recordPiEventsPath ? createRawEventRecorder(this.opts.recordPiEventsPath) : undefined;
+     const abort = new AbortController(); // 拦截扩展的信号：中止后新的 decide 立即按 block 返回，不会挂起
+     let scratchDir: string | undefined;
+     let session: AgentSession | undefined;
+@@ -114,6 +114,13 @@ export class PiEngine {
+       if (!this.#stop) for (const e of convertPiEvent(raw)) events.publish(e);
+     };
+ 
++    try {
++      await recorder?.opened; // 诊断文件打不开属于启动失败（engine.md 第一事件规则）：在创建会话、执行工具之前报出
++    } catch (e) {
++      recorder = undefined; // 打开失败已作为启动失败报出，清理不再关闭它
++      this.#outcome = { type: "run.failed", reason: `cannot open --record-pi-events file: ${message(e)}` };
++      return stop();
++    }
+     try {
+       scratchDir = await mkdtemp(join(tmpdir(), "fp-run-")); // 每次运行独占，pi 的 auth/models-store 写在这里
+       const created = await createPiSession({
+diff --git a/packages/engine-runner/src/raw-event-recorder.ts b/packages/engine-runner/src/raw-event-recorder.ts
+index f3679db..0370cf8 100644
+--- a/packages/engine-runner/src/raw-event-recorder.ts
++++ b/packages/engine-runner/src/raw-event-recorder.ts
+@@ -1,11 +1,15 @@
+ import { createWriteStream } from "node:fs";
+ 
+ /** 把 pi 原始事件逐行写成 JSONL 诊断文件；close() 成功才算录制完整，任何写入错误都在 close() 时抛出。 */
+-export function createRawEventRecorder(path: string): { record(raw: unknown): void; close(): Promise<void> } {
++export function createRawEventRecorder(path: string): { opened: Promise<void>; record(raw: unknown): void; close(): Promise<void> } {
+   const out = createWriteStream(path, { mode: 0o600 });
+   let error: unknown;
+   out.on("error", (e) => (error ??= e));
++  const opened = new Promise<void>((ok, fail) => (out.once("open", () => ok()), out.once("error", fail)));
++  opened.catch(() => {}); // 没人等待时不算未处理的 rejection
+   return {
++    /** 文件打开成功时 resolve，打开失败时带原因 reject */
++    opened,
+     record(raw) {
+       if (error) return;
+       try {
+diff --git a/tests/integration/runner-process.test.ts b/tests/integration/runner-process.test.ts
+index eb3777b..0e2002b 100644
+--- a/tests/integration/runner-process.test.ts
++++ b/tests/integration/runner-process.test.ts
+@@ -342,6 +342,19 @@ describe.sequential("runner 进程：协议异常不影响任务", () => {
+   }, 20_000);
+ });
+ 
++describe.sequential("runner 进程：诊断文件打不开属于启动失败（engine.md 第一事件规则）", () => {
++  it("目录不存在：只发带打开原因的 run.failed（没有 run.started），工具不执行，以 0 退出", async () => {
++    const r = await launch(TOOL("touch ran.marker"), ["--record-pi-events", p("no-such-dir/raw.jsonl")]);
++    const { client, events } = await connect(r);
++    client.onIntercept(allow);
++    await client.start(task());
++    expect(await client.waitForEnd()).toMatchObject({ type: "run.failed", reason: expect.stringMatching(/ENOENT.*no-such-dir/) });
++    expect(events.map((e) => e.type)).toEqual(["run.failed"]);
++    expect((await r.exit).code).toBe(0);
++    await neverRan("ran.marker");
++  }, 20_000);
++});
++
+ describe.sequential("runner 进程：清理失败与超时（故障注入）", () => {
+   it("清理失败（诊断文件目录不存在）：run.failed 带清理原因，以 1 退出", async () => {
+     const r = await launch([{ kind: "text", chunks: ["ok"] }], ["--record-pi-events", p("no-such-dir/raw.jsonl")]);
+```

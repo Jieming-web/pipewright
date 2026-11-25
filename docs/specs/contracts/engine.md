@@ -56,7 +56,7 @@
 
 - 第二个连接被拒绝。五道题各启动新 runner。
 - 启动被接受后，runner 先发 `accepted`，再发事件。
-- **第一事件规则**：`accepted` 之后的第一个事件是 `run.started` 或 `run.failed`。加载器或会话创建失败时只发布带原因的 `run.failed`（没有 `run.started`）；客户端不得假设第一个事件一定是 `run.started`。诊断文件（`--record-pi-events`）打不开同样属于启动失败：runner 在创建 pi 会话前等待文件打开结果，失败时只发布带原因的 `run.failed`、不执行任何工具；清理成功时退出码为 0（作者 2026-11-25 决定，Task 11 整体审查 M3）。
+- **第一事件规则**：`accepted` 之后的第一个事件是 `run.started` 或 `run.failed`。加载器或会话创建失败时只发布带原因的 `run.failed`（没有 `run.started`）；客户端不得假设第一个事件一定是 `run.started`。诊断文件（`--record-pi-events`）打不开同样属于启动失败：runner 在创建 pi 会话前等待文件打开结果，失败时只发布带原因的 `run.failed`、不执行任何工具；清理成功时退出码为 0（作者 2026-11-25 决定，Task 11 整体审查 M3）。**尚未实现，作为 T2 开工第一件事**：T1 现状是打开失败要到清理时才报出 `run.failed: cleanup failed: …`（退出码 1），此前工具可能已经执行；只等打开结果、不设时限会在打开卡住时让任务无限静默，修法见 `docs/reviews/step01-pi-integration.md`「推迟到 T2：M3」。
 - `running` 时再收到 `start_task`：返回 `already_running`（带该次启动自己的 `requestId`），不影响原任务。
 - `finished` 后不复用：任何 `start_task` 返回 `run_finished` 并关闭连接。
 - 有效启动前的拒绝（非法消息、`not_implemented`）保持 `idle`，客户端可修正后重试。
