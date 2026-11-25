@@ -17,11 +17,14 @@
 | `run.started` | 进度 | `snapshot: RunSnapshot` |
 | `text.delta` | 进度 | `text: string` |
 | `message.completed` | 进度 | `role: "assistant"`, `text: string` |
+| `model.request.finished` | 进度 | `stopReason: "stop"\|"toolUse"\|"length"\|"error"\|"aborted"`, `usage: {input, output, cacheRead, cacheWrite, reasoning} \| null`, `errorMessage?: string` |
 | `tool.started` | 进度 | `callId: string`, `toolName: string`, `input: unknown` |
 | `tool.finished` | 进度 | `callId: string`, `toolName: string`, `isError: boolean`, `output: unknown` |
 | `run.settled` | 终止 | 无 |
 | `run.failed` | 终止 | `reason: string` |
 | `run.cancelled` | 终止 | 无 |
+
+`model.request.finished`：每次模型请求结束发一条，包括失败的重试尝试和被中止的请求。`usage` 为 `null` 表示未知（pi 没给用量，或 input/output/cacheRead/cacheWrite 全为 0）；`reasoning` 是 `output` 的子集（已含在 `output` 内，计费不得再加），pi 没给时为 0；`errorMessage` 只在 `stopReason` 为 `error` 时出现，截断到 500 字符。
 
 `input`、`output` 保留 JSON 可序列化的原始结构（例如 pi 的 `read` 结果是 `{content:[{type:"text",text}], …}`），不假定为字符串。
 
@@ -54,6 +57,7 @@
 |---|---|---|
 | `message_update` 且 `assistantMessageEvent.type === "text_delta"` | `text.delta{text: assistantMessageEvent.delta}` | 只读 `delta`，不读 `partial`（共享可变对象，可能比 `delta` 超前） |
 | `message_end`，`message.role === "assistant"` 且 `stopReason` 不是 `error`/`aborted` | `message.completed{role:"assistant", text}` | `text` 为 `message.content` 中所有 `type:"text"` 片段拼接；拼接后为空（例如只含工具调用的消息）则不产生 |
+| `message_end`，`message.role === "assistant"`（任何 `stopReason`） | `model.request.finished{stopReason, usage, errorMessage?}` | 每条助手 `message_end` 都产生，先于同一事件产生的 `message.completed`；`usage` 取自 `message.usage` |
 | `message_end`，role 为 user/system/toolResult，或助手消息 `stopReason` 为 `error`/`aborted` | 无 | 失败尝试的半截消息不产生 `message.completed` |
 | `tool_execution_start{toolCallId, toolName, args}` | `tool.started{callId, toolName, input: args}` | |
 | `tool_execution_end{toolCallId, toolName, result, isError}` | `tool.finished{callId, toolName, isError, output: result}` | `callId` 与 `tool.started` 对应 |
@@ -104,8 +108,16 @@
 
 错误：`{"type":"run.started","snapshot":{…,"contextFiles":[{"repo":"r","path":"p","sourceCommit":"c","sha256":"abc"}]}}` 被 schema 拒绝（sha256 非 64 位小写十六进制）。
 
+模型请求结束（重试中失败的尝试，用量未知）：
+
+```json
+{"type":"model.request.finished","stopReason":"error","usage":null,"errorMessage":"500: {\"message\":\"scripted internal server error\"}","sessionId":"s1","seq":3,"at":"2026-01-01T00:00:00.002Z"}
+{"type":"model.request.finished","stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"reasoning":0},"sessionId":"s1","seq":5,"at":"2026-01-01T00:00:00.003Z"}
+```
+
 ## 5. 变更记录
 
 | 日期 | 变更 | 关联决策 | 受影响的调用方 |
 |---|---|---|---|
 | 2026-11-22 | 初版：事件定义、pi 映射、重试残留规则、序号与终止规则 | 作者决定 ①（重试残留文字） | Task 4、8B、9A |
+| 2026-11-25 | 新增进度事件 `model.request.finished`（每次模型请求结束的停止原因与用量，含失败尝试与被中止请求） | 评测框架需求（T1 推迟项，T2-3） | T2 评测框架、engine-client |
