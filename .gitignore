@@ -14,3 +14,5 @@ models.local.json
 .superpowers/
 config/auth.json
 config/models-store.json
+eval/runs/
+eval/.cache/

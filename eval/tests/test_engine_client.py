@@ -1,0 +1,179 @@
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from forgepilot_eval import engine_client
+from forgepilot_eval.engine_client import run_task
+
+# 本机用 node 跑桥 + runner（构建产物）+ 假模型（外部进程），不用 Docker；Python 侧只读写 JSON 行
+ROOT = Path(__file__).resolve().parents[2]
+BRIDGE = ROOT / "packages/engine-client/dist/stdio-bridge.js"
+RUNNER = ROOT / "packages/engine-runner/dist/main.js"
+FAKE_CLI = ROOT / "tests/helpers/fake-openai-cli.ts"
+
+START = {
+    "type": "start_task",
+    "requestId": "A",
+    "sessionId": "s1",
+    "prompt": "go",
+    "model": {"provider": "fake", "id": "fake-model"},
+    "contextFiles": [],
+    "interceptMode": "callback",
+}
+TOOL = lambda cmd: [  # noqa: E731
+    {"kind": "toolCall", "name": "bash", "args": {"command": cmd}, "id": "c1"},
+    {"kind": "text", "chunks": ["done"]},
+]
+ALLOW = lambda req: {"decision": "allow"}  # noqa: E731
+_Popen = subprocess.Popen  # 假模型用原始 Popen，不计入 spawned
+
+
+@pytest.fixture(autouse=True)
+def spawned(monkeypatch):
+    """记下 run_task 启动的每个桥子进程；每个测试结束时它们都必须已被 wait（returncode 不为 None）"""
+    procs = []
+    real = subprocess.Popen
+
+    def popen(*a, **kw):
+        p = real(*a, **kw)
+        procs.append(p)
+        return p
+
+    monkeypatch.setattr(engine_client.subprocess, "Popen", popen)
+    yield procs
+    monkeypatch.undo()
+    assert procs and all(p.returncode is not None for p in procs)
+
+
+@pytest.fixture
+def launch(tmp_path):
+    """起假模型（外部 node 进程）并返回桥的命令行"""
+    fakes = []
+
+    def make(turns):
+        (tmp_path / "turns.json").write_text(json.dumps(turns))
+        fake = _Popen(
+            ["node", "--import", "tsx", str(FAKE_CLI), str(tmp_path / "turns.json")],
+            cwd=ROOT, stdout=subprocess.PIPE, text=True,
+        )
+        fakes.append(fake)
+        line = fake.stdout.readline()
+        assert line.startswith("FAKE_LISTENING "), line
+        base_url = line.split()[1]
+        models = {"providers": {"fake": {
+            "baseUrl": base_url, "api": "openai-completions", "apiKey": "fake-key",
+            "compat": {"supportsStore": False, "supportsDeveloperRole": False, "supportsReasoningEffort": False},
+            "models": [{"id": "fake-model", "reasoning": False, "input": ["text"], "contextWindow": 32768, "maxTokens": 4096}],
+        }}}
+        (tmp_path / "models.json").write_text(json.dumps(models))
+        for d in ("work", "sessions"):
+            (tmp_path / d).mkdir(exist_ok=True)
+        return ["node", str(BRIDGE), "--runner", str(RUNNER), "--",
+                "--port", "0", "--models", str(tmp_path / "models.json"), "--workdir", str(tmp_path / "work"),
+                "--sessions-root", str(tmp_path / "sessions"), "--idle-timeout-ms", "10000"]
+
+    yield make
+    for f in fakes:
+        f.terminate()
+        f.wait(10)
+
+
+def fake_bridge(script):
+    """忽略 stdin 的假桥：执行 script 后永不退出"""
+    return [sys.executable, "-c", script + "\nimport time\nwhile True: time.sleep(60)"]
+
+
+def collect():
+    events = []
+    return events, events.append
+
+
+def test_settled_with_contiguous_seq_and_tool_runs_after_allow(launch, tmp_path):
+    events, on_event = collect()
+    r = run_task(launch(TOOL("touch ran.marker")), START, ALLOW, on_event, timeout_s=30, kill=lambda: None)
+    assert r.failure is None and r.timed_out is False
+    assert r.terminal["type"] == "run.settled"
+    assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+    assert events[-1] is r.terminal
+    assert (tmp_path / "work/ran.marker").exists()
+
+
+def test_blocked_tool_does_not_run(launch, tmp_path):
+    requests = []
+
+    def decide(req):
+        requests.append(req)
+        return {"decision": "block", "reason": "no"}
+
+    events, on_event = collect()
+    r = run_task(launch(TOOL("touch ran.marker")), START, decide, on_event, timeout_s=30, kill=lambda: None)
+    assert r.terminal["type"] == "run.settled" and r.failure is None
+    assert [q["toolName"] for q in requests] == ["bash"]
+    assert not (tmp_path / "work/ran.marker").exists()
+
+
+def test_confirm_request_is_always_denied(launch, tmp_path):
+    # decide 返回 confirm：runner 发 confirm_request，客户端一律拒绝，工具不执行
+    events, on_event = collect()
+    r = run_task(launch(TOOL("touch ran.marker")), START, lambda q: {"decision": "confirm", "reason": "ask"},
+                 on_event, timeout_s=30, kill=lambda: None)
+    assert r.terminal["type"] == "run.settled"
+    assert not (tmp_path / "work/ran.marker").exists()
+
+
+def test_timeout_sends_cancel_and_gets_cancelled(launch):
+    slow = [{"kind": "text", "chunks": ["x"] * 30, "chunkDelayMs": 500}]
+    kills = []
+    events, on_event = collect()
+    r = run_task(launch(slow), START, ALLOW, on_event, timeout_s=1, kill=lambda: kills.append(1))
+    assert r.timed_out is True
+    assert r.terminal["type"] == "run.cancelled"
+    assert r.failure is None and kills == []
+
+
+def test_silent_bridge_returns_in_time_and_calls_kill():
+    kills = []
+    t0 = time.monotonic()
+    r = run_task(fake_bridge(""), START, ALLOW, lambda e: None, timeout_s=1, kill=lambda: kills.append(1), grace_s=1)
+    assert time.monotonic() - t0 < 1 + 1 + 2
+    assert r.timed_out is True and r.terminal is None
+    assert kills == [1]
+
+
+@pytest.mark.parametrize("line", [
+    "not json",
+    '{"requestId": "A"}',
+    '{"type": "event", "event": {"type": "text.delta", "text": "x"}}',
+    '{"type": "event", "event": {"seq": 1}}',
+])
+def test_protocol_error_fails_and_shuts_down(line):
+    kills = []
+    t0 = time.monotonic()
+    r = run_task(fake_bridge(f"print({line!r}, flush=True)"), START, ALLOW, lambda e: None,
+                 timeout_s=30, kill=lambda: kills.append(1), grace_s=1)
+    assert time.monotonic() - t0 < 1 + 2
+    assert r.failure.startswith("protocol: ")
+    assert r.timed_out is False and r.terminal is None and kills == [1]
+
+
+def test_bridge_eof_before_terminal_is_failure():
+    r = run_task([sys.executable, "-c", "import sys; sys.exit(3)"], START, ALLOW, lambda e: None,
+                 timeout_s=30, kill=lambda: None)
+    assert r.failure == "bridge exited: code 3"
+    assert r.terminal is None and r.timed_out is False
+
+
+def test_killed_bridge_gives_failure_without_hanging(launch, spawned):
+    def decide(req):
+        spawned[0].kill()  # 等拦截时杀掉桥
+        return {"decision": "allow"}
+
+    t0 = time.monotonic()
+    r = run_task(launch(TOOL("touch ran.marker")), START, decide, lambda e: None, timeout_s=30, kill=lambda: None)
+    assert time.monotonic() - t0 < 15
+    assert r.failure == "bridge exited: code -9"
+    assert r.terminal is None

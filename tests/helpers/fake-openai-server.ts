@@ -36,7 +36,8 @@ export interface FakeOpenAIServer {
 
 const FRAGMENTS = 8; // 与 0C.4 观测到的百炼切分段数一致
 
-export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<FakeOpenAIServer> {
+/** host 默认只监听本机；0.0.0.0 供容器内的 runner 访问（fake-openai-cli --host） */
+export async function startFakeOpenAIServer(turns: ScriptedTurn[], host = "127.0.0.1"): Promise<FakeOpenAIServer> {
   const requests: unknown[] = [];
   const errors: string[] = [];
   const aborted: number[] = [];
@@ -137,10 +138,10 @@ export async function startFakeOpenAIServer(turns: ScriptedTurn[]): Promise<Fake
     res.end();
   }
 
-  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+  await new Promise<void>((ok) => server.listen(0, host, ok));
   const { port } = server.address() as AddressInfo;
   return {
-    baseUrl: `http://127.0.0.1:${port}/v1`,
+    baseUrl: `http://${host}:${port}/v1`,
     requests,
     errors,
     aborted,

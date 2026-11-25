@@ -1,0 +1,9 @@
+[project]
+name = "forgepilot-eval"
+version = "0.0.0"
+description = "ForgePilot 评测框架：经 stdio 桥驱动 runner，只走跨进程协议"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
