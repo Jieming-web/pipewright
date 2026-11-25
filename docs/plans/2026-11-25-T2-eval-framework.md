@@ -1,0 +1,392 @@
+# T2 评测框架 v1 与基线 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 执行方式遵守 `docs/workflow.md` 和作者指示，不因本行自行启动多 agent 编排。
+
+**Goal:** 一条命令在 Docker 中跑完一个版本化的 SWE-bench 任务集：Python 评测框架经统一引擎接口驱动容器内的 pi runner，在新容器中评分，输出成功率（均值、波动与置信区间）、token、轮数、耗时、失败类型、花费和完整轨迹；据此选定主模型并产出开发集基线报告。
+
+**Architecture:** 每个任务、每次重复一个容器，镜像用 SWE-bench 官方实例镜像（Mac 冒烟用 arm64 镜像）。runner、Linux 版 node、rg、fd 和启动脚本打成运行包，只读挂载到容器 `/fp`。评测框架用 `docker exec -i` 运行启动脚本：脚本先激活 testbed 的 conda 环境，再启动 stdio 桥；桥启动 runner，并把 WebSocket 帧与 stdin/stdout 的 JSON 行互转，所以 runner 仍只监听容器内 127.0.0.1。任务容器只接 Docker internal 网络，模型请求经旁路的模型代理转发，API key 只在代理容器里。token 与轮数来自新增的「模型请求结束」协议事件。agent 结束后取出补丁，用 swebench 5.x 在新容器里评分。正式评测在 x86 服务器上克隆本仓库后运行同一条命令。
+
+**Tech Stack:** TypeScript（runner、stdio 桥、模型代理，沿用 T1 的 pnpm 工作区与 vitest）；Python 3.13 venv（`eval/`：pytest、swebench 5.x、PyYAML）；Docker（本机 Docker Desktop 29.3 arm64；x86 云服务器正式评测）；Qwen API（百炼）、Kimi K2.6 API。T2 不跑本地模型（作者 2026-11-25 决定，见 tasks.md T2 验收 6）。
+
+**Spec:**
+- `docs/workflow.md`：3.2–3.6、4.1–4.6。
+- `docs/specs/tasks.md`：T2，验收 1–10（验收 1 含留出集暂缓与重新启用条件，验收 6 含不跑本地模型，均为作者 2026-11-25 决定）；T2「T1 遗留」M3、M5。
+- `docs/specs/design.md`：3.11 评测（全节，含 2026-11-25 追加的远程运行与网络两段）、5.1、5.2；第 2 节统一引擎接口。
+- `docs/specs/proposal.md`：R2、R4、S1、S8；第 5 节模型与硬件。
+- `docs/specs/decisions/005`、`011`、`015`、`016`（运行快照）。
+- 契约：`docs/specs/contracts/engine.md`（本任务修改：M3 打开时限、取消竞速、stdio 桥传输、停止阶段的模型请求结束事件）、`docs/specs/contracts/agent-events.md`（本任务新增 `model.request.finished`）。
+- 前置代码：`packages/engine-runner`（`pi-engine.ts`、`pi-event-converter.ts`、`runner-server.ts` 的 `STOP_BACKSTOP_MS`）、`packages/engine-client`（`spawnRunner`、`STOP_TIMEOUT_MS`）、`scripts/check-secrets.ts`、`tests/helpers/fake-openai-server.ts`；T1 实现说明「推迟到 T2：M3」及其更正，以及收尾节中推迟到 T2 的「模型请求结束」事件（2205、2448、2456 行附近）。
+- 计划审查：2026-11-25 子 agent 审查（资深 agent 工程师视角）的"必须改"与"建议改"全部采纳，作者另补 8 条（下文标「作者补」）；同日作者第二轮意见（预算取消、续跑一致性、推理 token、复用选型记录、Kimi 2 次等）经复核后采纳（下文标「作者补 2」）。
+
+## 开工决定（作者 2026-11-25 已确认）
+
+| # | 决定 |
+|---|---|
+| D1 | 任务容器不能上网，也访问不到宿主机：只接 Docker `--internal` 网络。模型请求发给旁路的模型代理容器，代理只放行 `POST /<route>/chat/completions`，把 `model` 改写为该路由固定的模型 ID，删除联网搜索类参数（`enable_search`、`search_options`、`web_search`、`tools` 里 `type` 不是 `function` 的条目），并由代理加 API key。评分容器不运行 agent，使用默认网络。已写进 design 3.11。 |
+| D2 | Python 经 stdio 桥连 runner：`docker exec -i <容器> /fp/bin/fp-entry <runner 参数>`，一行一条协议消息，消息本身不变。关停不依赖 stdin EOF：Python 侧设硬截止，最终兜底是删除容器。 |
+| D3 | 新增契约事件 `model.request.finished`：每次模型请求结束都发，包括失败和被中止的请求，停止阶段也发（在终止事件之前）；用量缺失或全为 0 时为 `null`，报告中显示「未知」。用量带 `reasoning`，它是 `output` 的子集（T1 第 3 次录制：`totalTokens = input + output`，`reasoning ≤ output`），只用于单列展示；花费只按 `output` 计，不再加 `reasoning`。T1 的原始录制只作诊断，不再用来统计。 |
+| D4 | 用 swebench 5.x 与 `SWE-bench/SWE-bench_Verified` 数据集（自带 `image`、`eval_script` 等字段）。评分在新建的同镜像容器里进行：沿用 swebench 的补丁回退链，打补丁后跑测试，设测试超时。不信任 agent 容器里的任何结果。 |
+| D5 | 开发集 40 个、选型子集 20 个（从开发集按仓库分层抽）。两个 Qwen 候选每题重复 3 次；Kimi K2.6 在开发集上重复 2 次（作者补 2：它只是对照，不参与选型；n=2 的样本标准差参考价值低，Kimi 的波动以按题 bootstrap 区间为准，报告注明两组重复次数不同）。成功率报告每次重复的均值与样本标准差（ddof=1），再加一个按题 bootstrap 的 95% 置信区间；报告写明 20 题能分辨的最小差距。 |
+| D6 | 留出集暂缓（tasks.md T2 验收 1），T2 不建、不跑；本计划只在 Task 0 记录核实结果。 |
+| D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别按模型配置，Qwen3-Coder-Next 只有非思考模式，设为 `off`；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
+| D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`$(`、反引号之后）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
+| D9 | 本机用 `/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
+| D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error` 与 `rate_limited`（429）最多重试 2 次，仍失败就从分母中排除并逐条列出；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
+| D11 | 选型决策规则开跑前写进选型报告：在同一批 20 题上做逐题配对比较，只用两边都有有效结果的题（任一边被排除的题两边都不计，并列出）。差值的 bootstrap 95% 置信区间不含 0，就选成功率高的；含 0，就选花费低的；花费差距在 10% 以内时，选工具调用出错率低的；仍分不出时，选 Qwen3.6-35B-A3B（015 的倾向）。结论限定：两个候选的思考设置不同（Qwen3.6 为 `low`，Qwen3-Coder-Next 只有非思考模式），比较的是「模型加它可用的设置」，不是单纯比模型，选型报告的结论必须写明这一点。 |
+
+**需要作者准备**：Kimi K2.6 的 API key（Moonshot 开放平台，写进根目录 `.env`，变量名 `MOONSHOT_API_KEY`）；Qwen3-Coder-Next 的可用渠道（T1 时当前百炼 key 调不了，Task 0 复核）；x86 服务器到 Task 15 才租，租之前先报价。
+
+## Global Constraints
+
+- pi 锁定 1.5.1，不修改、不 fork；runner 的产品行为只按契约改，先改契约再改代码。T2 由评测框架担任拦截决策方（`interceptMode: "callback"`）。
+- 评测框架用 Python，只经跨进程协议与 runner 通信，不导入、不调用任何 TS 代码（验收 7：T12 接入 Claude Code 时评测框架不需要改）。
+- agent 的命令只在任务容器内执行；每个任务的每次重复都新建容器，结束后删除；本次评测创建的容器与网络都打上标签 `fp-run=<运行名>`，崩溃后可以按标签清理。
+- 单元与集成测试只用假模型；真实模型只在 Task 0、14、15、16 调用，每次调用前输出预计花费。
+- API key 只从 `.env` 读取，用 `docker run -e 变量名`（值从子进程环境继承）只传给代理容器，不进入命令行参数、日志、轨迹或报告；每次真实运行后用 `scripts/check-secrets.ts` 扫描输出目录，只传本次实际用到的变量。
+- 运行产物写到 `eval/runs/<运行名>/`，不进 git；评测报告 `docs/evals/` 只追加、不改正文；不引用第三方排行榜的分数；报告注明开发集分数可能偏高，并写明 T2 没有留出集数字。
+- 任务分支 `step-02-eval`，隔离工作区；每个小任务验证后本地提交，格式 `类型(step02): 说明`；推送、合并、tag、租服务器需作者同意。
+- 文档中文，代码标识符英文；先写测试并看到失败，再实现；同一任务最多返修 3 轮；每做完一个小任务就停下等作者审查（规格与质量审查之后，另做一次 ponytail-review）。
+
+## Review Focus
+
+1. **agent 卡住或模型服务不可用**：runner 一直不发终止事件 → 到墙钟上限后发取消；再过 15 秒仍未结束，就杀掉桥进程并删除容器，记为 `timeout`，其他任务照常继续（Task 5、12）。
+2. **补丁不完整或打不上**：agent 新建了文件或改了二进制文件 → 补丁用 `git add -A` 后 `git diff --cached --binary <base>` 取出（被 `.gitignore` 忽略的构建产物不进补丁，这是有意的）；评分时回退链都打不上就记为 `patch_apply_failed`，算失败（Task 10、12）。
+3. **历史截断漏网**：标签、reflog、packed-refs、stash、notes、远程引用或不可达对象里仍有基准之后的提交 → 截断后自检，自检不通过就不运行这个任务，记为 `infra_error`（Task 9）。
+4. **评测进程崩溃或中途 Ctrl-C**：容器按标签清理；用 `--resume` 续跑，已有 `record.json` 的运行会跳过；不带 `--resume` 时，输出目录已存在就拒绝运行（Task 13）。
+5. **花费失控或限流**：累计实际花费达到 `--budget` 时，取消所有进行中的运行（`budget_cancelled`），不再开始新的（「未运行」），整次评测标为未完成；429 单独归类，不和模型能力混在一起（Task 12、13）。
+
+---
+
+## 小任务、依赖与覆盖
+
+| 小任务 | 预计 | 依赖 | T2 验收引用 |
+|---|---|---|---|
+| 0 开工核实 | 120 分钟 | 无 | 1、3、7、9、10 |
+| 1 M3：诊断文件打开时限 | 75 分钟 | 0 | T1 遗留 |
+| 2 M5：路径规则防漂移测试 | 30 分钟 | 0 | T1 遗留 |
+| 3 模型请求结束事件 | 60 分钟 | 1 | 2、5 |
+| 4 stdio 桥 | 60 分钟 | 3 | 7 |
+| 5 Python 客户端与拦截策略 | 75 分钟 | 4 | 4、7 |
+| 6 运行包与启动脚本 | 75 分钟 | 4 | 3、7 |
+| 7 模型代理 | 45 分钟 | 0 | 3 |
+| 8 容器沙箱与网络 | 60 分钟 | 6、7 | 3 |
+| 9 仓库历史截断 | 60 分钟 | 8 | 8 |
+| 10 评分 | 60 分钟 | 8 | 2 |
+| 11 任务集与金标准预检 | 75 分钟 | 10 | 1 |
+| 12 单任务运行 | 75 分钟 | 5、9、10 | 2、3、4 |
+| 13 汇总、花费、并发与一条命令 | 90 分钟 | 11、12 | 2、5 |
+| 14 Mac 冒烟与花费校准 | 60 分钟 | 13 | 3、7、8、9 |
+| 15 远程 x86、任务集定版与主模型选型 | 120 分钟＋运行 | 14、作者同意租用 | 1、9、10 |
+| 16 开发集基线与报告 | 60 分钟＋运行 | 15 | 6 |
+| 17 收尾关卡 | 60 分钟 | 以上全部 | 1–10 逐条核对 |
+
+---
+
+### Task 0：开工核实
+
+**目标**：确认本计划依赖的每个外部条件都成立，任何一项不成立就停下来报告，不绕过。结果写进 `docs/reviews/step02-eval-framework.md`「0. 开工核实」（模版 `docs/templates/review.md`），探测脚本全文附在附录。
+
+- [ ] **Step 1：留出集核实记录**。把 2026-11-25 的核实结果写进实现说明：datasets-server 查到 SWE-bench-Live full 划分 `created_at ≥ 2025-10-01` 为 0 题，SWE-rebench-leaderboard 按月划分只到 `2026_03`；`huggingface.co` 主站当时连不上，没能交叉核对，datasets-server 的索引可能滞后。用 `datasets` 直接加载再确认一次；结论如果变了，停下报告作者。
+- [ ] **Step 2：Python 与 swebench**。`/usr/local/bin/python3.13 -m venv` 建 scratch venv，安装 swebench 5.x 最新版；记录确切版本，以及 `make_test_spec`、`get_eval_report`、`GIT_APPLY_CMDS`、`exec_run_with_timeout` 的实际导入路径（后续 Task 以实测为准）。加载 `SWE-bench/SWE-bench_Verified`，记录 revision sha、条数、仓库分布，并确认实例带 `image`、`eval_script`、`log_parser`、`eval_type` 字段。
+- [ ] **Step 3：镜像**。挑 3 个实例：x86 镜像名能否解析（`docker manifest inspect`）；Mac 上能否拉取 arm64 镜像（先查 `swebench` 命名空间下的 arm64 仓库，再查 Epoch AI），并在容器内查看 `cd /testbed && git log -1`。记录镜像命名规则、单个镜像大小，`/testbed` 的 git 状态（`git tag | wc -l`、`git reflog | head`、`git branch -a`、`git stash list`），以及镜像 `Env` 里的 PATH 和 testbed 环境的激活方式。
+- [ ] **Step 4：运行包可行性**。执行 `pnpm --filter @forgepilot/engine-runner deploy --legacy --prod <scratch>/runner`，以及 engine-client 的同样命令，确认两者的 `dist/` 都在（根目录 `.gitignore` 里有 `dist/`，需要时给包加 `files` 字段）。把 Linux arm64 版 node 24、rg、fd 的官方发行包放进去，挂载进 Step 3 的 arm64 实例镜像（不用 `ubuntu:22.04`）。在 `source /opt/miniconda3/bin/activate && conda activate testbed` 之后运行 `node runner/dist/main.js`，应以「--models is required」非零退出；同时确认 `which python` 指向 `envs/testbed`。
+- [ ] **Step 5：网络**。`docker network create --internal fp-probe`。internal 网络里的容器：`curl https://github.com` 必须失败，访问 `host.docker.internal` 必须失败（作者补 2）。同时接两个网络的 `node:24-slim` 容器能访问 `https://dashscope.aliyuncs.com`；internal 网络里的容器能按容器名访问它。
+- [ ] **Step 6：模型**。从 `.env` 加载 key，只记录是否存在。Qwen3.6-35B-A3B、Qwen3-Coder-Next、Kimi K2.6 各发一次只含一个工具调用的请求（形状同 T1 0C 的探测脚本），记录：模型 ID、价格（元/百万 token，输入/输出/缓存）、是否可用、支持哪些思考级别、默认采样参数，以及 `enable_search` 一类参数是否被接受。开了思考的模型（Qwen3.6、Kimi K2.6）各核对一次 pi 报的用量口径：`totalTokens` 是否等于 `input + output`、`reasoning` 是否不超过 `output`。Kimi 的口径与百炼不同时停下报告，不自行改计费。
+- [ ] **Step 7：关卡**。在实现说明里逐项写「通过 / 不通过 / 未执行」，有不通过就停下报告作者；全部通过后提交 `docs(step02): 开工核实`。
+
+### Task 1：M3 诊断文件打开时限
+
+**目标**：诊断文件打不开或打开卡住，都属于启动失败，在创建 pi 会话、执行任何工具之前报出。方案按 T1 实现说明「推迟到 T2：M3」的 A2+3。
+
+**Files:** Modify `docs/specs/contracts/engine.md`、`packages/engine-runner/src/raw-event-recorder.ts`、`packages/engine-runner/src/pi-engine.ts`；迁移 `git grep -n "no-such-dir\|mkfifo" -- tests/integration` 列出的 8 条测试。
+
+**Interfaces:** `createRawEventRecorder(path)` 新增 `opened: Promise<void>`；新常量 `RECORDER_OPEN_LIMIT_MS = 5_000`。
+
+- [ ] **Step 1：改契约**。engine.md 第一事件规则删掉「尚未实现」，改写为：等文件打开结果，最多 5 秒，期间收到取消就立即结束等待、按 `run.cancelled` 收尾；打开失败或超时，只发带原因的 `run.failed`，不执行工具；打开卡住导致进程无法自行退出时，由启动者到停止时限强杀。超时表加一行「诊断文件打开，5 秒，不可配置」。在「进程退出」一段写明：打开等待与取消竞速，不与清理时限叠加，所以「7 s < 10 s」的算术不变。变更记录加一行。提交 `docs(step02): 契约补诊断文件打开时限`。
+- [ ] **Step 2：写失败测试**（`runner-process.test.ts`）。
+  - `it("诊断文件目录不存在：只发 run.failed，工具不执行，以 0 退出")`：事件类型序列为 `["run.failed"]`，`reason` 匹配 `/ENOENT.*no-such-dir/`，退出码 0，`ran.marker` 不出现。
+  - `it("诊断文件是无读端 FIFO：约 5 秒后发 run.failed（原因含 timed out），工具不执行")`：事件序列为 `["run.failed"]`，marker 不出现；进程不能自行退出时，启动者强杀（`forced: true`）也算通过。
+  - `it("等待打开时收到取消：立即以 run.cancelled 结束，工具不执行")`。
+- [ ] **Step 3：运行确认失败**：`pnpm vitest run tests/integration/runner-process.test.ts`。预期现象：第一条得到 `run.failed: cleanup failed: ENOENT…`，退出码 1，marker 出现；第二条的工具照常执行（marker 出现），到清理超时才发 `run.failed: cleanup failed`；第三条要等创建结束才处理取消。现象和这里写的不一样，就停下报告。
+- [ ] **Step 4：实现**：`pi-engine.ts` 在 `mkdtemp`/`createPiSession` 之前，让 `recorder.opened`、5 秒超时和取消信号三者竞速；打开失败或超时，就置空 recorder、`#outcome = run.failed`、`return stop()`；取消先到，就按取消收尾。
+- [ ] **Step 5：迁移旧的故障注入测试**：原来用「目录不存在」注入**清理失败**的，改为打开 FIFO 读端后立即关闭，让写入得到 EPIPE；原来用「无读端 FIFO」注入**清理超时**的，改为打开读端但不读，写满管道缓冲区。两种注入在 macOS 上各连跑 5 次，再在 `node:24` Linux 容器里跑一次（`pnpm install --frozen-lockfile` 在容器内执行，node_modules 不和宿主机共用）。任何一处不稳定，就停下报告作者。
+- [ ] **Step 6：全量验证并提交**：`pnpm test && pnpm typecheck && pnpm build && pnpm check:pi`；提交 `fix(step02): 诊断文件打不开属于启动失败`。
+
+### Task 2：M5 路径规则防漂移测试
+
+**Files:** 新建 `tests/unit/pi-resolve-drift.test.ts`；`scripts/t1-real-run.ts` 导出 `piResolve`。
+
+- [ ] **Step 1：写测试**：对一组输入（`a.py`、`./a.py`、`/abs/a.py`、`~/a.py`、`@a.py`、含普通空格和 Unicode 空格的路径、`../x`），断言 `piResolve(input, cwd)` 与 pi 1.5.1 的 `core/tools/path-utils.js` 中 `resolveToCwd(input, cwd)`（工具实际使用的那个，带去掉 `@` 前缀和统一 Unicode 空白）结果相同；按文件路径导入，做法同 `pi-session.test.ts` 的工具名单比对。
+- [ ] **Step 2：运行**：`pnpm vitest run tests/unit/pi-resolve-drift.test.ts`，预期直接通过。不通过时，先把差异记进实现说明，再停下问作者：是修 `piResolve`，还是改对照对象。用变异确认测试有效：删掉 `piResolve` 对 `~` 的处理，测试必须失败，确认后恢复。
+- [ ] **Step 3：提交** `test(step02): piResolve 与 pi 路径规则的防漂移测试`。
+
+### Task 3：模型请求结束事件（D3）
+
+**目标**：每次模型请求结束，调用方都能拿到结束原因和用量，包括失败、重试中的失败尝试和被中止的请求。T1 推迟到 T2 的事项在这里完成。
+
+**Files:** Modify `docs/specs/contracts/agent-events.md`、`docs/specs/contracts/engine.md`（2.3 清理阶段的例外）、`packages/engine-protocol/src/agent-events.ts`、`packages/engine-runner/src/pi-event-converter.ts`、`packages/engine-runner/src/pi-engine.ts`（停止阶段放行这类事件）、`scripts/t1-usage.ts`（只改 shortcut 注释，指向新事件）；Test `tests/unit/pi-event-converter.test.ts`、`tests/unit/agent-events.test.ts`、`tests/integration/pi-engine.test.ts`。
+
+**Interfaces:** 事件 `model.request.finished`（进度类）：`stopReason: "stop" | "toolUse" | "length" | "error" | "aborted"`；`usage: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number } | null`（pi 没给用量或全部为 0 时为 `null`，表示未知；`reasoning` 是 `output` 的子集，pi 没给时为 0）；`errorMessage?: string`（只在 `stopReason` 为 `error` 时出现，原样截断到 500 字符）。来源是 pi 的每条 `role=assistant` 的 `message_end`。
+
+- [ ] **Step 1：改契约**：agent-events.md 的事件表和 pi 映射表各加一行，并加一条例子；engine.md 2.3 写明：清理过程中不再发布进度事件，唯一的例外是 `model.request.finished`，它在终止事件之前发出；runner 被强杀时，正在进行的请求不会有这个事件。提交 `docs(step02): 契约新增模型请求结束事件`。
+- [ ] **Step 2：写失败测试**：转换器用现有样本 `retry.jsonl`、`retry-drop.jsonl`（失败尝试 `stopReason: "error"`，各一条）、`tool-call-then-text.jsonl`（`toolUse` 和 `stop` 各一条，用量与样本一致）；用量全为 0 → `usage: null`。用 T1 第 3 次真实录制 `real-qwen-api-run3-thinking-send-notice.jsonl` 断言：每条有用量的事件 `reasoning > 0` 且 `reasoning ≤ output`，`input + output` 等于录制中的 `totalTokens`（证明推理 token 已含在 `output` 里，花费不能再加 `reasoning`）。schema 拒绝未知的 `stopReason`。集成测试：慢流中途取消，事件序列里有一条 `stopReason: "aborted"` 的 `model.request.finished`，并且排在 `run.cancelled` 之前。
+- [ ] **Step 3：运行确认失败**；**Step 4：实现**；**Step 5：全量验证并提交** `feat(step02): 模型请求结束事件`。
+
+### Task 4：stdio 桥（D2）
+
+**Files:** Create `packages/engine-client/src/stdio-bridge.ts`、`tests/integration/stdio-bridge.test.ts`；Modify `docs/specs/contracts/engine.md`（新增「传输：stdio 桥」与变更记录）、`packages/engine-client/package.json`（加 `files: ["dist"]`，供 Task 6 的 deploy 使用）。
+
+**Interfaces:**
+- 命令行：`node stdio-bridge.js --runner <runner main.js> -- <runner 参数…>`。
+- stdin 每行原样作为一个 WebSocket 文本帧发出；每个收到的帧原样写成一行到 stdout。帧里有换行时，写 stderr 并以 2 退出。
+- stdin EOF 时关闭 WebSocket（runner 按断线取消）。WebSocket 关闭后，`spawnRunner().stop()` 等 runner 退出；桥的退出码等于 runner 的退出码，runner 被强杀时为 137。runner 的 stderr 原样转到桥的 stderr。桥不校验、不改写消息。
+
+- [ ] **Step 1：写契约**，提交。
+- [ ] **Step 2：写失败测试**（假模型服务 + 真实 runner 子进程）：`start_task → accepted → 事件 → run.settled`，每条消息各占一行；callback 拦截一来一回之后工具执行；stdin EOF 后桥以 runner 的退出码退出；非法 JSON 行原样转发，stdout 收到 `invalid_message`。
+- [ ] **Step 3：运行确认失败**；**Step 4：实现**（用 `spawnRunner` 的 `listening` 拿端口，再用 `ws` 直连）；**Step 5：全量验证并提交** `feat(step02): runner 的 stdio 桥`。
+
+### Task 5：Python 客户端与拦截策略
+
+**Files:** Create `eval/pyproject.toml`、`eval/requirements.txt`、`eval/forgepilot_eval/{__init__,engine_client,policy}.py`、`eval/tests/{test_policy,test_engine_client}.py`、`tests/helpers/fake-openai-cli.ts`；Modify `.gitignore`（加 `eval/runs/`、`eval/.cache/`）。
+
+**Interfaces:**
+- `run_task(cmd: list[str], start: dict, decide: Callable[[dict], dict], on_event: Callable[[dict], None], timeout_s: float, kill: Callable[[], None], grace_s: float = 15) -> RunResult`；`RunResult(terminal: dict | None, failure: str | None, timed_out: bool)`。
+  - 同步实现：读线程把 stdout 的行放进队列，主循环带超时取出。到 `timeout_s` 时写 `cancel`；之后 `grace_s` 秒内仍没有终止事件和进程退出，就调用 `kill()`（由调用方删除容器），并杀掉桥子进程。
+  - `confirm_request` 一律回 `approved: false, by: "eval", reason: "eval does not confirm"`。
+  - 出现非 JSON、缺 `type`、事件缺 `type`/`seq` 的行，记 `failure="protocol: …"`，按超时同样的路径收尾。终止事件之前 stdout 就 EOF，记 `failure="bridge exited: code N"`。
+- `Policy(cfg: PolicyConfig)`，`PolicyConfig(tools, danger_patterns, max_tool_calls)`；`decide(req) -> Decision`；`exhausted: bool`（计数超限后返回 `block` 并置为 True，由调用方取消任务）。
+- `fake-openai-cli.ts <turns.json> [--host 0.0.0.0]`：stdout 打印 `FAKE_LISTENING <baseUrl>`。
+
+- [ ] **Step 1：建 venv**：`/usr/local/bin/python3.13 -m venv eval/.venv && eval/.venv/bin/pip install -r eval/requirements.txt`。
+- [ ] **Step 2：写失败测试**。
+  - `test_policy.py`：D8 每条规则各一个命中样例和一个不该命中的样例，例如 `grep -rn "curl" .`、`echo git pushd`、`ls; curl x`（命中）；`powershell` 被拒；第 101 次调用被拒，且 `exhausted` 为 True。
+  - `test_engine_client.py`：本机用 node 跑桥 + runner + 假模型，不用 Docker。正常结束拿到 `run.settled`，`seq` 从 1 开始连续；拦截被拒时工具不执行；`timeout_s=1` 配慢流，得到 `timed_out=True` 和 `run.cancelled`；假桥（一个忽略 stdin、永不输出的 Python 脚本）在 `timeout_s + grace_s + 2` 秒内返回，且 `kill` 被调用过；桥进程被杀时得到 `failure`，不挂起。
+- [ ] **Step 3：运行确认失败**：`eval/.venv/bin/pytest eval/tests -q`；**Step 4：实现**；**Step 5：通过后提交** `feat(step02): Python 引擎客户端与评测拦截策略`。
+
+### Task 6：运行包与启动脚本
+
+**Files:** Create `scripts/build-eval-bundle.sh`、`eval/runtime/fp-entry.sh`、`eval/tests/test_bundle.py`；Modify `packages/engine-runner/package.json`（加 `files: ["dist"]`）。
+
+**Interfaces:**
+- `scripts/build-eval-bundle.sh <linux-x64|linux-arm64>` 生成 `eval/.cache/bundle-<arch>/`，包含：
+  - `node/`：node 24 官方 Linux 发行包，版本与 sha256 写死在脚本里并校验；
+  - `bin/rg`、`bin/fd`：官方发行包，同样校验 sha256；
+  - `bin/fp-entry`：即 `fp-entry.sh`；
+  - `app/runner/`、`app/client/`：两次 `pnpm deploy --legacy --prod` 的产物；
+  - `VERSION`：内容为 `<git commit> pi@1.5.1 node@<版本>`。
+  - 下载缓存放在 `eval/.cache/downloads/`；sha256 不符时脚本失败退出。
+- `fp-entry.sh`：存在 `/opt/miniconda3/bin/activate` 时，先执行它并 `conda activate testbed`（失败就退出 3）；然后 `export PATH=/fp/bin:/fp/node/bin:$PATH`，最后 `exec node /fp/app/client/dist/stdio-bridge.js --runner /fp/app/runner/dist/main.js -- "$@"`。pi 的子 shell 会继承这些环境变量。
+
+- [ ] **Step 1：写失败测试**（标记 `docker`，镜像用 Task 0 拉到的那个 arm64 实例镜像）：只读挂载 `bundle-<本机架构>`，用 `docker exec` 运行 `bash -c '/fp/bin/fp-entry'`，断言 stderr 含 `--models is required`；在同一环境里，`bash -c` 子 shell 中 `which python` 包含 `envs/testbed`，`rg --version`、`fd --version` 都成功，`node --version` 以 `v24.` 开头。
+- [ ] **Step 2：运行确认失败**：`eval/.venv/bin/pytest eval/tests/test_bundle.py -q`；**Step 3：实现**；**Step 4：通过后提交** `build(step02): 评测运行包与启动脚本`。
+
+### Task 7：模型代理（D1，作者补 1）
+
+**Files:** Create `eval/runtime/model-proxy.mjs`、`tests/unit/model-proxy.test.ts`。
+
+**Interfaces:**
+- 用法：`node model-proxy.mjs`，监听 8080。环境变量 `FP_PROXY_ROUTES` 为 JSON：`{"<route>": {"base": "https://…/v1", "keyEnv": "DASHSCOPE_API_KEY", "model": "<固定模型 ID>"}}`。
+- 只放行 `POST /<route>/chat/completions`，其余一律 404。请求体的 `model` 改写为路由固定的值，删除 D1 列出的联网搜索类参数；丢弃客户端带来的 `authorization`，改用 `Bearer <env[keyEnv]>`。响应体按流原样回传，SSE 不缓冲。
+- 每个请求往 stdout 写一行 JSON 日志：`{route, status, fields: [请求体顶层字段名，已排序], sampling: {temperature, top_p, max_tokens, enable_thinking, …实际出现的}}`。日志里不写请求体内容，也不写 key。
+
+- [ ] **Step 1：写失败测试**：转发路径和请求体正确；`model` 被改写；`enable_search: true`、`search_options`、`{type: "web_search"}` 都被删除，`type: "function"` 的工具保留；替换 `authorization`；其他路径和 GET 请求返回 404；上游 429 原样回传；SSE 分块按到达顺序回传；日志里没有 key。
+- [ ] **Step 2：运行确认失败**：`pnpm vitest run tests/unit/model-proxy.test.ts`；**Step 3：实现**；**Step 4：提交** `feat(step02): 评测模型代理`。
+
+### Task 8：容器沙箱与网络（作者补 2）
+
+**Files:** Create `eval/forgepilot_eval/sandbox.py`、`eval/tests/test_sandbox.py`。
+
+**Interfaces:**
+- `ensure_network(run: str) -> str`：创建 `fp-eval-<run>`（`--internal`，带 `fp-run` 标签），已存在就复用。
+- `start_proxy(run: str, routes: dict, env: dict) -> ProxyHandle`：容器名 `fp-proxy-<run>`，镜像 `node:24-slim@<Task 0 记录的 digest>`，用 `docker cp` 把 `model-proxy.mjs` 放进去；接 internal 网络（别名 `fp-model-proxy`）和默认网络；key 用 `-e 变量名` 传入。`ProxyHandle.logs() -> list[dict]` 返回代理的日志行。
+- `class Sandbox`（上下文管理器）：`Sandbox(run, image, bundle: Path, out_dir: Path)`。
+  - `__enter__`：`docker run -d --label fp-run=<run> --network fp-eval-<run> -v bundle:/fp:ro -v out_dir:/fp-out <image> sleep infinity`；
+  - `exec(cmd, timeout_s) -> (code, out)`；
+  - `entry_cmd(runner_args) -> list[str]`：返回 `["docker","exec","-i",<id>,"/fp/bin/fp-entry",*runner_args]`；
+  - `kill()`、`__exit__`：一律 `docker rm -f`；
+  - `image_digest() -> str`。
+- `cleanup_run(run: str) -> None`：按标签删除容器和网络。
+
+- [ ] **Step 1：写失败测试**（`docker`）：容器里 `curl -sS --max-time 5 https://github.com` 失败；`curl --max-time 5 http://host.docker.internal` 失败；`http://fp-model-proxy:8080/fake/chat/completions` 能拿到假模型服务的回复（假服务以 `--host 0.0.0.0` 跑在一个也接入默认网络的辅助容器里，因为 internal 网络访问不到宿主机）；任务容器的环境变量里没有 `DASHSCOPE_API_KEY`；`with Sandbox(...)` 内抛出异常后容器已删除；`cleanup_run` 之后按标签查不到任何容器和网络。
+- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 评测容器沙箱与网络`。
+
+### Task 9：仓库历史截断（验收 8）
+
+**Files:** Create `eval/forgepilot_eval/repo_prep.py`、`eval/tests/test_repo_prep.py`。
+
+**Interfaces:**
+- `truncate_history(sb: Sandbox, repo: str, base_commit: str) -> None`：
+  1. `git checkout -B fp-base <base>`；
+  2. 删除其他所有分支、标签、远程、stash、notes，以及 `refs/original`、`refs/replace`；
+  3. `git reflog expire --expire=now --all && git gc --prune=now --quiet`；
+  4. 自检，不通过就抛 `HistoryLeak`。
+- `verify_truncated(sb, repo, base, probe_blobs: list[str]) -> list[str]`：返回所有仍存在的问题，空列表表示通过。检查项：
+  - `git rev-list --all --not <base>` 非空；
+  - `git for-each-ref` 中除 `refs/heads/fp-base` 外还有别的引用；
+  - `git fsck --unreachable --no-reflogs` 有输出；
+  - `probe_blobs` 中任何一个 `git cat-file -e` 成功。
+- `gold_probe_blobs(inst) -> list[str]`：在一个临时容器里把金标准补丁打到 base 上，取补丁改动的每个文件的新 blob hash。这些 blob 只存在于修复之后，不受 `environment_setup_commit` 影响。只在预检时调用一次，结果存进任务集（Task 11），运行时直接读取，不再每次起临时容器（作者补 2）。
+
+- [ ] **Step 1：写失败测试**（`docker`，镜像 `buildpack-deps:jammy-scm`）：在容器内造一个仓库，有 base、之后的 fix 提交、指向 fix 的标签、一个 stash、一个远程分支引用和一条 notes。截断后 `verify_truncated(..., [fix 中新文件的 blob])` 为空；`git log --all --oneline` 只剩 base 及其祖先；base 之前的历史仍在。再造一个截断前就自检的场景，断言能报出问题。
+- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 评测仓库历史截断与自检`。
+
+### Task 10：评分（D4）
+
+**Files:** Create `eval/forgepilot_eval/grade.py`、`eval/tests/test_grade.py`。
+
+**Interfaces:** `grade(inst: dict, patch: str, out_dir: Path, timeout_s: int = 1800) -> str`，返回 `resolved` / `unresolved` / `patch_apply_failed`。
+- 新建容器：同一镜像、默认网络、不挂运行包，带 `fp-run` 标签。
+- 打补丁沿用 swebench 的 `GIT_APPLY_CMDS` 回退链，全部失败返回 `patch_apply_failed`。
+- 用 swebench 的带超时执行跑 `make_test_spec(inst).eval_script`，再用 `get_eval_report` 判定；超时记为 `unresolved`，并在日志中注明。
+- 日志写入 `grade.log`；无论结果如何，容器都删除。
+
+- [ ] **Step 1：写失败测试**（标记 `docker`、`swebench`，用 Task 0 拉到的一个实例）：金标准补丁得到 `resolved`；空补丁得到 `unresolved`；乱码补丁得到 `patch_apply_failed`；`timeout_s=1` 得到 `unresolved` 且日志里有超时说明。
+- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): swebench 评分`。
+
+### Task 11：任务集与金标准预检（验收 1，作者补 8）
+
+**Files:** Create `eval/forgepilot_eval/taskset.py`、`eval/tests/test_taskset.py`、`eval/tasksets/smoke-v1.json`。开发集与选型子集在 Task 15 定版。
+
+**Interfaces:**
+- `stratified_sample(rows: list[dict], n: int, seed: int) -> list[str]`：按 `repo` 分层，每个仓库至少 1 个；其余名额按仓库条数比例分配，余数按种子随机分；仓库内按种子随机抽；结果按 `instance_id` 排序。`n` 大于可选条数时抛错。
+- `precheck(inst, bundle) -> PrecheckResult(ok: bool, reasons: list[str], probe_blobs: list[str])`：三项检查，分别是金标准补丁 → `resolved`、空补丁 → `unresolved`、在该镜像里挂载运行包后 `/fp/node/bin/node --version` 成功；同时调用 `gold_probe_blobs` 记下探针。
+- `build_taskset(name, version, rows, n, seed, bundle, out) -> None`：先抽 `n × 1.5` 个候选，逐个预检，再用同一种子从通过预检的候选里分层抽 `n` 个。写出的任务集文件包含：`{name, version, dataset, revision, seed, created, selection, precheck: {passed, excluded: [{id, reasons}]}, instance_ids, probe_blobs: {<instance_id>: [blob…]}}`。`taskset_sha256(path) -> str` 对文件内容做 sha256，记录与续跑核对都用它。任务集一旦提交就不再修改，有变更就发新版本。
+
+- [ ] **Step 1：写失败测试**：用 3 个仓库、条数 10/5/1 的假数据：`n=8` 时覆盖全部 3 个仓库；同一种子结果相同，不同种子结果不同；`n` 过大时抛错。`build_taskset` 中预检用假函数，让 2 个候选不通过：它们出现在 `excluded` 里，不出现在 `instance_ids` 里；每个入选实例在 `probe_blobs` 里都有非空列表。
+- [ ] **Step 2：运行确认失败**；**Step 3：实现**。
+- [ ] **Step 4：生成 `smoke-v1`**：2 个实例，从 Task 0 验证过 arm64 镜像的实例里选，在 Mac 上真实预检。
+- [ ] **Step 5：提交** `feat(step02): 任务集抽样与金标准预检`。
+
+### Task 12：单任务运行（验收 2、3、4，作者补 6、7）
+
+**Files:** Create `eval/forgepilot_eval/{run_task,config}.py`、`eval/configs/{qwen3.6,qwen3-coder-next,kimi-k2.6}.yaml`、`eval/prompts/swe-v1.txt`、`eval/tests/test_run_task.py`。
+
+**Interfaces:**
+- `EvalConfig`（从 YAML 读取）字段：
+  - 模型：`model: {provider, id, route, base, keyEnv}`、`thinking`、`sampling`（显式写出的采样参数）；
+  - 拦截与限额：`tools`、`danger_patterns`、`max_tool_calls`、`task_timeout_s`、`grade_timeout_s`；
+  - 提示词与花费：`prompt_file`、`price: {input_per_m, output_per_m}`、`assumed_tokens_per_run: {input, output, source}`；
+  - 计分：`scoring`（D10 的口径与 5% 阈值）。
+- `config_hash(cfg) -> str`：对规范化 YAML、提示词文件内容和 `sampling` 一起做 sha256。
+- `run_instance(inst, cfg, run: str, out_dir: Path, attempt: int, budget: Budget) -> TaskRecord`，写出 `out_dir/<instance_id>/<attempt>/` 下的四个文件：
+  - `events.jsonl`：全部协议事件；
+  - `raw.jsonl`：诊断用；
+  - `patch.diff`；
+  - `record.json`。
+- `TaskRecord` 字段：
+  - 标识与版本：`instance_id`、`attempt`、`taskset_version`、`taskset_sha256`、`config_hash`、`bundle_version`、`image_digest`；
+  - 运行快照：`snapshot`，取自 `run.started`，没有就为 null；
+  - 结果：`terminal_type`、`failure_type`、`failure_reason`；
+  - 统计：`tool_calls`、`wall_s`；`requests`（`model.request.finished` 的条数）；`usage`（累加，含单列的 `reasoning`；任一请求的用量为 null 时，标 `usage_complete: false`）；`rate_limit_errors`（`errorMessage` 匹配 `/429|rate.?limit/i` 的请求数）；`patch_bytes`。
+- `failure_type` 在运行阶段的取值：`none`（待评分）、`empty_patch`、`run_failed`、`rate_limited`（以 `run.failed` 结束，且最后一次请求的错误是 429）、`timeout`、`tool_budget`、`budget_cancelled`（因预算超限被取消）、`infra_error`（容器、桥、截断自检、协议错误等）。
+- `Budget`：线程安全的累计实际花费，每收到一条 `model.request.finished` 就按 `input + cacheRead + cacheWrite` 与 `output` 累加（不加 `reasoning`）；达到上限时把 `exceeded` 置为 True，`run_instance` 随即取消自己，记为 `budget_cancelled`。
+- 运行流程：
+  1. 创建 `Sandbox`；
+  2. `truncate_history`，探针取任务集里的 `probe_blobs[instance_id]`；
+  3. 写 `/fp-out/models.json`：baseUrl 为 `http://fp-model-proxy:8080/<route>`，apiKey 为字面占位串 `unused`；
+  4. 调用 `run_task(sb.entry_cmd([... --workdir /testbed --sessions-root /fp-out/sessions --record-pi-events /fp-out/raw.jsonl --tools … --thinking …]), kill=sb.kill)`；
+  5. 执行 `git add -A && git diff --cached --binary <base>` 取出补丁；
+  6. 删除容器。
+  - 任何异常都先写 `record.json`（`infra_error` 加原因），再交给上层。
+
+- [ ] **Step 1：写失败测试**（`docker`、假模型；「实例」用 `buildpack-deps:jammy-scm` 里预置的一个小仓库）：
+  - 假模型执行 `bash: echo fix > new_file.py` 后结束：`patch.diff` 含 `new_file.py`；`failure_type=none`；`snapshot.engine.name=="pi"`；`requests==2`，`usage` 与假服务返回的一致；`record.json` 含 `config_hash`、`taskset_version`、`image_digest`、`bundle_version`。
+  - 改了提示词文件内容后，`config_hash` 跟着变。
+  - `bash: curl x` 被拒（对应的 `tool.finished` 是错误结果）。
+  - `task_timeout_s=2` 配慢流，得到 `timeout`。
+  - 假服务连续返回 429，直到 pi 重试用尽，得到 `rate_limited`。
+  - 预算设为 0.000001 元，得到 `budget_cancelled`，且 `Budget.exceeded` 为 True。
+  - 运行包路径故意写错，得到 `infra_error`，`docker ps -a` 里查不到容器。
+- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 单任务运行与轨迹记录`。
+
+### Task 13：汇总、花费、并发与一条命令（验收 2、5，作者补 3、4、5）
+
+**Files:** Create `eval/forgepilot_eval/{report,__main__}.py`、`eval/tests/test_report.py`。
+
+**Interfaces:**
+- `estimate_cost(cfg, n_runs) -> float`（元）：按 `assumed_tokens_per_run` 计算，并在输出中注明这个假设的来源（`source` 字段）。
+- `actual_cost(records, cfg) -> float`：`input + cacheRead + cacheWrite` 按输入价计，不算缓存折扣，报告里注明；`output` 按输出价计，`reasoning` 已含在其中，不重复计；只要有用量未知的运行，就单独列出条数。
+- `aggregate(records, cfg) -> Summary`：
+  - 先按 D10 处理排除；
+  - 成功率：每次重复各算一个值，给出均值与样本标准差（ddof=1）；
+  - 按题 bootstrap 95% 置信区间：先算每题在各次重复中的平均成功，再对题目重抽样 10000 次，种子固定；
+  - 每次运行的 token、轮数、耗时：均值与中位数；
+  - `failure_type` 计数（含 `rate_limited`、`budget_cancelled`）、排除清单、「未运行」清单；状态为 `complete` / `incomplete`（有 `budget_cancelled` 或未运行）/ `invalid`（D10 的 5% 阈值），未完成与无效分开报告。
+- `paired_diff(summary_a, summary_b) -> PairedDiff(diff, ci_low, ci_high, used: list[str], dropped: list[str])`：同一批题的逐题配对 bootstrap，只用两边都有有效结果的题，其余列进 `dropped`。
+- `merge_records(*record_sets) -> list[TaskRecord]`：合并多次评测的记录（Task 16 复用选型记录用）；所有记录的 `config_hash`、`bundle_version` 必须相同，同一实例的 `image_digest` 必须相同，否则抛错并列出不一致处。
+- `reconcile_proxy(records, proxy_logs) -> dict`：代理记下的请求总数与 `model.request.finished` 总数对账（按整次评测），差值写进 summary；被强杀的运行没有事件，差值不为 0 时列出这些运行。
+- `min_detectable_diff(n_tasks, repeats, p) -> float`：按配对 bootstrap 的半宽估计（用冒烟或选型数据的 p），写进报告。
+- 命令：`eval/.venv/bin/python -m forgepilot_eval run --config <yaml> --taskset <json> --repeats N --out eval/runs/<名字> --budget <元> [--workers K] [--resume] [--yes]`。
+  1. 先打印预计花费和预算，等确认（`--yes` 跳过）；
+  2. 输出目录已存在且没有 `--resume` 时拒绝运行；带 `--resume` 时，先核对已有记录的 `config_hash`、`taskset_version`、`taskset_sha256`、`bundle_version` 与当前一致，任何一项不一致就拒绝并列出（作者补 2），一致才跳过已有 `record.json` 的运行；`--budget` 不参与核对，续跑时可以提高；
+  3. 用 K 个线程并发执行「运行 → 评分」；`infra_error` 与 `rate_limited` 按 D10 重试，`rate_limited` 先退避 60 秒；
+  4. 预算超限时停止派发新运行，并取消进行中的运行；
+  5. 结束时写 `summary.json`、`summary.md`（含 `reconcile_proxy` 的结果）、`proxy-fields.json`（代理日志里实际发出的字段和采样参数去重后的结果，与配置的 `sampling` 不一致就在 summary 中标红）；
+  6. 用 `scripts/check-secrets.ts` 扫描输出目录，发现密钥、评测无效或未完成时，以非零退出；
+  7. Ctrl-C 与异常时，按标签调用 `cleanup_run`。
+
+- [ ] **Step 1：写失败测试**：
+  - 3 次重复的成功率为 [0.5, 0.25, 0.75] 时，均值 0.5，样本标准差 0.25；
+  - bootstrap：全对时区间为 [1, 1]；同一种子结果相同；
+  - D10：`patch_apply_failed` 在分母里；3 个 `infra_error` 排除后，排除比例超过 5% 时状态为 `invalid`；有 `budget_cancelled` 或未运行时状态为 `incomplete`，二者都不进分母并被列出；
+  - `paired_diff` 在两组完全相同时区间包含 0；一边被排除的题出现在 `dropped`，不参与计算；
+  - `merge_records`：`bundle_version` 不同时抛错；
+  - `actual_cost`：用量 `{output: 100, reasoning: 80}` 只按 100 计输出；
+  - `reconcile_proxy`：代理 5 次、事件 4 次时差值为 1；
+  - `estimate_cost` 与 `actual_cost` 的数值样例；
+  - `--out` 已存在且不带 `--resume` 时以非零退出；`--resume` 跳过已有记录（用假的 `run_instance` 计调用次数）；已有记录的 `config_hash`、`taskset_sha256` 或 `bundle_version` 任一与当前不一致时，`--resume` 拒绝运行；
+  - 预算超限后不再派发新运行。
+- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 汇总、花费、并发与评测命令`。
+
+### Task 14：Mac 冒烟与花费校准（真实模型）
+
+- [ ] **Step 1**：`python -m forgepilot_eval run --config eval/configs/qwen3.6.yaml --taskset eval/tasksets/smoke-v1.json --repeats 1 --out eval/runs/smoke-<日期> --budget 5`；先看预计花费。
+- [ ] **Step 2：核对并记录**到实现说明：
+  - 每次运行的四个文件齐全；`snapshot` 的引擎和模型字段正确；
+  - `verify_truncated` 通过；运行中的容器里 `git cat-file -e <金标准 blob>` 失败（验收 8）；
+  - agent 工具里 `which python` 指向 `envs/testbed`（看 events 中的 bash 输出，提示词不为此改动）；
+  - 容器内 `curl` 外网和访问 `host.docker.internal` 都失败；
+  - `docker top` 里能看到 agent 的命令，而宿主机上没有对应的进程（验收 3；Docker Desktop 下命令跑在虚拟机里）；
+  - `proxy-fields.json` 与配置一致；`check-secrets` 干净。
+- [ ] **Step 3：校准**：用这次的每次运行 token（取 p90）更新三个配置文件的 `assumed_tokens_per_run`，`source` 写为 `smoke-<日期> p90`（作者补 4）。
+- [ ] **Step 4：提交** `docs(step02): Mac 冒烟与花费校准`。
+
+### Task 15：远程 x86、任务集定版与主模型选型（验收 1、9、10）
+
+- [ ] **Step 1：报价**：写给作者以下内容，**作者同意后才租**：
+  - 金标准预检的时长：60 个候选；
+  - 选型的 token 花费：20 题 × 2 个候选 × 3 次，按校准后的 p90 计；
+  - 开发集基线的预估：供 Task 16 使用；
+  - 服务器规格与价格：只需 CPU，建议 16 vCPU / 64 GB / 500 GB 盘；按小时价格、`--workers` 取值和预计时长；
+  - 每次运行的 `--budget`。
+- [ ] **Step 2：服务器准备**（作者决定）：
+  - 克隆本仓库的 `step-02-eval` 分支（推送到 GitHub 需作者同意；也可以用 `git bundle` 经 scp 传过去）；
+  - 安装 docker、node 24、pnpm；运行 `scripts/build-eval-bundle.sh linux-x64`；建 Python venv；
+  - `.env` 经 scp 传上去，并 `chmod 600`；
+  - 所有评测在 tmux 里运行；结果用 `rsync -a` 拉回本机 `eval/runs/`；
+  - 先跑 `smoke-v1` 的 x86 版本，确认同一条命令可用（验收 9）。
+- [ ] **Step 3：任务集定版**：在服务器上执行 `build_taskset`，生成 `dev-v1`（40 个，种子 20261125，候选 60）和 `select-v1`（从 dev-v1 中分层抽 20）。预检结果和金标准 blob 在这一步一起写进任务集文件（x86 上算出），不拆开。两个文件拉回本机提交；开发集规模写进实现说明（验收 1）。
+- [ ] **Step 4：选型**：先把 D11 的决策规则写进 `docs/evals/<日期>-T2-model-selection.md`（模版 `docs/templates/eval.md`），再开跑。两个候选各在 `select-v1` 上跑 3 次。报告的指标：
+  - 成功率（均值 ± 样本标准差，以及 bootstrap 区间）、逐题配对差值区间、20 题能分辨的最小差距；
+  - 工具调用出错率：只计调用层面的错误，即参数校验失败、未知工具、edit 找不到原文；bash 非零退出和策略拦截各自单列；
+  - token、花费、`rate_limited` 次数；
+  - 配对比较实际使用和丢弃的题；
+  - 按 D11 得出的结论，以及思考设置不同这一结论限定。
+- [ ] **Step 5：选型后对账**（作者补 2，必须在 Task 16 报价之前）：作者在百炼控制台查选型期间的实际账单，与 `actual_cost` 对比，差异与原因（缓存折扣、推理 token 计价等）写进选型报告；差异超过 10% 时先修正计费口径，再给 Task 16 报价。
+- [ ] **Step 6：记决定**：新写一份决策记录，记录选定的主模型（ADR 只追加，不改 015 正文），同时记下 T1 遗留的偏离：API 模型没有带日期的快照，版本锁定只能做到模型 ID。作者确认后提交。
+
+### Task 16：开发集基线与报告（验收 6，作者补 4）
+
+- [ ] **Step 1：报价并经作者同意**：选定的 Qwen 主模型复用它在 `select-v1` 上的 3 次记录，只补跑 `dev-v1` 中其余 20 题 × 3 次；Kimi K2.6 跑 `dev-v1` 40 题 × 2 次（作者补 2）。每组设 `--budget`。
+- [ ] **Step 2：运行**：在服务器上，每组一条命令（Qwen 用一个只含其余 20 题的任务集 `dev-v1-rest`，从 dev-v1 派生，记下派生关系）。
+- [ ] **Step 2b：合并**：用 `merge_records` 合并 Qwen 的选型记录与补跑记录，`config_hash`、`bundle_version`、`image_digest` 不一致就停下报告，不合并。
+- [ ] **Step 3：对账**：作者在百炼和 Moonshot 控制台查到实际账单，与 `actual_cost` 对比；差异和可能的原因（缓存折扣、思考 token 计价等）写进报告。
+- [ ] **Step 4：写报告** `docs/evals/<日期>-T2-baseline.md`，内容包括：
+  - 两组的成功率（均值、样本标准差、bootstrap 区间）、token、轮数、耗时、失败类型（含 `rate_limited`）、排除清单与是否无效、花费与对账结果；
+  - 注明：Qwen 结果由选型与补跑两批合并（时间不同，API 背后的模型可能已更新），Kimi 只跑 2 次，两组重复次数不同；开发集分数可能偏高；T2 没有留出集数字，留出集重新启用后要重跑本基线（tasks.md T2 验收 1）；本地模型基线在 T13；
+  - 写明任务集版本、配置 hash、运行包版本、镜像 digest 与运行快照的核对结果。
+- [ ] **Step 5：提交** `docs(step02): 开发集基线报告`。
+
+### Task 17：收尾关卡
+
+按 `docs/workflow.md` 3.4 依次通过：整体代码审查；验收 1–10 逐条核对，核对表写进实现说明；实现说明的「验证记录」与「与计划的偏差」；收尾一致性检查（4.6）；project-logger 生成 `docs/project-log/step02-eval-framework.md`，作者先读；讲解自测；作者同意后，才在 tasks.md 标 `[x]`。合并回 main 需作者同意。
