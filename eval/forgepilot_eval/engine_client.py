@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 TERMINAL = {"run.settled", "run.failed", "run.cancelled"}
+ID_FIELD = {"intercept_request": "callId", "confirm_request": "confirmId"}  # 回复时要回显的配对字段
 DENY_CONFIRM = {"approved": False, "by": "eval", "reason": "eval does not confirm"}
 
 
@@ -83,12 +84,13 @@ def run_task(
             except queue.Empty:
                 continue
             if line is None:
+                # grace 从 EOF 这一刻起算（now 是阻塞取行之前记的）
                 try:
-                    proc.wait(timeout=max(0, (now + grace_s if kill_at is None else kill_at) - time.monotonic()))
+                    proc.wait(timeout=max(0, grace_s if kill_at is None else kill_at - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     kill()
                     proc.kill()
-                    break
+                    proc.wait()
                 if terminal is None and failure is None:
                     failure = f"bridge exited: code {proc.returncode}"
                 break
@@ -104,6 +106,9 @@ def run_task(
                 ev = msg.get("event")
                 if not (isinstance(ev, dict) and isinstance(ev.get("type"), str) and isinstance(ev.get("seq"), int)):
                     problem = "event without type/seq"
+            key = ID_FIELD.get(msg["type"]) if problem is None else None
+            if key and not isinstance(msg.get(key), str):
+                problem = f"{msg['type']} without {key}"
             if problem:
                 failure = failure or f"protocol: {problem}: {line.rstrip()[:200]}"
                 shut_down(cancel=True)

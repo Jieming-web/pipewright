@@ -6,6 +6,8 @@ from dataclasses import dataclass
 _END = r"(?![\w.-])"
 
 
+# shortcut: 已知不拦前缀命令（sudo/env/time/nohup/xargs）、bash -c '…'、子 shell ( … )、命令组 { …; }、
+# 绝对路径（/usr/bin/curl）、双引号里 $(…) 内分隔符之后的命令（见计划 D8）；T3 起由策略服务替换时升级。
 def command_positions(cmd: str) -> list[int]:
     """D8 的命令位置：开头，或 ;、&、|、换行、$(、开反引号之后（&&、|| 由单字符覆盖）。
     单引号里都不算；双引号里只有 $( 与开反引号算（与 bash 一致）。"""

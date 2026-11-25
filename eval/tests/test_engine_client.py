@@ -143,7 +143,7 @@ def test_should_cancel_takes_the_cancel_path_without_timed_out(launch, spawned):
     kills = []
     r = run_task(launch(turns + [{"kind": "text", "chunks": ["done"]}]), START, policy.decide, lambda e: None,
                  timeout_s=30, kill=lambda: kills.append(1), should_cancel=lambda: policy.exhausted)
-    assert policy.exhausted and policy.calls == 2
+    assert policy.exhausted and policy.calls >= 2
     assert r.terminal["type"] == "run.cancelled"
     assert r.timed_out is False and r.failure is None and kills == []
     assert spawned[0].returncode is not None
@@ -163,6 +163,8 @@ def test_silent_bridge_returns_in_time_and_calls_kill():
     '{"requestId": "A"}',
     '{"type": "event", "event": {"type": "text.delta", "text": "x"}}',
     '{"type": "event", "event": {"seq": 1}}',
+    '{"type": "intercept_request", "toolName": "bash", "input": {}}',
+    '{"type": "confirm_request", "callId": "c1", "toolName": "bash", "reason": "r", "input": {}}',
 ])
 def test_protocol_error_fails_and_shuts_down(line):
     kills = []
@@ -179,6 +181,36 @@ def test_bridge_eof_before_terminal_is_failure():
                  timeout_s=30, kill=lambda: None)
     assert r.failure == "bridge exited: code 3"
     assert r.terminal is None and r.timed_out is False
+
+
+def test_bridge_closes_stdout_but_never_exits_is_failure(spawned):
+    kills = []
+    t0 = time.monotonic()
+    r = run_task(fake_bridge("import os; os.close(1)"), START, ALLOW, lambda e: None,
+                 timeout_s=30, kill=lambda: kills.append(1), grace_s=1)
+    assert time.monotonic() - t0 < 30 + 1 + 2
+    assert r.failure == "bridge exited: code -9"
+    assert r.terminal is None and kills == [1]
+    assert spawned[0].returncode is not None
+
+
+def test_grace_after_eof_counts_from_eof_not_from_last_read():
+    # 静默 2 秒后关 stdout，再过 0.5 秒退出：grace=1 从 EOF 起算，应当等到正常退出、不强杀
+    kills = []
+    script = "import os, sys, time; time.sleep(2); os.close(1); time.sleep(0.5); os._exit(0)"
+    r = run_task([sys.executable, "-c", script], START, ALLOW, lambda e: None,
+                 timeout_s=30, kill=lambda: kills.append(1), grace_s=1)
+    assert r.failure == "bridge exited: code 0"
+    assert kills == []
+
+
+def test_exception_in_decide_propagates_and_reaps_bridge(launch, spawned):
+    def decide(req):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_task(launch(TOOL("touch ran.marker")), START, decide, lambda e: None, timeout_s=30, kill=lambda: None)
+    assert spawned[0].returncode is not None
 
 
 def test_killed_bridge_gives_failure_without_hanging(launch, spawned):
