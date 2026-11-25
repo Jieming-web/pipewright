@@ -468,13 +468,14 @@ describe.sequential("runner 进程：激活工具 --tools 与离线（engine.md 
     expect(runner.stderr()).toMatch(/^runner: --thinking /m);
   }, 20_000);
 
-  // PATH 里没有 rg、HOME 指向空目录：pi 若联网下载，会写到 HOME/.pi/agent/bin
+  // PATH 是空目录（Linux 发行版的 rg 常在 /usr/bin，不能靠去掉 /opt/homebrew 模拟缺 rg）；runner 用 process.execPath 启动，不经 PATH 找 node。
+  // HOME 与 PI_CODING_AGENT_DIR 指向空目录：pi 若联网下载，会写到 agent 目录的 bin 下
   it("缺 rg 时 grep 以错误结果返回，不下载、不写 HOME/.pi", async () => {
-    mkdirSync(p("home"));
+    for (const d of ["bin", "home", "agent"]) mkdirSync(p(d));
     const r = await launch(
       [{ kind: "toolCall", name: "grep", args: { pattern: "x" }, id: "g1" }, { kind: "text", chunks: ["done"] }],
       ["--tools", "read,grep"],
-      { PATH: "/usr/bin:/bin", HOME: p("home") },
+      { PATH: p("bin"), HOME: p("home"), PI_CODING_AGENT_DIR: p("agent") },
     );
     const { client } = await connect(r);
     client.onIntercept(allow);
@@ -482,6 +483,7 @@ describe.sequential("runner 进程：激活工具 --tools 与离线（engine.md 
     expect(await client.waitForEnd()).toMatchObject({ type: "run.settled" });
     expect(toolMessages(r.s.requests[1])).toEqual([expect.stringMatching(/ripgrep \(rg\) is not available/)]);
     expect(readdirSync(p("home"))).toEqual([]);
+    expect(readdirSync(p("agent"))).toEqual([]);
     expect((await r.exit).code).toBe(0);
   }, 30_000);
 });
