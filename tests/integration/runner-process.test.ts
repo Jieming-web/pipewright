@@ -491,7 +491,8 @@ describe.sequential("runner 进程：激活工具 --tools 与离线（engine.md 
 describe.sequential("启动者：停止时限只从退出信号起算（engine.md 进程退出）", () => {
   // 启动被拒绝不是退出信号：任务比停止时限跑得久，若从拒绝起算，stop() 时已过时限而强杀正常收尾的 runner
   it("启动被拒（not_implemented / 本地校验失败）后在同一连接重试并正常结束：stop() 不强杀，以 0 退出", async () => {
-    const r = await launch([{ kind: "text", chunks: ["a", "b", "c", "d", "e"], chunkDelayMs: 300 }], [], {}, 1000);
+    // 模型流约 4.5 秒，明显长于 3 秒停止时限：从拒绝起算必然已过时限
+    const r = await launch([{ kind: "text", chunks: Array.from({ length: 15 }, (_, i) => `c${i} `), chunkDelayMs: 300 }], [], {}, 3000);
     const { client } = await connect(r);
     await expect(client.start(task({ interceptMode: "policy" }))).rejects.toThrow(/not_implemented/);
     await expect(client.start(task({ prompt: " " }))).rejects.toThrow(/prompt/);
