@@ -29,7 +29,7 @@
 | D5 | 开发集 40 个。Qwen3.6-35B-A3B 每题重复 3 次；Kimi K2.6 重复 2 次（作者补 2：它只是对照；n=2 的样本标准差参考价值低，Kimi 的波动以按题 bootstrap 区间为准，报告注明两组重复次数不同）。成功率报告每次重复的均值与样本标准差（ddof=1），再加一个按题 bootstrap 的 95% 置信区间。不做主模型选型（ADR 017）；配对比较与「能分辨的最小差距」暂不实现。 |
 | D6 | 留出集暂缓（tasks.md T2 验收 1），T2 不建、不跑；本计划只在 Task 0 记录核实结果。 |
 | D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；采样参数 `temperature`、`top_p` 在两个模型的配置里显式写出，取各自模型卡里做 SWE 类评测所用的值（模型卡没给 SWE 专用值时，取模型卡对所用模式的推荐值，并注明），出处写在配置注释里，不依赖服务端默认值（作者 2026-11-25）；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
-| D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`$(`、反引号之后）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
+| D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`&`、`$(`、反引号之后；引号里的分隔符不算命令位置：单引号里全部不算，双引号里 `;`、`|`、`&` 等不算、`$(` 与反引号仍算（与 bash 一致）；只是不把分隔符当命令位置，引号里的内容照样参与匹配，如 `rm -rf "/"`；已知不拦 `sudo`/`env` 前缀与 `bash -c '…'`，任务容器只接 internal 网络，清单 T3 起被替换，作者 2026-11-25）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
 | D9 | 本机用 `/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
 | D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error` 与 `rate_limited`（429）最多重试 2 次，仍失败就从分母中排除并逐条列出；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
 
@@ -149,11 +149,11 @@
 **Files:** Create `eval/pyproject.toml`、`eval/requirements.txt`、`eval/forgepilot_eval/{__init__,engine_client,policy}.py`、`eval/tests/{test_policy,test_engine_client}.py`、`tests/helpers/fake-openai-cli.ts`；Modify `.gitignore`（加 `eval/runs/`、`eval/.cache/`）。
 
 **Interfaces:**
-- `run_task(cmd: list[str], start: dict, decide: Callable[[dict], dict], on_event: Callable[[dict], None], timeout_s: float, kill: Callable[[], None], grace_s: float = 15) -> RunResult`；`RunResult(terminal: dict | None, failure: str | None, timed_out: bool)`。
-  - 同步实现：读线程把 stdout 的行放进队列，主循环带超时取出。到 `timeout_s` 时写 `cancel`；之后 `grace_s` 秒内仍没有终止事件和进程退出，就调用 `kill()`（由调用方删除容器），并杀掉桥子进程。
+- `run_task(cmd: list[str], start: dict, decide: Callable[[dict], dict], on_event: Callable[[dict], None], timeout_s: float, kill: Callable[[], None], grace_s: float = 15, should_cancel: Callable[[], bool] | None = None) -> RunResult`；`RunResult(terminal: dict | None, failure: str | None, timed_out: bool)`。
+  - 同步实现：读线程把 stdout 的行放进队列，主循环带超时取出。到 `timeout_s` 时写 `cancel`；`should_cancel` 返回 True 时同样写 `cancel` 并走同一条收尾路径，但 `timed_out` 为 False（作者 2026-11-25：工具调用超限后由此取消，否则只能拖到墙钟超时）；之后 `grace_s` 秒内仍没有终止事件和进程退出，就调用 `kill()`（由调用方删除容器），并杀掉桥子进程。
   - `confirm_request` 一律回 `approved: false, by: "eval", reason: "eval does not confirm"`。
   - 出现非 JSON、缺 `type`、事件缺 `type`/`seq` 的行，记 `failure="protocol: …"`，按超时同样的路径收尾。终止事件之前 stdout 就 EOF，记 `failure="bridge exited: code N"`。
-- `Policy(cfg: PolicyConfig)`，`PolicyConfig(tools, danger_patterns, max_tool_calls)`；`decide(req) -> Decision`；`exhausted: bool`（计数超限后返回 `block` 并置为 True，由调用方取消任务）。
+- `Policy(cfg: PolicyConfig)`，`PolicyConfig(tools, danger_patterns, max_tool_calls)`；`decide(req) -> Decision`；`exhausted: bool`（计数超限后返回 `block` 并置为 True，调用方经 `run_task` 的 `should_cancel` 取消任务）。
 - `fake-openai-cli.ts <turns.json> [--host 0.0.0.0]`：stdout 打印 `FAKE_LISTENING <baseUrl>`。
 
 - [ ] **Step 1：建 venv**：`/usr/local/bin/python3.13 -m venv eval/.venv && eval/.venv/bin/pip install -r eval/requirements.txt`。
