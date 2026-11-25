@@ -379,3 +379,9 @@ docker rm -f fp-b; docker network rm fp-probe fp-probe-out
 
 - 附录 A `probe-model.mjs` 中 `entry.responseRaw = raw.slice(-1500) + (raw.length > 1500 ? "" : "");` 的三元表达式是空操作，且没有任何结论读取 `responseRaw` 之外的内容；脚本原文不改，它是实际运行内容的证据。
 - 运行包的组装命令（把 node、rg、fd 解压到 `/fp`）没有保留；Task 6 会写进 `build-eval-bundle.sh`。
+
+## 4. 与计划的偏差（追加，逐任务补写）
+
+| 偏差 | 原因 | 谁决定的 | 影响 |
+|---|---|---|---|
+| T2-1：pi-engine「启动失败后清理也失败」不用计划写的 EPIPE 注入，改为在测试里 `vi.spyOn(coordinator, "cancelAll")` 抛 `CANCEL_BOOM`（`tests/integration/pi-engine.test.ts`「启动失败后清理也失败：reason 同时保留清理原因与原失败原因」，提交 4c0ba73）；只在测试里替换，没有加产品开关 | 启动失败时没有任何录制写入，EPIPE 与写满都造不出清理失败 | 作者（2026-11-25），附带条件：两个失败原因都断言、scratchDir 仍被删除、做变异检查、写进本节 | 被测的仍是同一条清理路径（`pi-engine.ts` 清理步骤逐个尽力执行、reason 拼接原失败原因）。条件核对（2026-11-25，新会话）：断言为 `^cleanup failed: CANCEL_BOOM; run failed: model not found: fake/nope$`，并断言 `scratchLeft()` 为空；变异检查三项均变红、恢复后变绿——去掉 cancelAll 抛错（promise resolved instead of rejecting）、reason 不拼接原失败原因（实际为 `cleanup failed: CANCEL_BOOM`）、清理遇第一个失败即停（残留 `fp-run-*` 目录） |
