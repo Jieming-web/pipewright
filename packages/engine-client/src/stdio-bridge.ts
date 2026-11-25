@@ -17,11 +17,14 @@ const runner = spawnRunner({ args: [runnerMain, ...argv.slice(sep + 1)] });
 /** 等 stdout 写完再退出，避免丢最后几行 */
 const quit = (code: number) => process.stdout.write("", () => process.exit(code));
 
-/** 停 runner 并按其退出结果退出；runner 被强杀（信号或到停止时限）为 137 */
-async function finish(forcedCode?: number): Promise<never> {
+/** 停 runner 并按其退出结果退出；runner 被信号终止或到停止时限强杀为 137。只执行一次，先到者定退出码 */
+let finishing = false;
+async function finish(forcedCode?: number): Promise<void> {
+  if (finishing) return;
+  finishing = true;
   const e = await runner.stop();
   process.stderr.write(runner.stderr());
-  return quit(forcedCode ?? (e.forced || e.signal === "SIGKILL" ? 137 : (e.code ?? 1))) as never;
+  quit(forcedCode ?? (e.forced || e.signal ? 137 : (e.code ?? 1)));
 }
 
 let port: number;
@@ -40,8 +43,8 @@ ws.on("message", (data) => {
   const line = data.toString();
   if (line.includes("\n")) {
     process.stderr.write("stdio-bridge: received a frame containing a newline\n");
+    void finish(2); // 先于 terminate 引发的 close，保证退出码为 2
     ws.terminate();
-    void finish(2);
     return;
   }
   process.stdout.write(line + "\n");

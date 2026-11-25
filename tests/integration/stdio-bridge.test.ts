@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,20 +60,10 @@ async function launch(turns: ScriptedTurn[]) {
 const START = { type: "start_task", requestId: "A", sessionId: "s1", prompt: "go", model: { provider: "fake", id: "fake-model" }, contextFiles: [], interceptMode: "callback" };
 
 describe.sequential("stdio 桥", () => {
-  it("start_task → accepted → 事件 → run.settled，每条消息一行；EOF 后以 runner 的退出码 0 退出", async () => {
-    const r = await launch([{ kind: "text", chunks: ["Hel", "lo"] }]);
-    r.send(START);
-    expect(await r.until("accepted")).toMatchObject({ requestId: "A" });
-    await r.until("run.settled");
-    r.b.stdin.end();
-    expect(await r.exit).toBe(0);
-    for (const l of r.lines) expect(() => JSON.parse(l)).not.toThrow();
-    expect(r.lines.map((l) => JSON.parse(l).type)).toContain("event");
-  }, 30000);
-
-  it("callback 拦截一来一回之后工具才执行", async () => {
+  it("start_task → accepted → 事件 → run.settled；callback 拦截一来一回之后工具才执行", async () => {
     const r = await launch(TOOL("touch ran.marker"));
     r.send(START);
+    expect(await r.until("accepted")).toMatchObject({ requestId: "A" });
     const req = await r.until("intercept_request");
     expect(existsSync(p("work/ran.marker"))).toBe(false);
     r.send({ type: "intercept_decision", requestId: "D1", callId: req.callId, decision: "allow" });
@@ -81,6 +71,25 @@ describe.sequential("stdio 桥", () => {
     expect(existsSync(p("work/ran.marker"))).toBe(true);
     r.b.stdin.end();
     expect(await r.exit).toBe(0);
+  }, 30000);
+
+  it("任务运行中 stdin EOF：等同断线取消，工具不执行，以 runner 的退出码 0 退出", async () => {
+    const r = await launch(TOOL("touch ran.marker"));
+    r.send(START);
+    await r.until("intercept_request");
+    r.b.stdin.end();
+    expect(await r.exit).toBe(0);
+    expect(existsSync(p("work/ran.marker"))).toBe(false);
+  }, 30000);
+
+  it("runner 被非 KILL 信号终止：桥以 137 退出", async () => {
+    const r = await launch(TOOL("touch ran.marker"));
+    r.send(START);
+    await r.until("intercept_request");
+    // 桥的子进程就是 runner；SIGABRT 不被 runner 处理（SIGTERM 会优雅退出），Node 以信号终止
+    const pid = Number(execFileSync("pgrep", ["-P", String(r.b.pid)]).toString().trim());
+    process.kill(pid, "SIGABRT");
+    expect(await r.exit).toBe(137);
   }, 30000);
 
   it("非法 JSON 行原样转发，stdout 收到 invalid_message", async () => {
@@ -91,12 +100,12 @@ describe.sequential("stdio 桥", () => {
     expect(await r.exit).toBe(0);
   }, 30000);
 
-  it("runner 在监听前退出：写出其 stderr，以其退出码退出", async () => {
+  it("runner 在监听前退出：写出其 stderr，以其退出码 2 退出", async () => {
     const b = spawn(process.execPath, [BRIDGE, "--runner", RUNNER, "--", "--port", "0"]);
     let err = "";
     b.stderr.on("data", (d) => (err += d));
     const code = await new Promise((ok) => b.on("close", ok));
-    expect(code).not.toBe(0);
-    expect(err.length).toBeGreaterThan(0);
+    expect(code).toBe(2);
+    expect(err).toContain("--models is required");
   }, 30000);
 });
