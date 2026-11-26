@@ -335,7 +335,7 @@
 - `estimate_cost(cfg, n_runs) -> float`（元）：按 `assumed_tokens_per_run` 计算，并在输出中注明这个假设的来源（`source` 字段）。
 - `actual_cost(records, cfg) -> float`：`input + cacheRead + cacheWrite` 按输入价计，不算缓存折扣，报告里注明；`output` 按输出价计，`reasoning` 已含在其中，不重复计；只要有用量未知的运行，就单独列出条数。
 - `aggregate(records, cfg) -> Summary`：
-  - 先按 D10 处理排除；任务集不是 `smoke-*` 时，出现 `grade_arch` 不是 amd64 的记录就判为 `invalid` 并以非零退出——正式评测只认 amd64，arm64 只用于冒烟（作者 2026-11-26，T2-10 审查后）；
+  - 先按 D10 处理排除；任务集不是 `smoke-*` 时，出现 `grade_arch` 不是 amd64 的记录就判为 `invalid` 并以非零退出（这项检查在 D10 排除之后做；评分为 `infra_error` 且 `grade_arch` 为空的记录已按 D10 处理，不参与这项检查——控制会话 2026-11-26 按作者规则澄清，Task 13 用一条用例固定）——正式评测只认 amd64，arm64 只用于冒烟（作者 2026-11-26，T2-10 审查后）；
   - 成功率：每次重复各算一个值，给出均值与样本标准差（ddof=1）；
   - 按题 bootstrap 95% 置信区间：先算每题在各次重复中的平均成功，再对题目重抽样 10000 次，种子固定；
   - 每次运行的 token、轮数、耗时：均值与中位数；
