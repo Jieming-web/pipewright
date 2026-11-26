@@ -572,3 +572,21 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 |---|---|---|---|---|
 | Step 3 校准不取 p90，取单次实测 ×2：`assumed_tokens_per_run` 写 400000 输入 + 13000 输出（单次报价约 0.86 元） | 控制会话 | 只有 1 个样本，p90 即其本身；smoke 这道题是一行修复、18 轮，正式任务集会更长，照单样本报价偏低 | 本节上表 | 作者 2026-11-26（本会话，「按你的建议，×2 写入」） |
 | 只改 `qwen3.6.yaml`（计划写「两个配置文件」） | 控制会话 | `kimi-k2.6.yaml` 未建，Kimi 组在 MVP 挪后清单 | `eval/configs/` 只有一个文件 | 作者 2026-11-26（本会话，「只改 qwen3.6.yaml」） |
+
+#### T2-14 补跑（2026-11-26 追加：补核上表两项待定）
+
+作者同意补跑一次（报价 0.86 元，已用校准后的值）。命令同上，`--out eval/runs/smoke-2026-11-26b`，退出 0。运行时另开监控脚本：等任务容器里出现 `fp-entry` 后，在容器里跑 curl，并每秒采样一次 `docker top` 与宿主机 `ps`，直到容器结束。监控脚本放在会话临时目录，不进仓库。
+
+| 核对项 | 结果 | 证据 |
+|---|---|---|
+| 结果 | complete；resolved 1/1；补丁与第一次相同（`= 1` 改为 `= right`） | `summary.md`、`patch.diff` |
+| token / 轮数 / 耗时 | 输入 378239、输出 7721（含 reasoning 3309）、缓存 0；18 次请求、18 次工具调用；agent 82.8 秒 | `record.json` |
+| 实际花费 | 0.7642 元（报价 0.86 元）；`usage_unknown_runs` 0 | `summary.json` |
+| 容器内 curl（验收 3 网络部分） | `https://github.com` 退出 6（解析不了）；`http://host.docker.internal` 退出 6；`http://1.1.1.1` 退出 7（连不上） | 监控输出，容器 `fp-task-smoke-2026-11-26b-e7d5d9e6` |
+| `docker top` 能看到 agent 命令（验收 3） | 76 次采样都有 runner（`/fp/node/bin/node /fp/app/runner/dist/main.js …`）与桥（`stdio-bridge.js`）；还抓到 agent 的工具命令，如 `/bin/bash -c cd /testbed && python -m pytest astropy/modeling/tests/test_separable.py -v …`、`python -c from astropy.modeling …` | 监控输出 |
+| 宿主机上没有对应进程 | 76 次采样里，宿主机 `ps` 中匹配 `testbed\|pytest\|separable\|fp-entry\|runner` 的进程为 0（已排除宿主机上的 docker CLI 客户端 `docker exec -i … /fp/bin/fp-entry`，它只是转发 stdio 的客户端） | 监控输出 |
+| 采样参数 | 18 条请求全部 200，均为 temperature=1、top_p=0.95 | `<out>/proxy.jsonl` |
+| 四个文件、snapshot | 齐全；pi 1.5.1，qwen-api / qwen3.6-35b-a3b | 运行目录、`record.json` |
+| check-secrets / 残留 | ok；`fp-run` 标签的容器 0、网络 0 | 运行输出、docker |
+
+- 观察（追加）：两次运行轮数相同（18），输入 token 却差近一倍（194578 和 378239）；第二次已占校准值 400000 的 95%。两个样本还不足以重新校准，留到 MVP 之后的减重讨论再定。

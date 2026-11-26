@@ -386,7 +386,7 @@
 ### Task 14：Mac 冒烟与花费校准（真实模型）
 
 - [x] **Step 1**：`python -m forgepilot_eval run --config eval/configs/qwen3.6.yaml --taskset eval/tasksets/smoke-v1.json --repeats 1 --out eval/runs/smoke-<日期> --budget 5`；先看预计花费。 — 2026-11-26（Mac arm64，MVP）：按 T2-13 精简版命令跑（无 `--repeats`/`--budget`，见 MVP 挪后清单），报价 3.02 元经作者同意；退出 0，resolved 1/1，实际 0.4198 元。
-- [ ] **Step 2：核对并记录**到实现说明：
+- [x] **Step 2：核对并记录**到实现说明： — 2026-11-26：smoke-2026-11-26 核对了能事后查的各项；运行中才能查的两项（curl 与 `docker top`）经作者同意补跑 smoke-2026-11-26b（0.7642 元）核对通过；`proxy-fields.json` 按 MVP 挪后，改核 `proxy.jsonl`。详见实现说明「T2-14」两节。
   - 每次运行的四个文件齐全；`snapshot` 的引擎和模型字段正确；
   - `verify_truncated` 通过；运行中的容器里 `git cat-file -e <金标准 blob>` 失败（验收 8）；
   - agent 工具里 `which python` 指向 `envs/testbed`（看 events 中的 bash 输出，提示词不为此改动）；
