@@ -338,7 +338,7 @@
   6. 删除容器。
   - 任何异常都先写 `record.json`（`infra_error` 加原因），再交给上层。
 
-- [ ] **Step 1：写失败测试**（`docker`、假模型；「实例」用 `buildpack-deps:jammy-scm` 里预置的一个小仓库）：
+- [x] **Step 1：写失败测试**（`docker`、假模型；「实例」用 `buildpack-deps:jammy-scm` 里预置的一个小仓库）：
   - 配置缺 `sampling.temperature` 或 `sampling.top_p` 时加载报错；假服务收到的请求体里 `temperature`、`top_p` 等于配置值；
   - 假模型执行 `bash: echo fix > new_file.py` 后结束：`patch.diff` 含 `new_file.py`；`failure_type=none`；`snapshot.engine.name=="pi"`；`requests==2`，`usage` 与假服务返回的一致；`record.json` 含 `config_hash`、`taskset_version`、`image_digest`、`bundle_version`。
   - 改了提示词文件内容后，`config_hash` 跟着变。
@@ -347,7 +347,7 @@
   - 假服务连续返回 429，直到 pi 重试用尽，得到 `rate_limited`。
   - 预算设为 0.000001 元，得到 `budget_cancelled`，且 `Budget.exceeded` 为 True。
   - 运行包路径故意写错，得到 `infra_error`，`docker ps -a` 里查不到容器。
-- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 单任务运行与轨迹记录`。
+- [x] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 单任务运行与轨迹记录`。 — 2026-11-26（Mac arm64，MVP 精简版）：efda237（代理路由 params 注入采样参数）、f98cec7（单任务运行）、a404d76（审查返修 1）、45b985a（返修 2）；偏差均经作者确认（实现说明偏差表）。`eval/.venv/bin/pytest eval/tests -q` → 177 passed（控制会话复跑），`pnpm test` 542 passed，`fp-run` 无残留。MVP 未做的挪后项见「MVP 里程碑」。
 
 ### Task 13：汇总、花费、并发与一条命令（验收 2、5，作者补 3、4、5）
 
