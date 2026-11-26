@@ -462,3 +462,15 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | `grade` 增加必填参数 `run`，返回 `GradeResult` | 审查员（Important：缺省标签 `fp-run=grade` 使 `cleanup_run` 清不到） | 保证所有容器带本次运行名标签 | task-10-review.md | 作者 2026-11-26（本会话） |
 | swebench infra_failure 与 docker/容器出错归为 `infra_error`（官方留在分母） | 审查员提出、控制会话建议 | 断网或容器坏掉不应算模型失败、悄悄拉低成功率 | task-10-review.md；报告需注明与官方算法不同 | 作者 2026-11-26（本会话） |
 - 更正（追加）：T2-6 至 T2-10 返修后的 WSL x86 复验取消——作者 2026-11-26 确认（本会话，原话「在我这跑通就可以了」）。现状：Mac arm64 上 Python 全量 127 passed（T2-10 后）、TS 541/541（T2-6~9 返修后）；`linux-x64` 运行包的 GNU tar 解压写法与 x86 镜像用例在返修后未执行，首次验证在 Task 15 Step 2。
+
+### 冷烟候选镜像 digest（2026-11-26 追加，T2-11 前）
+
+按 design 3.11「每个平台只用一个来源、按 digest 锁定」（作者 2026-11-26）。2026-11-26 用 `docker buildx imagetools inspect` 取得：
+
+| 实例 | Mac arm64（Epoch `ghcr.io/epoch-research/swe-bench.eval.arm64.<id>`） | x86（官方 `swebench/sweb.eval.x86_64.<id 中 __→_1776_>`） |
+|---|---|---|
+| `psf__requests-2317` | `sha256:dacf1300f00c585d18f5cbcd331777825b5437f682c1a846b2fd90606e1b570b`（压缩后约 0.7 GB） | `sha256:c6b5c8846507b5e48e307decca28dbdfa4f5ef17070c1087aacde765e8c4b178` |
+| `astropy__astropy-12907` | `sha256:fbbd240e3fee2881c98d74895bd614e5252e714bd6ab741c1c440c048304f750`（约 0.9 GB） | `sha256:e082963099ed7d5a5f75a0be46e338be36faae33b2cba5289a9ddbd505997f1f` |
+| `django__django-11099` | `sha256:9312a779b863a5c97cf7c473987bab8293bc702dbe44e637e983604d21f82717`（约 0.96 GB） | `sha256:cca302934edd881cc4f1e4647a389a25cdaa3c02bfa33667a4204934a09c4fb1` |
+
+官方 arm64 缺 `django__django-11099`（denied），所以 Mac 统一用 Epoch。T2-0 用过的官方 arm64 镜像（requests、astropy）不再用于冷烟。
