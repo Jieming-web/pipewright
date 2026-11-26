@@ -485,3 +485,20 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | Step 4b 的 x86 预检实例由 requests-2317 改为冷烟集里最小的实例 | 实现者建议、作者决定 | requests 依赖外网且已不在冷烟集 | 同上 | 作者 2026-11-26（本会话） |
 | 新增计划接口外的 `image_refs`、`local_platform`、`_ensure_image`、`_node_version`；`precheck` 的 `max_gold_s`；任务集 `images` 字段与 `selection` 两个字段 | 实现者 | 实现按平台选镜像、digest 锁定与 10 分钟上限 | task-11-report | 作者 2026-11-26（本会话，原话「认可」） |
 | 修 T2-9 `gold_probe_blobs` 两个 bug：`repo` 与数据集字段撞名改读 `repo_path`；以打补丁前的工作区为基准取探针 | 实现者 | 规范正确、实现有误（workflow 3.3 可自行修，先写复现测试） | e2e965c 中的复现测试 | 不需确认（workflow 3.3） |
+
+### smoke-v1 预检结果（2026-11-26 追加，T2-11）
+
+平台 Mac arm64（Docker Desktop），运行包 `bundle-linux-arm64`（node 24.15.0），种子 20261126。生成命令为 `build_taskset("smoke", 1, [astropy 行], 1, 20261126, bundle, eval/tasksets/smoke-v1.json)`，用时 113 秒，只尝试 1 次，没有 infra_error。任务集文件 sha256 为 `7462bbd305be13ca354baaf65ab65bb95c9431ca7f0a6991155413ebc4336ecd`。
+
+| 项 | `astropy__astropy-12907` |
+|---|---|
+| Mac 评分镜像 | `swebench/sweb.eval.arm64.astropy_1776_astropy-12907@sha256:6373496b634a2e95077bfa3407ea8d334fd3520439832f003a0d631ab8a0d348`（arm64；`grade` 回读的 digest 相同） |
+| x86 镜像（写入任务集，未在本机运行） | `swebench/sweb.eval.x86_64.astropy_1776_astropy-12907@sha256:e082963099ed7d5a5f75a0be46e338be36faae33b2cba5289a9ddbd505997f1f` |
+| (1) 金标准补丁 → `resolved` | 通过：F2P 2/2、P2P 13/13 |
+| (2) 空补丁时 F2P 每一条都失败 | 通过：F2P 0/2 通过（2 条都失败），P2P 13/13，结果 `unresolved` |
+| (3) 挂载运行包后 `node --version` | 通过：`v24.15.0` |
+| (4) 金标准评分墙钟 ≤ 600 秒 | 通过：49.0 秒（测试 48.2 秒）；空补丁评分的测试 51.2 秒 |
+| 容器启动时工作区干净 | 通过：`git status --porcelain` 为空 |
+| 金标准探针 | `45bea360859c6851034d413fa5e6d96057fefe60`（`astropy/modeling/separable.py` 修复后的 blob） |
+
+对照 swebench 5.0.2：打补丁沿用 `GIT_APPLY_CMDS` 回退链，判定用 5.0.2 的 `get_eval_report`（`include_tests_status=True`）。有意差异见 T2-10 偏差表：评分容器不加 `SYS_ADMIN`，`infra_failure` 与 docker 出错归为 `infra_error`。在不加 `SYS_ADMIN` 的情况下，金标准运行 FAIL_TO_PASS 全部通过（2/2），满足 T2-10 偏差表「不加 SYS_ADMIN」一行附的条件。两次评分的 swebench 报告中 `infra_failure` 都为 false。日志在 `eval/runs/precheck-82872ebe/`（不进 git）。
