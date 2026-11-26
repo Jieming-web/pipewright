@@ -47,6 +47,7 @@ def grade(inst: dict, patch: str, out_dir: Path, run: str, timeout_s: int = 1800
     result = GradeResult("infra_error", spec.image)
     name = f"fp-grade-{uuid.uuid4().hex[:8]}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "report.json").unlink(missing_ok=True)  # 这次没跑完测试时不能留着上一次的报告
     with open(out_dir / "grade.log", "w", encoding="utf-8", errors="replace") as log, \
             tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)

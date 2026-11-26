@@ -76,10 +76,12 @@ def test_empty_patch_unresolved(inst, run, tmp_path):
 
 
 def test_garbage_patch_apply_failed(inst, run, tmp_path):
+    (tmp_path / "report.json").write_text("stale")  # 同一目录上一次评分留下的报告不能被当成这次的
     assert grade(inst, "this is not a patch\n@@ garbage @@\n", tmp_path, run).status == "patch_apply_failed"
     log = (tmp_path / "grade.log").read_text(encoding="utf-8")
     assert ">>>>> Patch Apply Failed" in log
     assert ">>>>> Start Test Output" not in log  # 打不上就不跑测试
+    assert not (tmp_path / "report.json").exists()
 
 
 def test_timeout_unresolved(inst, run, tmp_path):

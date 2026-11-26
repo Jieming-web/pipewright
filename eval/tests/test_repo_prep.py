@@ -143,7 +143,7 @@ def test_synth_dirty_worktree_rejected(synth, new_sandbox):
     # 容器启动时工作区有未提交改动（如 Epoch astropy 的 pyproject.toml）就报错，否则会混进 agent 补丁（作者 2026-11-26）
     image, ids = synth
     sb = new_sandbox(image)
-    git(sb, SYN, "status --porcelain")  # 起始干净
+    assert git(sb, SYN, "status --porcelain") == ""  # 起始干净，DirtyWorktree 只能来自下面这处改动
     code, out = sb.exec(f"printf 'env tweak\\n' >> {SYN}/env.txt", timeout_s=30)
     assert code == 0, out
     with pytest.raises(DirtyWorktree, match="env.txt"):
@@ -319,21 +319,3 @@ def test_gold_probe_blobs_uses_testbed_for_dataset_rows(monkeypatch):
     gold_probe_blobs({"image": "img", "patch": "p", "repo": "astropy/astropy"})
     assert seen[0][-1] == "/testbed"
 
-
-@pytest.mark.swebench
-def test_gold_probe_blobs_ignores_preexisting_worktree_changes():
-    # Epoch 的 astropy arm64 镜像工作区里 pyproject.toml 已被环境设置改过（未提交）；探针只能是金标准补丁改动的文件
-    from datasets import load_dataset
-
-    image = ("ghcr.io/epoch-research/swe-bench.eval.arm64.astropy__astropy-12907"
-             "@sha256:fbbd240e3fee2881c98d74895bd614e5252e714bd6ab741c1c440c048304f750")
-    if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode != 0:
-        pytest.skip("Epoch astropy arm64 镜像未拉取")
-    ds = load_dataset("SWE-bench/SWE-bench_Verified", split="test", revision="78f471bf655a3137b2e8a75af1501690ec009ec3")
-    row = dict(next(r for r in ds if r["instance_id"] == "astropy__astropy-12907"))
-    blobs = gold_probe_blobs({**row, "image": image, "run": f"t11-{uuid.uuid4().hex[:8]}"})
-    want = subprocess.run(
-        ["docker", "run", "--rm", "-i", "--network", "none", image, "bash", "-c",
-         "cd /testbed && git apply && git hash-object astropy/modeling/separable.py"],
-        input=row["patch"].encode(), capture_output=True, check=True).stdout.decode().split()
-    assert blobs == want

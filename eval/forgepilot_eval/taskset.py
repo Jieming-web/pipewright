@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .grade import INFRA_ERRORS, grade
 from .repo_prep import BaseMismatch, DirtyWorktree, gold_probe_blobs, resolve_effective_base
-from .sandbox import RUN_TIMEOUT_S, Sandbox, _docker, cleanup_run, ensure_network
+from .sandbox import Sandbox, _docker, cleanup_run, ensure_network
 
 DATASET = "SWE-bench/SWE-bench_Verified"
 REVISION = "78f471bf655a3137b2e8a75af1501690ec009ec3"  # T2-0 实测（实现说明 0.2）
@@ -68,33 +68,39 @@ def local_platform() -> str:
     return "linux-arm64" if platform.machine().lower() in ("arm64", "aarch64") else "linux-x64"
 
 
-def image_refs(inst: dict) -> dict[str, str]:
-    """两个平台的 `name@digest`：arm64 为 swebench 官方 arm64 镜像，x86 为数据集 image 字段；digest 取 registry 当前值。"""
+def image_refs(inst: dict, platforms: list[str]) -> dict[str, str]:
+    """各平台的 `name@digest`：arm64 为 swebench 官方 arm64 镜像，x86 为数据集 image 字段；digest 取 registry 当前值。"""
     names = {"linux-arm64": f"swebench/sweb.eval.arm64.{inst['instance_id'].replace('__', '_1776_')}:latest",
              "linux-x64": inst["image"]}
     refs = {}
-    for plat, name in names.items():
-        out = _docker("buildx", "imagetools", "inspect", name, "--format", "{{json .Manifest}}").stdout
-        refs[plat] = f"{name.rsplit(':', 1)[0]}@{json.loads(out)['digest']}"
+    for plat in platforms:
+        out = _docker("buildx", "imagetools", "inspect", names[plat], "--format", "{{json .Manifest}}").stdout
+        refs[plat] = f"{names[plat].rsplit(':', 1)[0]}@{json.loads(out)['digest']}"
     return refs
 
 
-def _ensure_image(image: str) -> None:
-    """本地没有就拉取（失败抛 DockerError，按 infra_error 处理）；在金标准计时之前做，墙钟不含拉取。"""
-    if _docker("image", "inspect", image, check=False).returncode != 0:
-        _docker("pull", image, timeout=RUN_TIMEOUT_S)
+def _with_retries(fn):
+    """infra 类失败同样配置重试最多 2 次（design 3.11）。返回 (结果, None)，仍失败返回 (None, 无法测量的原因)。"""
+    last = ""
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            return fn(attempt), None
+        except (_Unmeasurable, *INFRA_ERRORS) as e:
+            last = f"{type(e).__name__}: {e}"
+    return None, f"unmeasurable: infra_error in all {ATTEMPTS} attempts; last: {last}"
 
 
 def _image_checks(inst: dict, bundle, run: str, out: Path) -> list[str]:
-    """在挂运行包的任务容器（internal 网络）里查：启动时工作区干净（作者 2026-11-26）、node --version 成功。
-    BaseMismatch 与 docker 出错照常抛出，由 precheck 按 infra_error 重试。"""
+    """在挂运行包的任务容器（internal 网络）里查：启动时工作区干净、base_commit 是 HEAD 或其祖先、node --version 成功。
+    工作区不干净与 BaseMismatch 是镜像的确定性性质，预检里记原因排除、不重试（作者 2026-11-26；Task 12 正式运行
+    里 BaseMismatch 仍按 infra_error）。docker 出错照常抛出，由 precheck 重试。"""
     reasons = []
     ensure_network(run)
     out.mkdir(parents=True, exist_ok=True)
     with Sandbox(run, inst["image"], bundle, out) as sb:
         try:
             resolve_effective_base(sb, "/testbed", inst["base_commit"])
-        except DirtyWorktree as e:
+        except (DirtyWorktree, BaseMismatch) as e:
             reasons.append(str(e))
         code, text = sb.exec("/fp/node/bin/node --version", timeout_s=60)
     if code != 0 or not text.startswith("v"):
@@ -103,26 +109,27 @@ def _image_checks(inst: dict, bundle, run: str, out: Path) -> list[str]:
 
 
 def precheck(inst: dict, bundle, max_gold_s: float | None = None) -> PrecheckResult:
-    """入选标准：(1) 金标准补丁 → resolved；(2) 空补丁时 FAIL_TO_PASS 每一条都失败；(3) 挂载运行包后
-    node --version 成功；(4) max_gold_s 不为空时（冷烟集）金标准评分墙钟不超过它；另外容器启动时工作区必须干净。
-    inst["image"] 由调用方按本机平台选好（name@digest）；评分与正式评分一样不加 SYS_ADMIN。每条不满足的标准各记一条原因；通过时取金标准探针。
-    infra_error 同样配置重试最多 2 次，仍失败返回「unmeasurable」。"""
+    """先做便宜的镜像检查（工作区干净、有效基准、挂载运行包后 node --version 成功），不通过就排除、不跑评分；
+    再按入选标准 (1) 金标准补丁 → resolved、(2) 空补丁时 FAIL_TO_PASS 每一条都失败、(4) max_gold_s 不为空时
+    （冷烟集）金标准评分墙钟不超过它。inst["image"] 由调用方按本机平台选好（name@digest）；评分与正式评分一样不加
+    SYS_ADMIN。每条不满足的标准各记一条原因；通过时取金标准探针。infra 类失败重试 2 次，仍失败返回「unmeasurable」。"""
     run = f"precheck-{uuid.uuid4().hex[:8]}"
-    last = ""
-    for attempt in range(1, ATTEMPTS + 1):
+
+    def once(attempt: int) -> PrecheckResult:
         try:
             return _precheck_once(inst, bundle, run, RUNS / run / inst["instance_id"] / f"attempt-{attempt}", max_gold_s)
-        except (_Unmeasurable, BaseMismatch, *INFRA_ERRORS) as e:
-            last = f"{type(e).__name__}: {e}"
         finally:
             cleanup_run(run)
-    return PrecheckResult(False, [f"unmeasurable: infra_error in all {ATTEMPTS} attempts; last: {last}"], [])
+
+    result, why = _with_retries(once)
+    return result or PrecheckResult(False, [why], [])
 
 
 def _precheck_once(inst: dict, bundle, run: str, out: Path, max_gold_s: float | None) -> PrecheckResult:
     iid = inst["instance_id"]
-    reasons = []
-    _ensure_image(inst["image"])
+    reasons = _image_checks(inst, bundle, run, out / "sandbox")  # 容器启动时已拉好镜像，金标准墙钟不含拉取
+    if reasons:
+        return PrecheckResult(False, reasons, [])
     start = time.monotonic()
     gold = grade(inst, inst["patch"], out / "gold", run, timeout_s=int(max_gold_s or 1800))
     gold_s = time.monotonic() - start
@@ -137,31 +144,32 @@ def _precheck_once(inst: dict, bundle, run: str, out: Path, max_gold_s: float | 
     if empty.status == "infra_error":
         raise _Unmeasurable(f"empty-patch grading infra_error (log: {out / 'empty' / 'grade.log'})")
     report = out / "empty" / "report.json"
-    passing = json.loads(report.read_text())[iid]["tests_status"]["FAIL_TO_PASS"]["success"] if report.exists() else None
+    # 日志里没有可解析的测试输出时，swebench 的报告不带 tests_status
+    status = json.loads(report.read_text())[iid].get("tests_status") if report.exists() else None
+    passing = status["FAIL_TO_PASS"]["success"] if status else None
     if empty.status != "unresolved" or passing is None or passing:
         reasons.append(f"empty patch: expected unresolved with every FAIL_TO_PASS failing, got {empty.status}, "
-                       f"FAIL_TO_PASS passing: {'no report' if passing is None else passing}")
-
-    image_reasons = _image_checks(inst, bundle, run, out / "sandbox")
-    reasons += image_reasons
+                       f"FAIL_TO_PASS passing: {'no tests_status in report' if passing is None else passing}")
     blobs = [] if reasons else gold_probe_blobs({**inst, "run": run})  # 被排除的不需要探针；金标准打不上时它会抛错
-    (out / "precheck.json").write_text(json.dumps({
-        "image": inst["image"], "gold": gold.status, "gold_s": round(gold_s, 1), "gold_digest": gold.image_digest,
-        "arch": gold.arch, "empty": empty.status, "empty_f2p_passing": passing, "image_checks": image_reasons,
-        "reasons": reasons, "probe_blobs": blobs}, indent=2, ensure_ascii=False))
     return PrecheckResult(not reasons, reasons, blobs)
 
 
 def build_taskset(name: str, version: int, rows: list[dict], n: int, seed: int, bundle, out: Path) -> None:
     """抽 n×1.5（向上取整，不超过可选条数）个候选逐个预检，再用同一种子从通过的候选里分层抽 n 个，写出任务集。
-    通过的不足 n 个（含全部无法测量）时报错，不写文件；不覆盖已有文件。名字以 smoke 开头的为冷烟集。"""
+    通过的不足 n 个（含全部无法测量）时报错，不写文件；不覆盖已有文件。名字以 smoke 开头的为冷烟集。
+    冷烟集记录 arm64 与 x86 的 name@digest；开发集只记 x86、不解析 arm64，所以只能在 x86 上定版（作者 2026-11-26）。"""
+    smoke = name.startswith("smoke")
+    platforms = ["linux-arm64", "linux-x64"] if smoke else ["linux-x64"]
+    if local_platform() not in platforms:
+        raise ValueError(f"taskset {name!r} records only x86 images; build it on x86, not {local_platform()}")
     by_id = {r["instance_id"]: r for r in rows}
     candidates = stratified_sample(rows, min(math.ceil(n * 1.5), len(rows)), seed)  # 可选条数不够 n×1.5 时全部预检
-    max_gold_s = SMOKE_GOLD_MAX_S if name.startswith("smoke") else None
+    max_gold_s = SMOKE_GOLD_MAX_S if smoke else None
     images, results = {}, {}
     for iid in candidates:
-        images[iid] = image_refs(by_id[iid])
-        results[iid] = precheck({**by_id[iid], "image": images[iid][local_platform()]}, bundle, max_gold_s)
+        images[iid], why = _with_retries(lambda _: image_refs(by_id[iid], platforms))  # 解析 digest 属拉取类 infra
+        results[iid] = (PrecheckResult(False, [why], []) if why else
+                        precheck({**by_id[iid], "image": images[iid][local_platform()]}, bundle, max_gold_s))
     passed = [iid for iid in candidates if results[iid].ok]
     excluded = [{"id": iid, "reasons": results[iid].reasons} for iid in candidates if not results[iid].ok]
     if len(passed) < n:

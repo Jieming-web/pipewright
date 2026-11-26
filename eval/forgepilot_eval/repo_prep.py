@@ -144,10 +144,9 @@ _GOLD_SCRIPT = r"""
 set -eo pipefail
 cd "$1"
 cat > /tmp/gold.patch
-git add -A && pre=$(git write-tree)  # 镜像工作区里已有的未提交改动（如 Epoch 的 pyproject.toml）不算探针
 git apply /tmp/gold.patch 2>/dev/null || patch --batch --fuzz=5 -p1 -i /tmp/gold.patch >/dev/null
 git add -A
-git diff --cached --raw --no-abbrev "$pre" | awk '$5 !~ /^D/ {print $4}' | sort -u > /tmp/new.txt
+git diff --cached --raw --no-abbrev HEAD | awk '$5 !~ /^D/ {print $4}' | sort -u > /tmp/new.txt
 git rev-list --objects HEAD | cut -d' ' -f1 | sort -u > /tmp/base.txt
 comm -23 /tmp/new.txt /tmp/base.txt
 """
