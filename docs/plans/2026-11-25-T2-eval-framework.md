@@ -220,7 +220,7 @@
   - `entry_cmd(runner_args) -> list[str]`：返回 `["docker","exec","-i",<id>,"/fp/bin/fp-entry",*runner_args]`；
   - `kill()`、`__exit__`：一律 `docker rm -f`；
   - `image_digest() -> str`。
-- `cleanup_run(run: str) -> None`：按标签删除容器和网络。
+- `cleanup_run(run: str) -> None`：按标签删除容器和网络。普通 docker 命令默认时限 60 秒，`cleanup_run` 的批量删除用 300 秒；删容器失败时仍继续删网络，最后再报错（作者 2026-11-26，返修第 1 轮把默认时限由 600 秒降到 60 秒时确认）。
 
 - [x] **Step 1–4**（2026-11-25，WSL x86）：11 个用例：internal 网络带标签且复用；github、host.docker.internal、1.1.1.1 都不通；经 `fp-model-proxy:8080` 拿到假服务回复且代理日志记 200；任务容器环境无 key、key 只在代理容器环境里；docker 命令行参数（spy 每次调用）不含 key；`/fp` 只读、`/fp-out` 可写、`entry_cmd` 形状、`image_digest`；`exec` 超时返回 124；`with` 内异常后容器已删；`kill`；模拟崩溃后 `cleanup_run` 按标签删光容器与网络；代理镜像固定 digest。RED：模块不存在。变异 3 项被抓住（去掉 `--internal`、key 改为 `-e K=V`、`__exit__` 不删容器）；第一次「key 进参数」没被抓住（`docker inspect` 看不到 CLI 参数），测试改为 spy argv 后抓住。写法细节：`node:24-slim` 的 digest 由 Task 8 固定（Task 0 未记录）；假服务辅助容器只接默认 bridge，代理按其 bridge IP 转发（默认 bridge 无容器名解析）；共用 fixture 移到 `eval/tests/conftest.py`。全量：`pytest eval/tests` 98 passed，`pnpm test` 两次 540/540（此前一次在 docker 测试刚结束时出现 22 个失败，重跑 3 次未复现，记为负载下的偶发，未定位）。未做：ponytail-review。
   - 更正（2026-11-26，返修第 1 轮 bad2712）：代理改接 `fp-egress-<run>`、不接默认网络，假上游改在 egress 网络上按容器名访问、不再依赖宿主机 node_modules；新增「默认网络上的容器连不到代理」用例。上面关于假服务「只接默认 bridge、按 IP 转发」的描述已过时。
@@ -344,7 +344,7 @@
   4. 预算超限时停止派发新运行，并取消进行中的运行；
   5. 结束时写 `summary.json`、`summary.md`（含 `reconcile_proxy` 的结果）、`proxy-fields.json`（代理日志里实际发出的字段和采样参数去重后的结果，与配置的 `sampling` 不一致就在 summary 中标红）；
   6. 用 `scripts/check-secrets.ts` 扫描输出目录，发现密钥、评测无效或未完成时，以非零退出；
-  7. Ctrl-C 与异常时，按标签调用 `cleanup_run`。
+  7. 无论正常结束、Ctrl-C、SIGTERM 还是异常，都在 `finally` 里按标签调用 `cleanup_run`（为 SIGTERM 注册处理函数）。评测结果先落盘再清理。有原始异常时，清理错误只附加、不覆盖；没有原始异常但清理失败时，报错并标记为「评测完成、清理失败」。另外，每次启动时按标签清扫之前运行遗留的资源，标签带 run_id，只清扫所属进程已结束的运行（作者 2026-11-26；原文「Ctrl-C 与异常时，按标签调用 `cleanup_run`」，T2-6~9 复审发现正常结束不清理）。
 
 - [ ] **Step 1：写失败测试**：
   - 3 次重复的成功率为 [0.5, 0.25, 0.75] 时，均值 0.5，样本标准差 0.25；
