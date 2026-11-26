@@ -66,6 +66,13 @@ def test_fp_entry_starts_runner(container: str):
     assert "--models is required" in r.stderr, r.stderr
 
 
+def test_fp_entry_with_args_reaches_runner(container: str):
+    """带 runner 参数时，conda activate 不能把它们当成自己的参数（T2-13 端到端用例发现）。"""
+    r = exec_bash(container, "/fp/bin/fp-entry --workdir /testbed --thinking low")
+    assert "conda activate testbed failed" not in r.stderr, r.stderr
+    assert "--models is required" in r.stderr, r.stderr
+
+
 def test_fp_env_tools_and_testbed(container: str):
     r = exec_bash(
         container,

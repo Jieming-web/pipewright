@@ -2,8 +2,9 @@
 # 存在 conda 时激活 testbed（失败退出 3），再把运行包的工具放到 PATH 最前。
 # pi 的 bash 工具子 shell 会继承这里的环境变量。
 if [ -f /opt/miniconda3/bin/activate ]; then
+  # 显式传 base：不带参数 source 时，activate 会把 fp-entry 的 runner 参数当成自己的参数
   # shellcheck disable=SC1091
-  if ! { source /opt/miniconda3/bin/activate && conda activate testbed; }; then
+  if ! { source /opt/miniconda3/bin/activate base && conda activate testbed; }; then
     echo "fp-entry: conda activate testbed failed" >&2
     exit 3
   fi
