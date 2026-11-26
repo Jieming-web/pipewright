@@ -1,0 +1,72 @@
+# T2 计划 Task 11 Step 4b：在 x86 上预检冷烟集里最小的实例 psf__requests-2317（作者 2026-11-26）。
+# 只能手动触发；不用任何密钥，不读 .env。镜像按 digest 锁定（实现说明「冷烟候选镜像 digest」）。
+# 入选标准同 Mac：金标准 → resolved、空补丁时 FAIL_TO_PASS 每一条都失败、挂载运行包后 node --version 成功、
+# 冷烟集金标准评分墙钟 ≤ 600 秒；infra_error 重试 2 次后记为无法测量。
+name: eval-x86-precheck
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  precheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      INSTANCE: psf__requests-2317
+      IMAGE: swebench/sweb.eval.x86_64.psf_1776_requests-2317@sha256:c6b5c8846507b5e48e307decca28dbdfa4f5ef17070c1087aacde765e8c4b178
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          pnpm install --frozen-lockfile
+          python -m venv eval/.venv
+          eval/.venv/bin/pip install -r eval/requirements.txt
+
+      - name: Build linux-x64 bundle
+        run: bash scripts/build-eval-bundle.sh linux-x64
+
+      - name: Pull image by digest
+        run: docker pull "$IMAGE"
+
+      - name: Precheck
+        working-directory: eval
+        run: |
+          .venv/bin/python - <<'EOF'
+          import json, os, platform, sys
+          from dataclasses import asdict
+          from pathlib import Path
+          from datasets import load_dataset
+          from forgepilot_eval.taskset import DATASET, REVISION, SMOKE_GOLD_MAX_S, precheck
+
+          print("python", platform.python_version(), platform.machine())
+          ds = load_dataset(DATASET, split="test", revision=REVISION)
+          row = dict(next(r for r in ds if r["instance_id"] == os.environ["INSTANCE"]))
+          r = precheck({**row, "image": os.environ["IMAGE"]}, Path(".cache/bundle-linux-x64"), SMOKE_GOLD_MAX_S)
+          print(json.dumps(asdict(r), indent=2))
+          for f in sorted(Path("runs").glob("precheck-*/*/attempt-*/precheck.json")):
+              print(f, f.read_text())
+          sys.exit(0 if r.ok else 1)
+          EOF
+
+      - name: Leftover containers and networks
+        if: always()
+        run: |
+          docker ps -a --filter label=fp-run
+          docker network ls --filter label=fp-run
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: precheck-logs
+          path: eval/runs/
