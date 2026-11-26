@@ -326,7 +326,7 @@
   - 标识与版本：`instance_id`、`attempt`、`taskset_version`、`taskset_sha256`、`config_hash`、`bundle_version`、`image_digest`、`effective_base`；评分的 `grade_image`、`grade_image_digest`、`grade_arch`（来自 `GradeResult`）（作者 2026-11-26，T2-10 审查后）；
   - 运行快照：`snapshot`，取自 `run.started`，没有就为 null；
   - 结果：`terminal_type`、`failure_type`、`failure_reason`；
-  - 统计：`tool_calls`、`wall_s`；`requests`（`model.request.finished` 的条数）；`usage`（累加，含单列的 `reasoning`；成功返回却没有用量的请求才标 `usage_complete: false`；出错的请求（如 429）按契约用量为 null 且不计费，不算用量未知——作者 2026-11-26）；`rate_limit_errors`（`errorMessage` 匹配 `/429|rate.?limit/i` 的请求数）；`patch_bytes`。
+  - 统计：`tool_calls`、`wall_s`；`requests`（`model.request.finished` 的条数）；`usage`（累加，含单列的 `reasoning`；成功返回却没有用量的请求才标 `usage_complete: false`；出错的请求（如 429）按契约用量为 null 且不计费，不算用量未知；被中止（aborted）的请求上游可能已部分计费，算用量未知——作者 2026-11-26）；`rate_limit_errors`（`errorMessage` 匹配 `/429|rate.?limit/i` 的请求数）；`patch_bytes`。
 - `failure_type` 在运行阶段的取值：`none`（待评分）、`empty_patch`、`run_failed`、`rate_limited`（以 `run.failed` 结束，且最后一次请求的错误是 429）、`timeout`、`tool_budget`、`budget_cancelled`（因预算超限被取消）、`infra_error`（容器、桥、截断自检、协议错误等）。
 - `Budget`：线程安全的累计实际花费，每收到一条 `model.request.finished` 就按 `input + cacheRead + cacheWrite` 与 `output` 累加（不加 `reasoning`）；达到上限时把 `exceeded` 置为 True，`run_instance` 随即取消自己，记为 `budget_cancelled`。
 - 运行流程：
