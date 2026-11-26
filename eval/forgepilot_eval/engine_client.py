@@ -39,8 +39,9 @@ def run_task(
     lines: queue.Queue[str | None] = queue.Queue()
 
     def pump():
-        for line in proc.stdout:
-            lines.put(line)
+        with proc.stdout:  # 读到 EOF 就关，不留给 GC
+            for line in proc.stdout:
+                lines.put(line)
         lines.put(None)  # EOF
 
     threading.Thread(target=pump, daemon=True).start()

@@ -3,7 +3,8 @@
     PYTHONPATH=eval eval/.venv/bin/python -m forgepilot_eval run --config <yaml> --taskset <json> --out eval/runs/<名字> [--yes] [--env-file <.env>]
 
 按顺序逐个实例「运行 → 评分」；infra_error 与 rate_limited 按 D10 重试（rate_limited 先退避），确定性的基础设施
-错误不重试；写 summary.json / summary.md；无论怎样结束都按标签清理；最后用 check-secrets 扫描输出目录。
+错误不重试，评分阶段的 infra_error 只重新评分；写 summary.json / summary.md；无论怎样结束都先存代理日志（proxy.jsonl）、
+用 check-secrets 扫描输出目录，再按标签清理。
 退出码：0 = 评测完整且扫描干净；1 = 无效、扫描发现问题或取消；2 = 开跑前检查不通过。
 """
 
@@ -12,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -31,7 +31,6 @@ from .taskset import local_platform, taskset_sha256
 REPO = Path(__file__).resolve().parents[2]
 RATE_LIMIT_BACKOFF_S = 60
 DETERMINISTIC = (BaseMismatch, HistoryLeak, DirtyWorktree)  # 镜像的确定性性质，重试只是白跑（作者 2026-11-26）
-RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")  # 评测名进容器名、网络名与标签
 
 
 def load_rows(ts: dict) -> dict[str, dict]:
@@ -57,7 +56,8 @@ def read_env_key(path: Path, name: str) -> str | None:
 
 def run_one(inst: dict, cfg, run: str, out: Path) -> list[TaskRecord]:
     """一个实例的全部尝试（最后一条是最终结果）。run_instance 交出 infra_error 有两种方式：返回带 infra_error 的
-    record，或写好 record.json 后抛异常——两种都接住；没写出 record 的异常照常抛出。"""
+    record，或写好 record.json 后抛异常——两种都接住；只有 run_instance 写 record 之前的异常才直接抛出。
+    评分阶段的 infra_error 只用同一份补丁重新评分，不重跑 agent（作者 2026-11-26）。"""
     recs: list[TaskRecord] = []
     for attempt in range(1, cfg.scoring["max_retries"] + 2):
         if recs and outcome(recs[-1]) == "rate_limited":
@@ -73,20 +73,29 @@ def run_one(inst: dict, cfg, run: str, out: Path) -> list[TaskRecord]:
             deterministic = isinstance(e, DETERMINISTIC)
         if rec.failure_type == "none":
             patch = (d / "patch.diff").read_bytes().decode("utf-8", errors="surrogateescape")
-            g = grade(inst, patch, d / "grade", run, cfg.grade_timeout_s)
+            for n in range(1, cfg.scoring["max_retries"] + 2):
+                g = grade(inst, patch, d / "grade" / str(n), run, cfg.grade_timeout_s)
+                print(f"  {inst['instance_id']} #{attempt} 评分 {n}: {g.status}", flush=True)
+                if g.status != "infra_error":
+                    break
             rec.grade_status, rec.grade_image, rec.grade_image_digest, rec.grade_arch = g.status, g.image, g.image_digest, g.arch
             (d / "record.json").write_text(json.dumps(asdict(rec), indent=2, ensure_ascii=False), encoding="utf-8")
         recs.append(rec)
         print(f"  {inst['instance_id']} #{attempt}: {outcome(rec)}" + (f"（{rec.failure_reason}）" if rec.failure_reason else ""),
               flush=True)
-        if deterministic or outcome(rec) not in cfg.scoring["retry_then_exclude"]:
+        if deterministic or rec.failure_type == "none" or outcome(rec) not in cfg.scoring["retry_then_exclude"]:
             break
     return recs
 
 
 def check_secrets(out: Path, name: str, value: str) -> bool:
-    r = subprocess.run(["node", "--experimental-strip-types", str(REPO / "scripts" / "check-secrets.ts"),
-                        "--env", name, "--local-paths", str(out)], cwd=REPO, env={**os.environ, name: value})
+    """不抛异常（在 finally 里调用，不能盖住原始异常或挡住清理）；跑不起来算不干净。"""
+    try:
+        r = subprocess.run(["node", "--experimental-strip-types", str(REPO / "scripts" / "check-secrets.ts"),
+                            "--env", name, "--local-paths", str(out)], cwd=REPO, env={**os.environ, name: value})
+    except OSError as e:
+        print(f"check-secrets 没跑起来：{e}", file=sys.stderr)
+        return False
     return r.returncode == 0
 
 
@@ -94,9 +103,6 @@ def run_eval(a: argparse.Namespace) -> int:
     out = Path(a.out)
     if out.exists():
         print(f"输出目录已存在，拒绝运行：{out}", file=sys.stderr)
-        return 2
-    if not RUN_NAME.fullmatch(out.name):
-        print(f"输出目录名只能含字母、数字、_ . -（它也是容器与网络名）：{out.name}", file=sys.stderr)
         return 2
     cfg = load_config(a.config)
     if not (cfg.bundle / "bin" / "fp-entry").is_file():
@@ -129,8 +135,9 @@ def run_eval(a: argparse.Namespace) -> int:
     run = out.name
     out.mkdir(parents=True)
     error: BaseException | None = None
+    proxy = None
     try:
-        start_proxy(run, proxy_routes(cfg), {key_env: key})
+        proxy = start_proxy(run, proxy_routes(cfg), {key_env: key})
         finals, attempts = [], []
         for iid in ts["instance_ids"]:
             inst = {**rows[iid], "image": ts["images"][iid][plat], "probe_blobs": ts["probe_blobs"][iid],
@@ -148,6 +155,13 @@ def run_eval(a: argparse.Namespace) -> int:
         error = e
         raise
     finally:
+        # 收尾顺序：存代理日志 → 扫描（含异常结束）→ 清理；前两步不抛异常
+        if proxy is not None:
+            try:  # 每行只有路由、字段名、采样参数与状态码；供 T2-14 核对 temperature/top_p（作者 2026-11-26）
+                (out / "proxy.jsonl").write_text("".join(json.dumps(x) + "\n" for x in proxy.logs()), encoding="utf-8")
+            except Exception as pe:
+                print(f"代理日志没存下：{type(pe).__name__}: {pe}", file=sys.stderr)
+        clean = check_secrets(out, key_env, key)
         try:
             cleanup_run(run)
         except Exception as ce:
@@ -156,7 +170,6 @@ def run_eval(a: argparse.Namespace) -> int:
                 raise
             print(f"cleanup_run 也失败了（原始异常照常抛出）：{type(ce).__name__}: {ce}", file=sys.stderr)
 
-    clean = check_secrets(out, key_env, key)
     rate = "—" if s["success_rate"] is None else f"{s['success_rate']:.1%}"
     print(f"状态 {s['status']}；成功率 {rate}；实际花费 {s['cost']['actual_yuan']:.4f} 元；汇总：{out / 'summary.md'}")
     return 0 if s["status"] == "complete" and clean else 1

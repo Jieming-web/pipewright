@@ -71,13 +71,6 @@ def test_d10_five_percent_threshold(n_ok, status):
     assert aggregate(finals, cfg, "smoke", finals)["status"] == status
 
 
-def test_rate_limited_excluded():
-    cfg = load_config(CONFIG)
-    finals = [rec("a", grade="resolved"), rec("b", ft="rate_limited")]
-    s = aggregate(finals, cfg, "smoke", finals)
-    assert s["measured"] == 1 and [e["instance_id"] for e in s["excluded"]] == ["b"]
-
-
 def test_non_smoke_taskset_requires_amd64_grading():
     cfg = load_config(CONFIG)
     many = [rec(str(i), grade="resolved") for i in range(20)]
@@ -116,7 +109,15 @@ def env(tmp_path, monkeypatch):
     envf = tmp_path / ".env"
     envf.write_text(f"OTHER=1\nDASHSCOPE_API_KEY={KEY}\n")
     calls = {"run": [], "grade": [], "proxy": [], "cleanup": [], "sleep": []}
-    monkeypatch.setattr(cli, "start_proxy", lambda run, routes, e: calls["proxy"].append((run, routes, e)))
+    class FakeProxy:
+        def logs(self):
+            return [{"route": "qwen", "fields": ["model"], "sampling": {"temperature": 1.0, "top_p": 0.95}, "status": 200}]
+
+    def start_proxy(run, routes, e):
+        calls["proxy"].append((run, routes, e))
+        return FakeProxy()
+
+    monkeypatch.setattr(cli, "start_proxy", start_proxy)
     monkeypatch.setattr(cli, "cleanup_run", calls["cleanup"].append)
     monkeypatch.setattr(cli.time, "sleep", calls["sleep"].append)
     monkeypatch.setattr(cli, "load_rows", lambda ts: {i: {"instance_id": i, "row": True} for i in ts["instance_ids"]})
@@ -178,7 +179,10 @@ def test_clean_run_grades_and_writes_summary(env):
     assert calls["run"][0][3] == ["blob-a__a-1"] and calls["run"][0][4] is True
     # 只评分待评分（failure_type=none）的运行；补丁取自 patch.diff；评分超时取配置
     assert [(g[0], g[1], g[2], g[4]) for g in calls["grade"]] == [
-        ("a__a-1", "diff --git a/x b/x\n", out / "a__a-1" / "1" / "grade", 1800)]
+        ("a__a-1", "diff --git a/x b/x\n", out / "a__a-1" / "1" / "grade" / "1", 1800)]
+    # 清理前把代理日志原样存下（T2-14 核对采样参数）
+    proxy = [json.loads(l) for l in (out / "proxy.jsonl").read_text().splitlines()]
+    assert proxy == [{"route": "qwen", "fields": ["model"], "sampling": {"temperature": 1.0, "top_p": 0.95}, "status": 200}]
     rec_a = json.loads((out / "a__a-1" / "1" / "record.json").read_text())
     assert (rec_a["grade_status"], rec_a["grade_image_digest"], rec_a["grade_arch"]) == ("resolved", "sha256:x", "arm64")
     s = summary(out)
@@ -192,21 +196,23 @@ def test_clean_run_grades_and_writes_summary(env):
     assert KEY not in (out / "summary.json").read_text() + (out / "summary.md").read_text()
 
 
-def test_infra_error_retried_both_ways_then_graded(env):
-    """infra_error 两种交出方式都接住：返回值（bridge 失败）与写好 record 后抛异常（Sandbox 等）。"""
-    code, out, calls = env({"a__a-1": ["infra_error", "raise", "none"]})
-    assert [c[1] for c in calls["run"]] == [1, 2, 3]
-    assert len(calls["grade"]) == 1 and summary(out)["failure_types"] == {"resolved": 1}
-    assert code == 0 and calls["sleep"] == []
-
-
-def test_still_failing_after_retries_is_excluded_and_invalid(env):
-    code, out, calls = env({"a__a-1": ["none"], "b__b-2": ["raise", "raise", "raise"]})
-    assert [c[:2] for c in calls["run"]][1:] == [("b__b-2", 1), ("b__b-2", 2), ("b__b-2", 3)]
+def test_infra_error_retries(env):
+    """运行阶段：infra_error 两种交出方式（返回值；写好 record 后抛异常）都重试，最多 3 次，仍失败就排除。
+    评分阶段：infra_error 只用同一份补丁重新评分（最多 2 次），不重跑 agent（作者 2026-11-26）。"""
+    code, out, calls = env({"a__a-1": ["infra_error", "raise", "none"], "b__b-2": ["raise"] * 3, "c__c-3": ["none"]},
+                           grades={"a__a-1": ["infra_error", "resolved"], "c__c-3": ["infra_error"] * 3})
+    assert [c[:2] for c in calls["run"]] == [("a__a-1", 1), ("a__a-1", 2), ("a__a-1", 3),
+                                            ("b__b-2", 1), ("b__b-2", 2), ("b__b-2", 3), ("c__c-3", 1)]
+    d = out / "a__a-1" / "3"
+    assert [(g[0], g[1], g[2]) for g in calls["grade"]] == [
+        ("a__a-1", "diff --git a/x b/x\n", d / "grade" / "1"), ("a__a-1", "diff --git a/x b/x\n", d / "grade" / "2"),
+        *[("c__c-3", "diff --git a/x b/x\n", out / "c__c-3" / "1" / "grade" / str(n)) for n in (1, 2, 3)]]
+    assert json.loads((d / "record.json").read_text())["grade_status"] == "resolved"
     s = summary(out)
-    assert [e["instance_id"] for e in s["excluded"]] == ["b__b-2"]
+    assert s["failure_types"] == {"resolved": 1, "infra_error": 2}
+    assert [e["instance_id"] for e in s["excluded"]] == ["b__b-2", "c__c-3"]
     assert "DockerError" in s["excluded"][0]["failure_reason"]
-    assert s["status"] == "invalid" and code != 0
+    assert s["status"] == "invalid" and code != 0 and calls["sleep"] == []
 
 
 def test_deterministic_infra_error_not_retried(env):
@@ -222,12 +228,6 @@ def test_rate_limited_backs_off_then_excluded(env):
     assert [c[1] for c in calls["run"]] == [1, 2, 3]
     assert calls["sleep"] == [60, 60]
     assert summary(out)["excluded"][0]["failure_type"] == "rate_limited"
-
-
-def test_grade_infra_error_retried(env):
-    code, out, calls = env({"a__a-1": ["none", "none"]}, grades={"a__a-1": ["infra_error", "unresolved"]})
-    assert [c[1] for c in calls["run"]] == [1, 2] and len(calls["grade"]) == 2
-    assert summary(out)["failure_types"] == {"unresolved": 1} and code == 0
 
 
 def test_out_exists_refused(env, tmp_path):
@@ -263,6 +263,13 @@ def test_cleanup_failure_does_not_mask_original_error(env, monkeypatch, capsys):
     with pytest.raises(ValueError, match="boom"):
         env({"a__a-1": ["bug"]})
     assert "rm hung" in capsys.readouterr().err
+
+
+def test_secrets_scanned_on_abnormal_end(env, capfd):
+    """异常结束时也扫描输出目录（已写出的轨迹里可能有 key）；原始异常照常抛出。"""
+    with pytest.raises(ValueError, match="boom"):
+        env({"a__a-1": ["leak"], "b__b-2": ["bug"]})
+    assert "DASHSCOPE_API_KEY 的值出现在" in capfd.readouterr().err
 
 
 # ---------- 一条命令从头到尾（Docker、假模型、smoke-v1） ----------
@@ -308,7 +315,10 @@ def test_end_to_end_smoke_with_fake_model(docker, bundle, fake_js, tmp_path):  #
         assert "new_file.py" in (d / "patch.diff").read_text()
         record = json.loads((d / "record.json").read_text())
         assert record["grade_status"] == "unresolved" and record["grade_arch"] == {"linux-arm64": "arm64", "linux-x64": "amd64"}[ARCH]
-        assert (d / "grade" / "grade.log").exists()
+        assert (d / "grade" / "1" / "grade.log").exists()
+        proxy = [json.loads(l) for l in (out / "proxy.jsonl").read_text().splitlines()]
+        assert len(proxy) == 2 and all((p["sampling"]["temperature"], p["sampling"]["top_p"]) == (1.0, 0.95) for p in proxy)
+        assert KEY not in (out / "proxy.jsonl").read_text()  # check-secrets 也扫它（退出码 0 已证明）
     finally:
         left = [sh("docker", *kind, "--filter", f"label=fp-run={run}").stdout.strip()
                 for kind in (["ps", "-aq"], ["network", "ls", "-q"])]

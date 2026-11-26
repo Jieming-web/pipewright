@@ -81,6 +81,7 @@ def launch(tmp_path):
     for f in fakes:
         f.terminate()
         f.wait(10)
+        f.stdout.close()
 
 
 def fake_bridge(script):
@@ -192,6 +193,16 @@ def test_bridge_closes_stdout_but_never_exits_is_failure(spawned):
     assert r.failure == "bridge exited: code -9"
     assert r.terminal is None and kills == [1]
     assert spawned[0].returncode is not None
+
+
+def test_bridge_stdout_closed_after_run(spawned):
+    """桥的 stdout 管道读到 EOF 就关掉，不留给 GC（否则 ResourceWarning；T2-13 全量测试的警告来源之一）。"""
+    run_task([sys.executable, "-c", "pass"], START, ALLOW, lambda e: None, timeout_s=10, kill=lambda: None, grace_s=1)
+    for _ in range(50):
+        if spawned[0].stdout.closed:
+            break
+        time.sleep(0.1)
+    assert spawned[0].stdout.closed
 
 
 def test_grace_after_eof_counts_from_eof_not_from_last_read():
