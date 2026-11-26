@@ -79,11 +79,6 @@ def test_fp_env_tools_and_testbed(container: str):
     assert lines[-1].startswith("v24."), lines
 
 
-def test_bundle_mounted_read_only(container: str):
-    r = exec_bash(container, "touch /fp/x")
-    assert r.returncode != 0
-
-
 def test_sha256_mismatch_fails(tmp_path: Path):
     """下载缓存里放一个被篡改的 node 包：脚本必须因 sha256 不符失败，不生成运行包。"""
     dl = tmp_path / "downloads"

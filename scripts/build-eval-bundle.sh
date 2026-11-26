@@ -71,8 +71,9 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/node" "$STAGE/bin" "$STAGE/app"
 tar -xJf "$DL/$NODE_PKG" -C "$STAGE/node" --strip-components=1
-tar -xzf "$DL/$RG_PKG" -C "$STAGE/bin" --strip-components=1 --wildcards '*/rg'
-tar -xzf "$DL/$FD_PKG" -C "$STAGE/bin" --strip-components=1 --wildcards '*/fd'
+# 指定成员路径（不用 --wildcards）：GNU tar 与 macOS bsdtar 都支持
+tar -xzf "$DL/$RG_PKG" -C "$STAGE/bin" --strip-components=1 "${RG_PKG%.tar.gz}/rg"
+tar -xzf "$DL/$FD_PKG" -C "$STAGE/bin" --strip-components=1 "${FD_PKG%.tar.gz}/fd"
 install -m 0755 "$REPO/eval/runtime/fp-entry.sh" "$STAGE/bin/fp-entry"
 install -m 0644 "$REPO/eval/runtime/fp-env.sh" "$STAGE/bin/fp-env"
 
