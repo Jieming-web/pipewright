@@ -189,10 +189,39 @@ def test_synth_broken_ref_reported_and_removed(synth, new_sandbox):
                         timeout_s=30)
     assert code == 0, out
     assert any("refs/remotes/origin/HEAD" in i for i in verify_truncated(sb, SYN, ids["ENV"], []))
-    truncate_history(sb, SYN, ids["ENV"])
+    truncate_history(sb, SYN, ids["ENV"], [ids["FIX_NEW_BLOB"], ids["FIX_A_BLOB"]])
     assert verify_truncated(sb, SYN, ids["ENV"], []) == []
     code, _ = sb.exec(f"test -e {SYN}/.git/refs/remotes/origin/HEAD", timeout_s=30)
     assert code != 0
+
+
+def test_synth_symref_with_remote_config_removed(synth, new_sandbox):
+    """残留符号引用 refs/remotes/origin/HEAD -> origin/main，而 remote 配置已删（remote remove 帮不上）：
+    update-ref 不跟随符号引用，截断照常成功。"""
+    image, ids = synth
+    sb = new_sandbox(image)
+    git(sb, SYN, "symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main")
+    git(sb, SYN, "config --remove-section remote.origin")
+    truncate_history(sb, SYN, ids["ENV"], [ids["FIX_NEW_BLOB"], ids["FIX_A_BLOB"]])
+    assert git(sb, SYN, "for-each-ref --format='%(refname)'") == "refs/heads/fp-base"
+
+
+def test_synth_pseudo_refs_removed(synth, new_sandbox):
+    """ORIG_HEAD、FETCH_HEAD 等伪引用指向基准之后的提交：截断后 .git 里（对象库之外）找不到这个提交的 hash。"""
+    image, ids = synth
+    sb = new_sandbox(image)
+    pseudo = ["ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+    code, out = sb.exec(f"cd {SYN} && " + " && ".join(f"echo {ids['FIX']} > .git/{p}" for p in pseudo), timeout_s=30)
+    assert code == 0, out
+    truncate_history(sb, SYN, ids["ENV"], [ids["FIX_NEW_BLOB"], ids["FIX_A_BLOB"]])
+    code, out = sb.exec(f"grep -rlF {ids['FIX']} {SYN}/.git --exclude-dir=objects", timeout_s=30)
+    assert code == 1 and out == "", out
+
+
+def test_truncate_history_probe_blobs_required():
+    """probe_blobs 必填（计划 Task 9）：漏传时直接 TypeError，不会静默跳过探针检查。"""
+    with pytest.raises(TypeError):
+        truncate_history(None, SYN, "0" * 40)
 
 
 def test_synth_truncate_raises_history_leak(synth, new_sandbox):
@@ -208,7 +237,7 @@ def test_synth_truncate_raises_history_leak(synth, new_sandbox):
 def test_synth_extract_patch_new_binary_deleted_ignored(synth, new_sandbox, tmp_path):
     image, ids = synth
     sb = new_sandbox(image)
-    truncate_history(sb, SYN, ids["ENV"])
+    truncate_history(sb, SYN, ids["ENV"], [ids["FIX_NEW_BLOB"], ids["FIX_A_BLOB"]])
     code, out = sb.exec(
         f"cd {SYN} && printf 'changed\\n' > a.txt && printf 'new\\n' > new.txt && rm b.txt"
         " && printf '\\x00\\x01\\xff' > bin.dat && mkdir -p build && echo o > build/out.o", timeout_s=30)
@@ -235,7 +264,7 @@ def test_swebench_image(new_sandbox, tmp_path):
     assert eff != REQUESTS_BASE
     assert git(sb, TESTBED, "rev-parse HEAD^") == REQUESTS_BASE
     assert int(git(sb, TESTBED, "tag | wc -l")) > 0  # 截断前确有标签
-    truncate_history(sb, TESTBED, eff)
+    truncate_history(sb, TESTBED, eff, [])
     assert verify_truncated(sb, TESTBED, eff, []) == []  # 不把 SWE-bench 提交误报为泄露
     assert git(sb, TESTBED, "log -1 --format=%s") == "SWE-bench"
     assert git(sb, TESTBED, "rev-parse HEAD") == eff
@@ -254,7 +283,7 @@ def test_epoch_image(new_sandbox, tmp_path):
     sb = new_sandbox(DJANGO_IMAGE)
     eff = resolve_effective_base(sb, TESTBED, DJANGO_BASE)
     assert eff == DJANGO_BASE
-    truncate_history(sb, TESTBED, eff)
+    truncate_history(sb, TESTBED, eff, [])
     assert verify_truncated(sb, TESTBED, eff, []) == []
     assert git(sb, TESTBED, "tag") == ""
     code, out = sb.exec(f"echo '# fp probe' >> {TESTBED}/django/__init__.py", timeout_s=30)

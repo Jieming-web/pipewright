@@ -51,10 +51,10 @@ def resolve_effective_base(sb: Sandbox, repo: str, base_commit: str) -> str:
     return head
 
 
-def truncate_history(sb: Sandbox, repo: str, eff_base: str, probe_blobs: list[str] | tuple[str, ...] = ()) -> None:
+def truncate_history(sb: Sandbox, repo: str, eff_base: str, probe_blobs: list[str]) -> None:
     """只留 fp-base 分支（指向有效基准）及其历史，删掉其余引用与不可达对象，然后自检，不通过抛 HistoryLeak。
 
-    probe_blobs 是写法扩展（计划接口没有）：传入任务集里的金标准 blob，自检一并检查，调用方不必再调一次 verify。
+    probe_blobs 必填：任务集里的金标准 blob，截断后一并自检（T2-9 偏差，作者 2026-11-25 确认）。
     """
     q = shlex.quote(repo)
     base = shlex.quote(eff_base)
@@ -63,7 +63,7 @@ set -eo pipefail
 cd {q}
 git checkout -q -B fp-base {base}
 for r in $(git remote); do git remote remove "$r"; done
-git for-each-ref --format='delete %(refname)' | {{ grep -v ' {KEEP_REF}$' || true; }} | git update-ref --stdin
+git for-each-ref --format='delete %(refname)' | {{ grep -v ' {KEEP_REF}$' || true; }} | git update-ref --no-deref --stdin
 # for-each-ref 看不到的坏引用（requests x86 镜像里有指向全零的 refs/remotes/origin/HEAD）直接删文件
 find .git/refs -mindepth 1 \\( -type f -o -type l \\) ! -path .git/{KEEP_REF} -delete
 find .git/refs -mindepth 2 -type d -empty -delete
@@ -78,7 +78,7 @@ git gc --prune=now --quiet
     code, out = sb.exec(script, timeout_s=GIT_TIMEOUT_S)
     if code != 0:
         raise HistoryLeak([f"truncation failed ({code}): {out.strip()[-2000:]}"])
-    issues = verify_truncated(sb, repo, eff_base, list(probe_blobs))
+    issues = verify_truncated(sb, repo, eff_base, probe_blobs)
     if issues:
         raise HistoryLeak(issues)
 
