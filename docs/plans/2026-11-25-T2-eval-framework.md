@@ -372,7 +372,7 @@
   6. 用 `scripts/check-secrets.ts` 扫描输出目录，发现密钥、评测无效或未完成时，以非零退出；
   7. 无论正常结束、Ctrl-C、SIGTERM 还是异常，都在 `finally` 里按标签调用 `cleanup_run`（为 SIGTERM 注册处理函数）。评测结果先落盘再清理。有原始异常时，清理错误只附加、不覆盖；没有原始异常但清理失败时，报错并标记为「评测完成、清理失败」。另外，每次启动时按标签清扫之前运行遗留的资源，标签带 run_id，只清扫所属进程已结束的运行（作者 2026-11-26；原文「Ctrl-C 与异常时，按标签调用 `cleanup_run`」，T2-6~9 复审发现正常结束不清理）。
 
-- [ ] **Step 1：写失败测试**：
+- [x] **Step 1：写失败测试**：
   - 3 次重复的成功率为 [0.5, 0.25, 0.75] 时，均值 0.5，样本标准差 0.25；
   - bootstrap：全对时区间为 [1, 1]；同一种子结果相同；
   - D10：`patch_apply_failed` 在分母里；3 个 `infra_error` 排除后，排除比例超过 5% 时状态为 `invalid`；有 `budget_cancelled` 或未运行时状态为 `incomplete`，二者都不进分母并被列出；
@@ -381,7 +381,7 @@
   - `estimate_cost` 与 `actual_cost` 的数值样例；
   - `--out` 已存在且不带 `--resume` 时以非零退出；`--resume` 跳过已有记录（用假的 `run_instance` 计调用次数）；已有记录的 `config_hash`、`taskset_sha256` 或 `bundle_version` 任一与当前不一致时，`--resume` 拒绝运行；
   - 预算超限后不再派发新运行。
-- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 汇总、花费、并发与评测命令`。
+- [x] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 汇总、花费、并发与评测命令`。 — 2026-11-26（Mac arm64，MVP 精简版）：86eb4d1（修 T2-6 fp-env）、375fe19（一条命令）、2ef360f（审查返修 1）；偏差均经作者确认（实现说明偏差表）。控制会话复跑 `eval/.venv/bin/pytest eval/tests -q -rw` → 198 passed、无警告，`fp-run` 无残留；SIGTERM 用假模型手动验证退出 143、无残留。运行包已按 2ef360f 重建。MVP 未做的挪后项见「MVP 里程碑」。
 
 ### Task 14：Mac 冒烟与花费校准（真实模型）
 
