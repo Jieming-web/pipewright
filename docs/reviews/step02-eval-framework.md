@@ -387,3 +387,36 @@ docker rm -f fp-b; docker network rm fp-probe fp-probe-out
 | T2-1：pi-engine「启动失败后清理也失败」不用计划写的 EPIPE 注入，改为在测试里 `vi.spyOn(coordinator, "cancelAll")` 抛 `CANCEL_BOOM`（`tests/integration/pi-engine.test.ts`「启动失败后清理也失败：reason 同时保留清理原因与原失败原因」，提交 4c0ba73）；只在测试里替换，没有加产品开关 | 启动失败时没有任何录制写入，EPIPE 与写满都造不出清理失败 | 作者（2026-11-25），附带条件：两个失败原因都断言、scratchDir 仍被删除、做变异检查、写进本节 | 被测的仍是同一条清理路径（`pi-engine.ts` 清理步骤逐个尽力执行、reason 拼接原失败原因）。条件核对（2026-11-25，新会话）：断言为 `^cleanup failed: CANCEL_BOOM; run failed: model not found: fake/nope$`，并断言 `scratchLeft()` 为空；变异检查三项均变红、恢复后变绿——去掉 cancelAll 抛错（promise resolved instead of rejecting）、reason 不拼接原失败原因（实际为 `cleanup failed: CANCEL_BOOM`）、清理遇第一个失败即停（残留 `fp-run-*` 目录） |
 
 - 关闭竞态的同类写法已排查（2026-11-25，T2-1 修 raw-event-recorder close() 之后），发现 2 处，均延后到 Task 17：`packages/engine-client/src/engine-client.ts:50-51` 丢弃 ws `error` 事件的原因、只报随后的 `runner connection closed (code 1006)`——已复现（真实 ws 收非法帧：先 `Invalid WebSocket frame: RSV2 and RSV3 must be clear`，后 close 1006），Task 17 按此复现先写测试再修；`packages/engine-client/src/runner-launcher.ts:56-57` 在 `exit` 事件后即读 stderr（Node 文档称此时 stdio 可能未关）——未复现（macOS、Node 24.15，≤64 KB 各 300 次完整），Task 17 与 T2-4 延后的「退出时只等 stdout 不等 stderr」合并处理，并在 Linux 上再试。runner-server、stdio-bridge、t1 脚本无同类写法。
+
+### WSL 下集成测试偶发超时（2026-11-25，追加）
+
+**现象**：在 WSL2 Ubuntu 上跑 `tests/integration/runner-process.test.ts` 与 `t1-real-run.test.ts`，偶发失败。失败用例不固定，报的都是 vitest 的 `Test timed out in 20000ms`（t1-real-run 为 60000ms）；一次失败后，后面几条用例常常接着失败，报 `model not found: fake/fake-model`。
+
+**诊断结论与证据要点**
+- 根因是 WSL2 虚拟机整体卡顿，不是产品竞态。dmesg 有 `watchdog: BUG: soft lockup - CPU#0 stuck for 29s! [khugepaged:122]`，journal 里 systemd-resolved 的 `Clock change detected` 与卡顿时间吻合（虚拟机恢复后宿主同步时钟）。
+- 原始失败全部是用例超时；`forced:true`、退出码、事件序列这类断言从没单独失败过。
+- 连带失败的机制：vitest 判定超时后，超时用例的函数仍在后台运行，继续使用文件级共享变量（`root`、`groups`、`exits`、`p()` 等）。这时下一条用例的 beforeEach 已经把这些变量换成新目录，残留代码的 `launch()` 于是把自己的 models.json 写进新用例的 root，并把自己的 runner 记进新用例的进程列表，导致下一条用例 `model not found`。一次卡顿就这样连成一串失败。
+
+**作者决定**：采用 A（调高用例超时）和 B（用例状态隔离）；未选 C（调大「启动被拒」用例的 `stopTimeoutMs=3000`）和 D（改 `.wslconfig`）。
+
+**改了什么**（只改测试，不改产品代码、契约和断言里的时间值）
+- `tests/integration/runner-process.test.ts`
+  - 超时：普通用例改为 `T = 60_000`，原为 20s；`--thinking low` 和缺 rg 两条原为 30s，也按普通用例改为 60s。FIFO 类三条（无读端 FIFO、等待打开时取消、清理超时且 runner 卡在退出）改为 `T_FIFO = 90_000`，原为 30s。`stopTimeoutMs`、`DISCONNECT_EXIT_MS`、`exit.at - …` 等断言与产品时限不变。
+  - 隔离：删除文件级的 `root/servers/clients/groups/exits/p` 和 `beforeEach/afterEach`，改为 `setup()` 工厂，每条用例开头调用一次（`const { p, launch, ... } = setup();`）。工厂内创建本用例的临时目录和进程列表；`launch/connect/scratchLeft/neverRan/toolRunning/toolGone` 通过闭包使用本用例的这一份；清理用 `onTestFinished` 注册，和原 afterEach 一样，先杀进程组、等 runner 退出，再关客户端和服务、删目录。另加一个守卫：用例结束后，残留代码再调 `launch()` 会关掉刚起的假服务并抛错，不再起 runner。用例数（28 个定义、展开后 42 条）、名字和断言行都没变：`git diff` 中删除的 `expect` 行只有移进 `setup()` 的辅助函数，它们重新缩进后原样出现。
+- `tests/integration/t1-real-run.test.ts`：五条 60s 用例改为 120s，其余不变。
+
+**隔离有效性检查**（在 `.tmp/iso/` 下做，不进仓库）：分别取重构前（`git show HEAD:`）和重构后的文件副本，各追加两条用例。ghost 的超时设为 300ms，函数在超时后继续运行，1 秒后调用 `launch()`；紧接着的 victim 等 2.5 秒，再断言自己 root 下没有 `model/models.json`、`groups` 为空。重构前：ghost 超时，victim 失败（`expected true to be false`，models.json 出现在 victim 的目录里），复现了连带失败。重构后：ghost 超时，victim 通过，且没有遗留 runner 进程。
+
+**验证结果**（2026-11-25 22:21–22:51，WSL2 Ubuntu）
+- `pnpm vitest run tests/integration/runner-process.test.ts` 连跑 5 次：第 1、2、4 次 42/42 通过；第 3、5 次各失败 1 条，都没有连带失败（41/42）。
+  - 第 3 次：`--tools "-bash"` 超时（63.4s，平时约 1.4s）。journal 在 22:28:29 和 22:28:39 有 `Clock change detected`，与这条用例的时间吻合，判断为又一次虚拟机卡顿。
+  - 第 5 次：「启动被拒…stop() 不强杀」得到 `forced: true, code: null`，用时 25.0s，其他 13 次都在 5.7–6.1s。这正是下面的残余风险；这一段 journal 和 dmesg 没有记录，无法直接证明是卡顿。
+- `pnpm test` 全量连跑 3 次：第 2、3 次 540/540 通过；第 1 次失败 1 条（539/540）：「清理超时且 runner 卡在退出」的 `expect(stopped.at - t0).toBeLessThan(10_000 + 1000)` 实测 13667ms，单跑时这条用例总用时 11.6–11.8s。属于时间断言在全量并行负载或卡顿下超限，不是用例超时，也没有连带；这段时间同样没有 journal 或 dmesg 记录。
+- 「负载 + 并发」2 轮（后台全量 `pnpm test`，同时串行跑 2 次 runner-process）：4 次 runner-process 均为 42/42，2 次全量均为 540/540。
+- `pnpm typecheck`：通过（rc=0）。
+- 本轮 dmesg 没有新的 soft lockup，最近一条在 21:56:58。
+
+**残余风险**
+- 「启动被拒」那条的 `stopTimeoutMs=3000` 没有调（作者未选 C），卡顿超过约 3 秒时仍可能得到 `forced:true`，本轮复现了 1 次。
+- 断言里的时间界限（如上面的 `stopped.at - t0 < 11000`）在长卡顿或重负载下仍可能超限。调高用例超时对这类失败无效；按约定不放宽断言。
+- 卡顿超过 60s（FIFO 类超过 90s、t1 超过 120s）时仍会超时，但隔离后只影响这一条用例。
