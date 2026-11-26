@@ -438,3 +438,4 @@ T2-6 至 T2-9 由协作者在 Windows + WSL2 x86 上完成并直接推送；以�
 T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时没有记录 digest。2026-11-25 用 `docker buildx imagetools inspect` 核对 T2-8 固定的 `sha256:873f586f3794f52281bd039bf02c048a0be08fde619338f9941bad1eb6b34530`：它是 Docker Hub 官方 `docker.io/library/node:24-slim` 的多架构索引（OCI image index），含 `linux/amd64` 与 `linux/arm64/v8`；核对时 `node:24-slim` 标签当前也指向这个 digest。
 
 - 更正（追加）：上表 P1 一行与代理镜像 digest 一行的确认结果——P1 作者 2026-11-25 修订后确认：D9 改为两边统一 Python 3.13.18（Mac 升级 `/usr/local/bin/python3.13`，WSL 无 sudo 时用 uv 取得解释器，报告记录实际版本）；验收 9 不变，Mac 仍为必需环境、WSL2 x86 为第二个开发环境；协作者机器上用作者单独创建、带额度上限、可吊销的 key。代理镜像 digest 已核对（见 T2-0 补记），仍待作者确认。
+- 更正（追加）：代理镜像 `node:24-slim@sha256:873f586f3794f52281bd039bf02c048a0be08fde619338f9941bad1eb6b34530` 作者 2026-11-25 确认（本会话）。
