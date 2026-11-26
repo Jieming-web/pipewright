@@ -529,3 +529,7 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | 采样参数由模型代理注入：T2-7 代理路由加可选 `params: {temperature, top_p}`，转发时覆盖请求体（MVP「已建部分不改」的唯一例外） | T2-12 实现者 | pi 1.5.1 发 OpenAI 格式请求时不发 `top_p`、只在调用参数带 `temperature` 时才发；runner 命令行与契约没有采样参数；D7 要求不依赖服务端默认值 | task-12-report（读了 pi 1.5.1 的 OpenAI 请求代码）；实现说明 0.6 也记录过 pi 不发采样参数 | 作者 2026-11-26（本会话） |
 | Qwen3.6 采样参数取 temperature=1.0、top_p=0.95 | T2-12 实现者 | D7：模型卡里 SWE 类评测所用的值优先 | Hugging Face 模型卡 https://huggingface.co/Qwen/Qwen3.6-35B-A3B「Benchmark Results > Language」脚注：SWE-bench 系列用 temp=1.0、top_p=0.95；与百炼思考模式默认值恰好相同，出处以模型卡为准 | D7 规则内，不需另行确认 |
 | `run_instance` 去掉 `budget` 参数、不评分（评分字段由 T2-13 填） | T2-12 实现者 | MVP 把 Budget 挪后；计划的 6 步流程本就不含评分 | task-12-report | 作者 2026-11-26（本会话，「认可」） |
+| T2-12：`usage_complete` 只在成功返回却无用量时为 false；出错请求不算用量未知 | 审查员（M4） | 出错请求按契约用量为 null 且不计费，原口径会让碰到过限流的运行都标成用量不完整 | task-12-review.md | 作者 2026-11-26（本会话） |
+| T2-12：除 `infra_error` 外都取补丁（实现曾只在正常结束时取，按计划改回） | 审查员（I1） | 失败运行的半成品补丁留作诊断；对 D10 计分无影响 | task-12-review.md | 作者 2026-11-26（本会话，按计划） |
+| T2-12：配置 `model.compat`、`model.pi` 改为必填 | 审查员（M1）、控制会话裁定 | 缺失时静默为空，`thinking` 可能悄悄失效；与 D7「显式写出」同一原则 | task-12-review.md | 控制会话裁定（规范正确、实现补校验，workflow 3.3） |
+| T2-13（MVP）：`rate_limited` 也按 D10 重试并先退避 60 秒；确定性基础设施错误不重试；开跑前检查运行包有 `bin/fp-entry` | 审查员（⚠️、M6），控制会话建议 | 对齐 D10；确定性错误重试只是白跑；路径写错时尽早失败 | task-12-review.md | 作者 2026-11-26（本会话） |

@@ -301,7 +301,7 @@
 
 **MVP 要做的**：
 - **T2-12 精简版**：Task 12 的配置加载（含 `sampling` 必填、危险命令清单、30 分钟与 100 次工具调用上限、价格）与 `run_instance` 的 6 步运行流程照做；`TaskRecord` 只写最少字段：`instance_id`、`failure_type`、`failure_reason`、`usage`、`requests`、`tool_calls`、`wall_s`、`snapshot`、`patch.diff`、评分结果（`GradeResult` 四项）、`config_hash`、`taskset_sha256`。不做 `proxy-fields.json`。
-- **T2-13 精简版**：命令 `run --config --taskset --out`：先打印预计花费并等确认（`--yes` 跳过）；`--out` 已存在就拒绝；按顺序逐个实例跑、跑完即评分；`infra_error` 按 D10 重试 2 次，仍失败的记为无法测量、排除并逐条列出；写 `summary.json`、`summary.md`（成功率、token、轮数、耗时、失败类型计数、实际花费、排除清单）；结束时用 `scripts/check-secrets.ts` 扫描输出目录；无论怎样结束都在 `finally` 里调用 `cleanup_run`。
+- **T2-13 精简版**：命令 `run --config --taskset --out`：先打印预计花费并等确认（`--yes` 跳过）；`--out` 已存在就拒绝；按顺序逐个实例跑、跑完即评分；`infra_error` 与 `rate_limited` 按 D10 重试 2 次（`rate_limited` 先退避 60 秒），仍失败的记为无法测量、排除并逐条列出；确定性的基础设施错误（有效基准对不上、截断后仍泄漏、工作区不干净）不重试，直接记为无法测量；开跑前确认运行包里有 `bin/fp-entry`，没有就报错停下、不启动任何容器（作者 2026-11-26）；写 `summary.json`、`summary.md`（成功率、token、轮数、耗时、失败类型计数、实际花费、排除清单）；结束时用 `scripts/check-secrets.ts` 扫描输出目录；无论怎样结束都在 `finally` 里调用 `cleanup_run`。
 - **T2-14**：Mac 上用真实 Qwen 跑一次 smoke-v1（1 个实例），跑前报价。
 
 **挪后清单**（MVP 之后再定）：`--workers` 并发；`--resume` 与续跑一致性核对；`Budget` 的运行中累计、超限取消进行中的运行与 `budget_cancelled`/未完成状态；重复次数（`--repeats`）、样本标准差与 bootstrap 置信区间；`reconcile_proxy` 与 `proxy-fields.json`；Task 13 第 7 步中「启动时清扫遗留资源」；Kimi 组；Task 15 x86 服务器、dev-v1 定版；Task 16 基线报告；Task 11 Step 4b 的 GitHub Actions x86 预检；删除 `probe_blobs`（减重候选，作者未定）。
@@ -326,7 +326,7 @@
   - 标识与版本：`instance_id`、`attempt`、`taskset_version`、`taskset_sha256`、`config_hash`、`bundle_version`、`image_digest`、`effective_base`；评分的 `grade_image`、`grade_image_digest`、`grade_arch`（来自 `GradeResult`）（作者 2026-11-26，T2-10 审查后）；
   - 运行快照：`snapshot`，取自 `run.started`，没有就为 null；
   - 结果：`terminal_type`、`failure_type`、`failure_reason`；
-  - 统计：`tool_calls`、`wall_s`；`requests`（`model.request.finished` 的条数）；`usage`（累加，含单列的 `reasoning`；任一请求的用量为 null 时，标 `usage_complete: false`）；`rate_limit_errors`（`errorMessage` 匹配 `/429|rate.?limit/i` 的请求数）；`patch_bytes`。
+  - 统计：`tool_calls`、`wall_s`；`requests`（`model.request.finished` 的条数）；`usage`（累加，含单列的 `reasoning`；成功返回却没有用量的请求才标 `usage_complete: false`；出错的请求（如 429）按契约用量为 null 且不计费，不算用量未知——作者 2026-11-26）；`rate_limit_errors`（`errorMessage` 匹配 `/429|rate.?limit/i` 的请求数）；`patch_bytes`。
 - `failure_type` 在运行阶段的取值：`none`（待评分）、`empty_patch`、`run_failed`、`rate_limited`（以 `run.failed` 结束，且最后一次请求的错误是 429）、`timeout`、`tool_budget`、`budget_cancelled`（因预算超限被取消）、`infra_error`（容器、桥、截断自检、协议错误等）。
 - `Budget`：线程安全的累计实际花费，每收到一条 `model.request.finished` 就按 `input + cacheRead + cacheWrite` 与 `output` 累加（不加 `reasoning`）；达到上限时把 `exceeded` 置为 True，`run_instance` 随即取消自己，记为 `budget_cancelled`。
 - 运行流程：
@@ -334,7 +334,7 @@
   2. `eff = resolve_effective_base(sb, "/testbed", inst["base_commit"])`，再 `truncate_history(sb, "/testbed", eff, probe_blobs)`，`probe_blobs` 取任务集里的 `probe_blobs[instance_id]`，为必填参数（T2-9 偏差，作者 2026-11-25 确认）；
   3. 写 `/fp-out/models.json`：baseUrl 为 `http://fp-model-proxy:8080/<route>`，apiKey 为字面占位串 `unused`；
   4. 调用 `run_task(sb.entry_cmd([... --workdir /testbed --sessions-root /fp-out/sessions --record-pi-events /fp-out/raw.jsonl --tools … --thinking …]), kill=sb.kill)`；
-  5. `extract_patch(sb, "/testbed", eff)` 取出补丁；
+  5. `extract_patch(sb, "/testbed", eff)` 取出补丁：除 `infra_error` 外的运行都取（含超时、工具调用超限、运行失败，留作诊断）；取补丁失败不改变 `failure_type`，只在原因里注明（作者 2026-11-26 重申计划原意）；
   6. 删除容器。
   - 任何异常都先写 `record.json`（`infra_error` 加原因），再交给上层。
 
