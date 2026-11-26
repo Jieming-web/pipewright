@@ -185,14 +185,15 @@
   - `node/`：node 24 官方 Linux 发行包；
   - `bin/rg`、`bin/fd`：官方发行包；
   - 三者的 sha256 先与官方发布的校验文件比对（node 的 `SHASUMS256.txt`，rg、fd 的 GitHub release 中官方发布的校验文件），一致后再写死进脚本，脚本注释写明校验文件的 URL（作者 2026-11-25：T2-0 是下载后自己算的，只能证明文件以后没被改过，证明不了下载到的就是官方那份）。某个项目没有发布官方校验文件时，停下报告作者，不用自己算的值代替；
+  - fd 没有发布官方校验文件（2026-11-25 核实 v10.5.2 的 release 附件与说明）：作者决定改用 GitHub release API 中附件的 `digest` 字段（GitHub 在项目 CI `github-actions[bot]` 上传时计算），脚本注释写明 API URL；aarch64 值与 T2-0 自算值一致（P1 之后追加，作者 2026-11-25）；
   - `bin/fp-entry`：即 `fp-entry.sh`；
   - `app/runner/`、`app/client/`：先 `pnpm -r build`，再两次 `pnpm deploy --legacy --prod` 的产物（T2-0 实测：先构建时不需要 `files` 字段，`dist/` 会被带上）；
   - `VERSION`：内容为 `<git commit> pi@1.5.1 node@<版本>`。
   - 下载缓存放在 `eval/.cache/downloads/`；sha256 不符时脚本失败退出。
 - `fp-entry.sh`：存在 `/opt/miniconda3/bin/activate` 时，先执行它并 `conda activate testbed`（失败就退出 3）；然后 `export PATH=/fp/bin:/fp/node/bin:$PATH`，最后 `exec node /fp/app/client/dist/stdio-bridge.js --runner /fp/app/runner/dist/main.js -- "$@"`。pi 的子 shell 会继承这些环境变量。
 
-- [ ] **Step 1：写失败测试**（标记 `docker`，镜像用 Task 0 拉到的那个 arm64 实例镜像）：只读挂载 `bundle-<本机架构>`，用 `docker exec` 运行 `bash -c '/fp/bin/fp-entry'`，断言 stderr 含 `--models is required`；在同一环境里，`bash -c` 子 shell 中 `which python` 包含 `envs/testbed`，`rg --version`、`fd --version` 都成功，`node --version` 以 `v24.` 开头。
-- [ ] **Step 2：运行确认失败**：`eval/.venv/bin/pytest eval/tests/test_bundle.py -q`；**Step 3：实现**；**Step 4：通过后提交** `build(step02): 评测运行包与启动脚本`。
+- [x] **Step 1：写失败测试**（标记 `docker`，镜像用 Task 0 拉到的那个 arm64 实例镜像）：只读挂载 `bundle-<本机架构>`，用 `docker exec` 运行 `bash -c '/fp/bin/fp-entry'`，断言 stderr 含 `--models is required`；在同一环境里，`bash -c` 子 shell 中 `which python` 包含 `envs/testbed`，`rg --version`、`fd --version` 都成功，`node --version` 以 `v24.` 开头。 — 2026-11-25（WSL x86，P1）：镜像 `swebench/sweb.eval.x86_64.psf_1776_requests-2317`；6 个用例：布局与 VERSION、fp-entry 报 `--models is required`、同一环境的工具与 testbed、`/fp` 只读、下载缓存被篡改时 sha256 不符失败且不产出、未知架构拒绝。写法偏差：环境设置拆为 `bin/fp-env`（fp-entry source 它，测试也 source 它，以检查"同一环境"），fp-entry 行为不变。
+- [x] **Step 2：运行确认失败**：`eval/.venv/bin/pytest eval/tests/test_bundle.py -q`；**Step 3：实现**；**Step 4：通过后提交** `build(step02): 评测运行包与启动脚本`。 — 2026-11-25：RED 1 failed、4 errors（脚本不存在）；实现后 6 passed（55 s，含首次构建）；版本 node 24.15.0、rg 16.0.0、fd 10.5.2（gnu 版，同 T2-0），node 与 rg 的值与官方校验文件一致，fd 用 GitHub API digest（作者决定），两个 arm64 值与 T2-0 自算值一致；运行包 368 MB，无指向包外的绝对软链接，pi-tui 带各平台预编译 `.node`（x86 主机也能打 arm64 包，arm64 包本机未执行）；变异：rg 校验值改一位 → 退出 1、不产出；无 conda 的 `node:24-slim` 中 fp-env 不激活、工具可用。全量：`pytest eval/tests` 87 passed、`pnpm test` 531/531、typecheck、check:pi 通过。c2a1560。未做：计划要求的 ponytail-review（本会话无此 skill），待作者决定是否另做。
 
 ### Task 7：模型代理（D1，作者补 1）
 
