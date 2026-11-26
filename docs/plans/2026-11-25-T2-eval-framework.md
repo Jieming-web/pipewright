@@ -385,7 +385,7 @@
 
 ### Task 14：Mac 冒烟与花费校准（真实模型）
 
-- [ ] **Step 1**：`python -m forgepilot_eval run --config eval/configs/qwen3.6.yaml --taskset eval/tasksets/smoke-v1.json --repeats 1 --out eval/runs/smoke-<日期> --budget 5`；先看预计花费。
+- [x] **Step 1**：`python -m forgepilot_eval run --config eval/configs/qwen3.6.yaml --taskset eval/tasksets/smoke-v1.json --repeats 1 --out eval/runs/smoke-<日期> --budget 5`；先看预计花费。 — 2026-11-26（Mac arm64，MVP）：按 T2-13 精简版命令跑（无 `--repeats`/`--budget`，见 MVP 挪后清单），报价 3.02 元经作者同意；退出 0，resolved 1/1，实际 0.4198 元。
 - [ ] **Step 2：核对并记录**到实现说明：
   - 每次运行的四个文件齐全；`snapshot` 的引擎和模型字段正确；
   - `verify_truncated` 通过；运行中的容器里 `git cat-file -e <金标准 blob>` 失败（验收 8）；
@@ -393,7 +393,7 @@
   - 容器内 `curl` 外网和访问 `host.docker.internal` 都失败；
   - `docker top` 里能看到 agent 的命令，而宿主机上没有对应的进程（验收 3；Docker Desktop 下命令跑在虚拟机里）；
   - `proxy-fields.json` 与配置一致，其中每个请求的 `temperature`、`top_p` 都等于配置里显式写的值（证明确实发出去了，而不是用了服务端默认值）；`check-secrets` 干净。
-- [ ] **Step 3：校准**：用这次的每次运行 token（取 p90）更新两个配置文件的 `assumed_tokens_per_run`，`source` 写为 `smoke-<日期> p90`（作者补 4）。
+- [x] **Step 3：校准**：用这次的每次运行 token（取 p90）更新两个配置文件的 `assumed_tokens_per_run`，`source` 写为 `smoke-<日期> p90`（作者补 4）。 — 2026-11-26：偏差（作者确认）：单样本，取实测 ×2 写 400000 + 13000（约 0.86 元/次），只改 `qwen3.6.yaml`；`pytest eval/tests -k config` 10 passed。
 - [ ] **Step 4：提交** `docs(step02): Mac 冒烟与花费校准`。
 
 ### Task 15：远程 x86 与任务集定版（验收 1、9）

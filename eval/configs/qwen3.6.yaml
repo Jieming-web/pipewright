@@ -44,9 +44,9 @@ prompt_file: ../prompts/swe-v1.txt  # 相对本文件
 # 元/百万 token，百炼北京，不支持缓存（实现说明 0.6）
 price: {input_per_m: 1.8, output_per_m: 10.8}
 assumed_tokens_per_run:
-  input: 1500000
-  output: 30000
-  source: 未校准的保守估计（约 40 次请求、平均 3.7 万输入 token）；T2-14 冒烟后按 p90 校准
+  input: 400000
+  output: 13000
+  source: smoke-2026-11-26 实测 ×2（单样本：194578 输入 + 6439 输出，18 轮）
 
 # D10 计分口径，开跑前固定
 scoring:

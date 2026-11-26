@@ -546,3 +546,29 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | 清理前把代理日志存到 `<out>/proxy.jsonl` | 审查员（计划缺口） | 清理删除代理容器后无法核对采样参数 | task-13-review.md | 作者 2026-11-26（本会话） |
 | 评分阶段 `infra_error` 只重新评分、不重跑 agent | 审查员（Minor） | 省模型花费，补丁不变 | task-13-review.md | 作者 2026-11-26（本会话） |
 | 异常结束时也做 check-secrets 扫描 | 审查员（Minor）、控制会话裁定 | Global Constraints：每次真实运行后扫描输出目录 | task-13-review.md | 控制会话裁定（安全） |
+
+### T2-14：Mac 冒烟（2026-11-26 追加，MVP 最后一步）
+
+命令（工作区根，作者看过报价 3.02 元后同意）：`PYTHONPATH=eval eval/.venv/bin/python -m forgepilot_eval run --config eval/configs/qwen3.6.yaml --taskset eval/tasksets/smoke-v1.json --out eval/runs/smoke-2026-11-26 --env-file <主仓库>/.env`，退出 0。
+
+| 核对项 | 结果 | 证据 |
+|---|---|---|
+| 结果 | complete；astropy-12907 resolved，成功率 100%（1/1），无法测量 0 | `summary.md`；补丁一行：`_cstack` 中 `= 1` 改为 `= right` |
+| token / 轮数 / 耗时 | 输入 194578、输出 6439（含 reasoning 2384）、缓存 0；18 次请求、18 次工具调用；agent 65.6 秒 | `record.json` |
+| 实际花费 | 0.4198 元（报价 3.02 元），手算 0.3502 + 0.0695 一致；`usage_unknown_runs` 0 | `summary.json` |
+| 四个文件 | `events.jsonl`、`raw.jsonl`、`patch.diff`、`record.json` 齐全（另有 `models.json`、`grade/`） | 运行目录 |
+| snapshot | engine pi 1.5.1；model qwen-api / qwen3.6-35b-a3b | `record.json` |
+| `verify_truncated`（含金标准 blob 探针，验收 8） | 通过：`truncate_history` 在运行容器里截断后自检，不通过会抛 HistoryLeak、记为无法测量；本次正常进入 agent 阶段 | `repo_prep.truncate_history`；`failure_type: none` |
+| agent 的 python 指向 testbed | 是：agent 跑 pytest 的表头为 `/opt/miniconda3/envs/testbed/bin/python` | `events.jsonl` |
+| 采样参数 | 代理日志 18 条请求全部 200，均为 temperature=1、top_p=0.95（另 enable_thinking=true、thinking_budget=2048、max_completion_tokens=8192） | `<out>/proxy.jsonl` |
+| check-secrets | ok（无 key、无本机路径） | 运行输出 |
+| 残留 | `fp-run` 标签的容器 0、网络 0 | `docker ps -a` / `docker network ls` |
+| 容器内 `curl` 外网与 `host.docker.internal` 失败 | 本次未在运行中核对（容器已清理）；真实 docker 用例 `test_no_internet_no_host` 覆盖同一网络配置 | 见下方待定 |
+| `docker top` 能看到 agent 命令（验收 3） | 本次未核对 | 见下方待定 |
+
+- 待定（追加）：上表最后两项需要在运行中的容器里核对，跑完已无法补；交接说明列的核对项比计划 Step 2 少，开跑前未发现。是否补核、怎么补，等作者决定。
+
+| 偏差 | 提议人 | 理由 | 证据 | 确认人 |
+|---|---|---|---|---|
+| Step 3 校准不取 p90，取单次实测 ×2：`assumed_tokens_per_run` 写 400000 输入 + 13000 输出（单次报价约 0.86 元） | 控制会话 | 只有 1 个样本，p90 即其本身；smoke 这道题是一行修复、18 轮，正式任务集会更长，照单样本报价偏低 | 本节上表 | 作者 2026-11-26（本会话，「按你的建议，×2 写入」） |
+| 只改 `qwen3.6.yaml`（计划写「两个配置文件」） | 控制会话 | `kimi-k2.6.yaml` 未建，Kimi 组在 MVP 挪后清单 | `eval/configs/` 只有一个文件 | 作者 2026-11-26（本会话，「只改 qwen3.6.yaml」） |
