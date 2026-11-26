@@ -502,3 +502,15 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | 金标准探针 | `45bea360859c6851034d413fa5e6d96057fefe60`（`astropy/modeling/separable.py` 修复后的 blob） |
 
 对照 swebench 5.0.2：打补丁沿用 `GIT_APPLY_CMDS` 回退链，判定用 5.0.2 的 `get_eval_report`（`include_tests_status=True`）。有意差异见 T2-10 偏差表：评分容器不加 `SYS_ADMIN`，`infra_failure` 与 docker 出错归为 `infra_error`。在不加 `SYS_ADMIN` 的情况下，金标准运行 FAIL_TO_PASS 全部通过（2/2），满足 T2-10 偏差表「不加 SYS_ADMIN」一行附的条件。两次评分的 swebench 报告中 `infra_failure` 都为 false。日志在 `eval/runs/precheck-82872ebe/`（不进 git）。
+
+### 与计划的偏差（续，2026-11-26 追加：T2-11 审查后）
+
+| 偏差 | 提议人 | 理由 | 证据 | 确认人 |
+|---|---|---|---|---|
+| `build_taskset` 候选数改为 `min(ceil(n×1.5), 可选条数)` | 实现者（未先请示） | smoke-v1 只有 1 行、n=1 时原写法要 2 个候选而报错 | 审查员核实 dev-v1（500 行取 60）行为不变 | 作者 2026-11-26（本会话，「认可」） |
+| 开发集只记录 x86 镜像，冷烟集记录两个平台 | 审查员发现缺口、控制会话建议 | 官方 arm64 缺部分实例，dev-v1 定版会因解析 arm64 中止；正式评测只认 amd64 | task-11-review.md I2 | 作者 2026-11-26（本会话） |
+| 预检里 BaseMismatch 直接排除、不重试；便宜的镜像检查放在评分之前 | 审查员 | 镜像的确定性性质，重试只浪费评分时间并把真实原因记成「无法测量」 | task-11-review.md M1 | 作者 2026-11-26（本会话） |
+
+- 更正（追加）：上一节表中「`_node_version`」已在实现中改为 `_image_checks`（工作区、有效基准与 node 检查合在一个 Sandbox 里），作用相同（审查 M7）。
+- 补注（追加）：smoke-v1.json 的 `selection.method` 写作 "stratified by repo"，但输入 rows 是作者指定的 1 个实例（astropy-12907），只凭种子复现不出候选范围；复现时以本节与上节记录为准（审查 M8）。
+- 清理（追加）：作者 2026-11-26 同意删除不再用于冷烟的 Epoch arm64 requests-2317 与 astropy-12907 镜像，以及两个中止的预检目录 `eval/runs/precheck-4e89f7ed`、`precheck-1e3bd0ee`（已删）；Epoch arm64 django-11099 保留（T2-9 真实镜像测试用）。其余 `eval/runs/precheck-*` 保留作证据。
