@@ -252,7 +252,7 @@ def test_synth_gold_probe_blobs(synth, new_sandbox):
     image, ids = synth
     sb = new_sandbox(image)
     gold = git(sb, SYN, f"diff --binary {ids['ENV']} {ids['FIX']}") + "\n"
-    blobs = gold_probe_blobs({"image": image, "patch": gold, "repo": SYN})
+    blobs = gold_probe_blobs({"image": image, "patch": gold, "repo_path": SYN})
     assert sorted(blobs) == sorted([ids["FIX_NEW_BLOB"], ids["FIX_A_BLOB"]])
 
 
@@ -291,3 +291,37 @@ def test_epoch_image(new_sandbox, tmp_path):
     patch = extract_patch(sb, TESTBED, eff)
     assert patch_files(patch) == ["django/__init__.py"]
     apply_check_in_fresh(new_sandbox, DJANGO_IMAGE, TESTBED, patch, tmp_path)
+
+
+def test_gold_probe_blobs_uses_testbed_for_dataset_rows(monkeypatch):
+    # 数据集行的 repo 是 GitHub 名（如 astropy/astropy），不是容器里的仓库路径；T2-11 真实预检时 cd 失败
+    from forgepilot_eval import repo_prep
+
+    seen = []
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(repo_prep.subprocess, "run", fake_run)
+    gold_probe_blobs({"image": "img", "patch": "p", "repo": "astropy/astropy"})
+    assert seen[0][-1] == "/testbed"
+
+
+@pytest.mark.swebench
+def test_gold_probe_blobs_ignores_preexisting_worktree_changes():
+    # Epoch 的 astropy arm64 镜像工作区里 pyproject.toml 已被环境设置改过（未提交）；探针只能是金标准补丁改动的文件
+    from datasets import load_dataset
+
+    image = ("ghcr.io/epoch-research/swe-bench.eval.arm64.astropy__astropy-12907"
+             "@sha256:fbbd240e3fee2881c98d74895bd614e5252e714bd6ab741c1c440c048304f750")
+    if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode != 0:
+        pytest.skip("Epoch astropy arm64 镜像未拉取")
+    ds = load_dataset("SWE-bench/SWE-bench_Verified", split="test", revision="78f471bf655a3137b2e8a75af1501690ec009ec3")
+    row = dict(next(r for r in ds if r["instance_id"] == "astropy__astropy-12907"))
+    blobs = gold_probe_blobs({**row, "image": image, "run": f"t11-{uuid.uuid4().hex[:8]}"})
+    want = subprocess.run(
+        ["docker", "run", "--rm", "-i", "--network", "none", image, "bash", "-c",
+         "cd /testbed && git apply && git hash-object astropy/modeling/separable.py"],
+        input=row["patch"].encode(), capture_output=True, check=True).stdout.decode().split()
+    assert blobs == want

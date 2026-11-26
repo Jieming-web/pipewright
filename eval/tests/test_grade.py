@@ -4,6 +4,7 @@
 固定 revision；镜像按本机架构选（平台变更 P1）：Mac 用 arm64 实例镜像，x86 用数据集里的官方镜像。
 """
 
+import json
 import subprocess
 import uuid
 
@@ -62,11 +63,16 @@ def test_gold_patch_resolved(inst, run, tmp_path):
     assert r.image_digest.startswith(("swebench/sweb.eval.", "sha256:"))
     assert "sha256:" in r.image_digest
     assert r.arch == DOCKER_ARCH
+    f2p = json.loads((tmp_path / "report.json").read_text())[INSTANCE]["tests_status"]["FAIL_TO_PASS"]
+    assert sorted(f2p["success"]) == sorted(inst["FAIL_TO_PASS"]) and f2p["failure"] == []
 
 
 def test_empty_patch_unresolved(inst, run, tmp_path):
     assert grade(inst, "", tmp_path, run).status == "unresolved"
     assert ">>>>> Start Test Output" in (tmp_path / "grade.log").read_text(encoding="utf-8")
+    # 预检入选标准 (2) 读它：空补丁时 FAIL_TO_PASS 每一条都失败
+    f2p = json.loads((tmp_path / "report.json").read_text())[INSTANCE]["tests_status"]["FAIL_TO_PASS"]
+    assert f2p["success"] == [] and sorted(f2p["failure"]) == sorted(inst["FAIL_TO_PASS"])
 
 
 def test_garbage_patch_apply_failed(inst, run, tmp_path):

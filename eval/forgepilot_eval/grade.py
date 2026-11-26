@@ -40,7 +40,7 @@ class GradeResult:
 
 def grade(inst: dict, patch: str, out_dir: Path, run: str, timeout_s: int = 1800) -> GradeResult:
     """inst 为 SWE-bench 数据集行，`image` 由调用方按本机架构选好；评分容器打 fp-run=<run> 标签。
-    日志写入 out_dir/grade.log；容器无论结果（含异常）都删除。image_assets 不为空时抛 ValueError。"""
+    日志写入 out_dir/grade.log，跑完测试时 swebench 报告（含各测试状态）写入 out_dir/report.json；容器无论结果（含异常）都删除。image_assets 不为空时抛 ValueError。"""
     spec = make_test_spec(inst)
     if spec.image_assets:
         raise ValueError(f"{spec.instance_id}: image_assets is not empty; grade does not restore image assets")
@@ -56,7 +56,7 @@ def grade(inst: dict, patch: str, out_dir: Path, run: str, timeout_s: int = 1800
             _docker("run", "-d", "--name", name, "--label", f"{LABEL}={run}",
                     spec.image, "tail", "-f", "/dev/null", timeout=RUN_TIMEOUT_S)
             result.image_digest, result.arch = _image_info(spec.image)
-            result.status = _grade_in(name, spec, patch, tmp, log, timeout_s)
+            result.status = _grade_in(name, spec, patch, tmp, out_dir, log, timeout_s)
         except INFRA_ERRORS as e:
             log.write(f"\ninfra_error: {type(e).__name__}: {e}\n")
         finally:
@@ -64,7 +64,7 @@ def grade(inst: dict, patch: str, out_dir: Path, run: str, timeout_s: int = 1800
     return result
 
 
-def _grade_in(name: str, spec, patch: str, tmp: Path, log, timeout_s: int) -> str:
+def _grade_in(name: str, spec, patch: str, tmp: Path, out_dir: Path, log, timeout_s: int) -> str:
     _docker("cp", str(tmp / "patch.diff"), f"{name}:{PATCH_FILE}")
     _docker("cp", str(tmp / "eval.sh"), f"{name}:/eval.sh")
     if not _apply(name, log):
@@ -86,6 +86,7 @@ def _grade_in(name: str, spec, patch: str, tmp: Path, log, timeout_s: int) -> st
     report = get_eval_report(spec, {"instance_id": spec.instance_id, "model_patch": patch},
                              str(tmp / "test_output.txt"), include_tests_status=True)
     log.write(f"\nTest runtime: {runtime:.2f}s\nreport: {json.dumps(report, indent=2)}\n")
+    (out_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")  # 含各测试状态，预检读取
     entry = report[spec.instance_id]
     if entry.get("infra_failure"):  # swebench 判为环境问题（如断网、OOM）；官方留在分母，这里按 D10 排除
         return "infra_error"

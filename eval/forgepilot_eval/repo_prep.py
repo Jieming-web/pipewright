@@ -136,9 +136,10 @@ _GOLD_SCRIPT = r"""
 set -eo pipefail
 cd "$1"
 cat > /tmp/gold.patch
+git add -A && pre=$(git write-tree)  # 镜像工作区里已有的未提交改动（如 Epoch 的 pyproject.toml）不算探针
 git apply /tmp/gold.patch 2>/dev/null || patch --batch --fuzz=5 -p1 -i /tmp/gold.patch >/dev/null
 git add -A
-git diff --cached --raw --no-abbrev HEAD | awk '$5 !~ /^D/ {print $4}' | sort -u > /tmp/new.txt
+git diff --cached --raw --no-abbrev "$pre" | awk '$5 !~ /^D/ {print $4}' | sort -u > /tmp/new.txt
 git rev-list --objects HEAD | cut -d' ' -f1 | sort -u > /tmp/base.txt
 comm -23 /tmp/new.txt /tmp/base.txt
 """
@@ -147,13 +148,13 @@ comm -23 /tmp/new.txt /tmp/base.txt
 def gold_probe_blobs(inst: dict) -> list[str]:
     """把金标准补丁打到有效基准（镜像启动时的 HEAD）上，返回补丁改动后每个文件的新 blob hash。
 
-    inst 字段：`image`（实例镜像）、`patch`（金标准补丁文本）、`repo`（仓库路径，默认 `/testbed`）、
+    inst 字段：`image`（实例镜像）、`patch`（金标准补丁文本）、`repo_path`（容器内仓库路径，默认 `/testbed`）、
     可选 `run`（容器的 fp-run 标签值，默认 `gold-probe`）。
     临时容器 `--network none`、用完即删。打补丁先 `git apply`，失败再 `patch --batch --fuzz=5 -p1`（同 swebench
     的回退思路）；都失败抛 DockerError。删除的文件没有新 blob；空 blob 和有效基准历史里已有的 blob 不算探针
     （它们截断后本来就该在，否则自检会误报）。只在预检时调用（Task 11），结果存进任务集。
     """
-    repo = inst.get("repo", "/testbed")
+    repo = inst.get("repo_path", "/testbed")  # 不用 repo：数据集行的 repo 是 GitHub 名
     name = f"fp-gold-{uuid.uuid4().hex[:8]}"
     r = subprocess.run(
         ["docker", "run", "--rm", "-i", "--name", name, "--label", f"{LABEL}={inst.get('run', 'gold-probe')}",
