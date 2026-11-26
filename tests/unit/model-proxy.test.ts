@@ -227,6 +227,28 @@ describe("model-proxy", () => {
     expect(all).not.toContain("client-token");
   });
 
+  it("路由带 params 时覆盖请求体的 temperature、top_p，日志记覆盖后的值；不带 params 的路由保持原样", async () => {
+    const up = await upstream(okJson);
+    const p = await proxy({
+      qwen: { base: up.base, keyEnv: "DASHSCOPE_API_KEY", model: "m", params: { temperature: 1.0, top_p: 0.95 } },
+      plain: { base: up.base, keyEnv: "DASHSCOPE_API_KEY", model: "m" },
+    });
+    await post(`${p.url}/qwen/chat/completions`, { model: "x", temperature: 0.6, max_tokens: 10, messages: [] });
+    await post(`${p.url}/plain/chat/completions`, { model: "x", temperature: 0.6, messages: [] });
+    expect(JSON.parse(up.seen[0]!.body)).toEqual({ model: "m", temperature: 1.0, top_p: 0.95, max_tokens: 10, messages: [] });
+    expect(JSON.parse(up.seen[1]!.body)).toEqual({ model: "m", temperature: 0.6, messages: [] });
+    await expect.poll(() => logLines(p.logs()).length).toBe(2);
+    const [a, b] = logLines(p.logs());
+    expect(a.sampling).toEqual({ temperature: 1.0, top_p: 0.95, max_tokens: 10 });
+    expect(b.sampling).toEqual({ temperature: 0.6 });
+  });
+
+  it("params 不是对象或含 temperature、top_p 以外的字段：启动失败，退出码 2", async () => {
+    const route = (params: unknown) => ({ qwen: { base: "http://x/v1", keyEnv: "DASHSCOPE_API_KEY", model: "m", params } });
+    expect(await (await proxy(route("hot"))).exited).toBe(2);
+    expect(await (await proxy(route({ temperature: 1, model: "evil" }))).exited).toBe(2);
+  });
+
   it("路由的 key 环境变量缺失或配置不是对象：启动失败，退出码 2，不写出 key", async () => {
     const p = await proxy({ qwen: { base: "http://x/v1", keyEnv: "MISSING_KEY", model: "m" } }, {});
     expect(await p.exited).toBe(2);

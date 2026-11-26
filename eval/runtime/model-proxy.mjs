@@ -2,7 +2,9 @@
 //
 // 用法：node model-proxy.mjs
 // 环境变量：
-//   FP_PROXY_ROUTES  JSON：{"<route>": {"base": "https://…/v1", "keyEnv": "DASHSCOPE_API_KEY", "model": "<固定模型 ID>"}}
+//   FP_PROXY_ROUTES  JSON：{"<route>": {"base": "https://…/v1", "keyEnv": "DASHSCOPE_API_KEY", "model": "<固定模型 ID>",
+//                    "params": {"temperature": 1.0, "top_p": 0.95}}}（params 可选，转发时覆盖请求体里的这两个字段：
+//                    pi 1.5.1 不发 top_p，见 T2 计划 Task 7）
 //   FP_PROXY_PORT    监听端口，默认 8080（0 为随机端口，测试用）
 // 只放行 POST /<route>/chat/completions，其余 404。改写 model，删除联网搜索类参数与非 function 工具，
 // 丢弃客户端的 authorization 改用路由的 key；响应按流原样回传，不缓冲。
@@ -10,6 +12,7 @@
 // 无第三方依赖：在 node:24-slim 容器里直接运行。
 import { createServer } from "node:http";
 
+const PARAM_FIELDS = ["temperature", "top_p"];
 const SEARCH_FIELDS = ["enable_search", "search_options", "web_search"];
 const SAMPLING_FIELDS = [
   "temperature", "top_p", "top_k", "min_p", "max_tokens", "max_completion_tokens", "presence_penalty",
@@ -40,9 +43,13 @@ function loadRoutes() {
     if (!r || typeof r.base !== "string" || typeof r.keyEnv !== "string" || typeof r.model !== "string") {
       fail(`route ${name}: base, keyEnv and model must be strings`);
     }
+    const params = r.params ?? {};
+    if (typeof params !== "object" || Array.isArray(params) || Object.keys(params).some((k) => !PARAM_FIELDS.includes(k))) {
+      fail(`route ${name}: params must be an object with only ${PARAM_FIELDS.join(", ")}`);
+    }
     const key = process.env[r.keyEnv];
     if (!key) fail(`route ${name}: environment variable ${r.keyEnv} is not set`);
-    out.set(name, { url: `${r.base.replace(/\/+$/, "")}/chat/completions`, model: r.model, key });
+    out.set(name, { url: `${r.base.replace(/\/+$/, "")}/chat/completions`, model: r.model, params, key });
   }
   return out;
 }
@@ -70,9 +77,9 @@ function readBody(req) {
   });
 }
 
-/** 改写请求体：固定 model，删联网搜索参数，只保留 function 工具（没有剩余时删掉 tools） */
-function rewrite(body, model) {
-  const out = { ...body, model };
+/** 改写请求体：固定 model，用路由的 params 覆盖采样参数，删联网搜索参数，只保留 function 工具（没有剩余时删掉 tools） */
+function rewrite(body, model, params) {
+  const out = { ...body, ...params, model };
   for (const f of SEARCH_FIELDS) delete out[f];
   if (Array.isArray(out.tools)) {
     const tools = out.tools.filter((t) => t && t.type === "function");
@@ -107,7 +114,7 @@ async function handle(req, res) {
     return log({ ...entry, status: 400 });
   }
 
-  const forwarded = rewrite(body, route.model);
+  const forwarded = rewrite(body, route.model, route.params);
   entry.fields = Object.keys(body).sort();
   entry.sampling = Object.fromEntries(SAMPLING_FIELDS.filter((f) => f in forwarded).map((f) => [f, forwarded[f]]));
 
