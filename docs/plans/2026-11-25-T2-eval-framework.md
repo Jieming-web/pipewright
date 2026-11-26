@@ -290,6 +290,21 @@
 - [ ] **Step 4b：x86 预检**（作者 2026-11-26，不找协作者）：在 GitHub Actions 的 ubuntu 运行器上，对冷烟集里最小的实例跑金标准与空补丁预检（作者 2026-11-26：原定 requests-2317 已被排除，改为冷烟集里镜像最小的实例，现为 astropy-12907；workflow 以实例 id 为输入）（手动触发的 workflow，用 x86 镜像 digest，不需要任何密钥）；运行器跑不了的实例在 Task 15 的 x86 服务器上补跑，不通过就发 smoke-v2。结果追加到实现说明。
 - [x] **Step 5：提交** `feat(step02): 任务集抽样与金标准预检`。 — 2026-11-26（Mac arm64）：e2e965c、f0acbb3（实现与 smoke-v1.json，sha256 `7462bbd3…6ecd`）、51ca08f（预检结果）、5414a5e（审查返修 1）；workflow 23e9674（未推送、未运行，Step 4b 待作者同意后执行）。偏差均经作者确认（实现说明偏差表）。`eval/.venv/bin/pytest eval/tests -q` → 155 passed，`fp-run` 无残留。返修后按新检查顺序在官方 arm64 astropy 上真实预检（`eval/runs/precheck-68453747/`）：镜像检查 1.4 s → 金标准 52.3 s（F2P 2/2、P2P 13/13）→ 空补丁 53.3 s（F2P 0/2）→ 探针 `45bea360…`，与 smoke-v1 一致。
 
+### MVP 里程碑（作者 2026-11-26 插入）
+
+作者认为设计层面偏重，决定先做一个最小可跑的 MVP，作为 T2 的中间里程碑；tasks.md 的验收标准不变。MVP 跑通后，再按实际结果决定下面「挪后清单」里哪些要做、哪些删掉。
+
+**MVP 的定义**：一条命令在 Mac 上跑完 smoke-v1——每个实例起容器 → 截断历史 → agent 经代理调用 Qwen → 取补丁 → 评分 → 输出成功率、token、轮数、耗时、失败类型、实际花费，并保存每个任务的轨迹。
+
+**已建好的部分全部复用，不改**（T1、T2-1 至 T2-11）。`truncate_history` 的 `probe_blobs` 直接取 smoke-v1 里已算好的值。
+
+**MVP 要做的**：
+- **T2-12 精简版**：Task 12 的配置加载（含 `sampling` 必填、危险命令清单、30 分钟与 100 次工具调用上限、价格）与 `run_instance` 的 6 步运行流程照做；`TaskRecord` 只写最少字段：`instance_id`、`failure_type`、`failure_reason`、`usage`、`requests`、`tool_calls`、`wall_s`、`snapshot`、`patch.diff`、评分结果（`GradeResult` 四项）、`config_hash`、`taskset_sha256`。不做 `proxy-fields.json`。
+- **T2-13 精简版**：命令 `run --config --taskset --out`：先打印预计花费并等确认（`--yes` 跳过）；`--out` 已存在就拒绝；按顺序逐个实例跑、跑完即评分；`infra_error` 按 D10 重试 2 次，仍失败的记为无法测量、排除并逐条列出；写 `summary.json`、`summary.md`（成功率、token、轮数、耗时、失败类型计数、实际花费、排除清单）；结束时用 `scripts/check-secrets.ts` 扫描输出目录；无论怎样结束都在 `finally` 里调用 `cleanup_run`。
+- **T2-14**：Mac 上用真实 Qwen 跑一次 smoke-v1（1 个实例），跑前报价。
+
+**挪后清单**（MVP 之后再定）：`--workers` 并发；`--resume` 与续跑一致性核对；`Budget` 的运行中累计、超限取消进行中的运行与 `budget_cancelled`/未完成状态；重复次数（`--repeats`）、样本标准差与 bootstrap 置信区间；`reconcile_proxy` 与 `proxy-fields.json`；Task 13 第 7 步中「启动时清扫遗留资源」；Kimi 组；Task 15 x86 服务器、dev-v1 定版；Task 16 基线报告；Task 11 Step 4b 的 GitHub Actions x86 预检；删除 `probe_blobs`（减重候选，作者未定）。
+
 ### Task 12：单任务运行（验收 2、3、4，作者补 6、7）
 
 **Files:** Create `eval/forgepilot_eval/{run_task,config}.py`、`eval/configs/{qwen3.6,kimi-k2.6}.yaml`（两者的 `base` 都是百炼端点、`keyEnv` 都是 `DASHSCOPE_API_KEY`）、`eval/prompts/swe-v1.txt`、`eval/tests/test_run_task.py`。
