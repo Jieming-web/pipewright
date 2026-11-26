@@ -23,6 +23,10 @@ class BaseMismatch(RuntimeError):
     """base_commit 既不是 HEAD 也不是它的祖先；这次运行记为 infra_error。"""
 
 
+class DirtyWorktree(RuntimeError):
+    """容器启动时工作区有未提交改动：它们会混进 agent 补丁，预检排除这类实例（作者 2026-11-26）。"""
+
+
 class HistoryLeak(RuntimeError):
     """截断后自检不通过；不运行这个任务，记为 infra_error。"""
 
@@ -43,7 +47,11 @@ def _git_ok(sb: Sandbox, repo: str, args: str, timeout_s: float = GIT_TIMEOUT_S)
 
 
 def resolve_effective_base(sb: Sandbox, repo: str, base_commit: str) -> str:
-    """返回 HEAD；base_commit 不是 HEAD 或其祖先（含库里没有这个提交）时抛 BaseMismatch。"""
+    """返回 HEAD；工作区有未提交改动（含未跟踪文件）时抛 DirtyWorktree；base_commit 不是 HEAD 或其祖先
+    （含库里没有这个提交）时抛 BaseMismatch。"""
+    dirty = _git_ok(sb, repo, "status --porcelain", 300).strip()
+    if dirty:
+        raise DirtyWorktree(f"worktree at {repo} has uncommitted changes at container start: {dirty[:1000]}")
     head = _git_ok(sb, repo, "rev-parse --verify 'HEAD^{commit}'", 60).strip()
     code, out = _git(sb, repo, f"merge-base --is-ancestor {shlex.quote(base_commit)} HEAD", 300)
     if code != 0:

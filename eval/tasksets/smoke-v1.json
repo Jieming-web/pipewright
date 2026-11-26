@@ -1,0 +1,37 @@
+{
+  "name": "smoke",
+  "version": 1,
+  "dataset": "SWE-bench/SWE-bench_Verified",
+  "revision": "78f471bf655a3137b2e8a75af1501690ec009ec3",
+  "seed": 20261126,
+  "created": "2026-11-26T07:32:39+00:00",
+  "selection": {
+    "method": "stratified by repo",
+    "n": 1,
+    "candidates": [
+      "astropy__astropy-12907"
+    ],
+    "precheck_platform": "linux-arm64",
+    "gold_max_s": 600
+  },
+  "precheck": {
+    "passed": [
+      "astropy__astropy-12907"
+    ],
+    "excluded": []
+  },
+  "instance_ids": [
+    "astropy__astropy-12907"
+  ],
+  "images": {
+    "astropy__astropy-12907": {
+      "linux-arm64": "swebench/sweb.eval.arm64.astropy_1776_astropy-12907@sha256:6373496b634a2e95077bfa3407ea8d334fd3520439832f003a0d631ab8a0d348",
+      "linux-x64": "swebench/sweb.eval.x86_64.astropy_1776_astropy-12907@sha256:e082963099ed7d5a5f75a0be46e338be36faae33b2cba5289a9ddbd505997f1f"
+    }
+  },
+  "probe_blobs": {
+    "astropy__astropy-12907": [
+      "45bea360859c6851034d413fa5e6d96057fefe60"
+    ]
+  }
+}

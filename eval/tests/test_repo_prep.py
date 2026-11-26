@@ -14,6 +14,7 @@ import pytest
 from conftest import REQUESTS_IMAGE
 from forgepilot_eval.repo_prep import (
     BaseMismatch,
+    DirtyWorktree,
     HistoryLeak,
     extract_patch,
     gold_probe_blobs,
@@ -136,6 +137,17 @@ def test_synth_base_mismatch(synth, new_sandbox):
         resolve_effective_base(sb, SYN, ids["FIX"])  # HEAD 的后代，不是祖先
     with pytest.raises(BaseMismatch):
         resolve_effective_base(sb, SYN, "0" * 40)  # 库里没有
+
+
+def test_synth_dirty_worktree_rejected(synth, new_sandbox):
+    # 容器启动时工作区有未提交改动（如 Epoch astropy 的 pyproject.toml）就报错，否则会混进 agent 补丁（作者 2026-11-26）
+    image, ids = synth
+    sb = new_sandbox(image)
+    git(sb, SYN, "status --porcelain")  # 起始干净
+    code, out = sb.exec(f"printf 'env tweak\\n' >> {SYN}/env.txt", timeout_s=30)
+    assert code == 0, out
+    with pytest.raises(DirtyWorktree, match="env.txt"):
+        resolve_effective_base(sb, SYN, ids["BASE"])
 
 
 def test_synth_verify_before_truncate_reports_leaks(synth, new_sandbox):

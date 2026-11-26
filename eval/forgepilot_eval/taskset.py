@@ -1,7 +1,8 @@
 """任务集：按仓库分层抽样与金标准预检（T2 计划 Task 11）。
 
 任务集文件一旦提交就不再修改，有变更就发新版本；记录与续跑核对都用 taskset_sha256。
-镜像每个平台只用一个来源、按 digest 锁定（design 3.11）：Mac arm64 统一用 Epoch AI，x86 用数据集里的镜像名。
+镜像每个平台只用一个来源、按 digest 锁定（design 3.11）：Mac arm64 用 swebench 官方 arm64，x86 用数据集里的镜像名
+（作者 2026-11-26：Epoch 镜像工作区可能不干净，改用官方）。
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .grade import INFRA_ERRORS, grade
-from .repo_prep import gold_probe_blobs
-from .sandbox import LABEL, RUN_TIMEOUT_S, DockerError, _docker, cleanup_run
+from .repo_prep import BaseMismatch, DirtyWorktree, gold_probe_blobs, resolve_effective_base
+from .sandbox import RUN_TIMEOUT_S, Sandbox, _docker, cleanup_run, ensure_network
 
 DATASET = "SWE-bench/SWE-bench_Verified"
 REVISION = "78f471bf655a3137b2e8a75af1501690ec009ec3"  # T2-0 实测（实现说明 0.2）
@@ -68,8 +69,8 @@ def local_platform() -> str:
 
 
 def image_refs(inst: dict) -> dict[str, str]:
-    """两个平台的 `name@digest`：arm64 为 Epoch AI 的镜像，x86 为数据集 image 字段；digest 取 registry 当前值。"""
-    names = {"linux-arm64": f"ghcr.io/epoch-research/swe-bench.eval.arm64.{inst['instance_id']}:latest",
+    """两个平台的 `name@digest`：arm64 为 swebench 官方 arm64 镜像，x86 为数据集 image 字段；digest 取 registry 当前值。"""
+    names = {"linux-arm64": f"swebench/sweb.eval.arm64.{inst['instance_id'].replace('__', '_1776_')}:latest",
              "linux-x64": inst["image"]}
     refs = {}
     for plat, name in names.items():
@@ -84,26 +85,34 @@ def _ensure_image(image: str) -> None:
         _docker("pull", image, timeout=RUN_TIMEOUT_S)
 
 
-def _node_version(image: str, bundle, run: str) -> tuple[int, str]:
-    r = _docker("run", "--rm", "--label", f"{LABEL}={run}", "--network", "none",
-                "-v", f"{Path(bundle).resolve()}:/fp:ro", image, "/fp/node/bin/node", "--version",
-                check=False, timeout=RUN_TIMEOUT_S)
-    if r.returncode == 125:  # docker 自身出错（拉取、建容器），不是运行包的问题
-        raise DockerError(f"docker run failed (125): {r.stderr.strip()}")
-    return r.returncode, r.stdout + r.stderr
+def _image_checks(inst: dict, bundle, run: str, out: Path) -> list[str]:
+    """在挂运行包的任务容器（internal 网络）里查：启动时工作区干净（作者 2026-11-26）、node --version 成功。
+    BaseMismatch 与 docker 出错照常抛出，由 precheck 按 infra_error 重试。"""
+    reasons = []
+    ensure_network(run)
+    out.mkdir(parents=True, exist_ok=True)
+    with Sandbox(run, inst["image"], bundle, out) as sb:
+        try:
+            resolve_effective_base(sb, "/testbed", inst["base_commit"])
+        except DirtyWorktree as e:
+            reasons.append(str(e))
+        code, text = sb.exec("/fp/node/bin/node --version", timeout_s=60)
+    if code != 0 or not text.startswith("v"):
+        reasons.append(f"node --version with bundle failed ({code}): {text.strip()[-500:]}")
+    return reasons
 
 
 def precheck(inst: dict, bundle, max_gold_s: float | None = None) -> PrecheckResult:
     """入选标准：(1) 金标准补丁 → resolved；(2) 空补丁时 FAIL_TO_PASS 每一条都失败；(3) 挂载运行包后
-    node --version 成功；(4) max_gold_s 不为空时（冷烟集）金标准评分墙钟不超过它。inst["image"] 由调用方按本机
-    平台选好（name@digest）；评分与正式评分一样不加 SYS_ADMIN。每条不满足的标准各记一条原因；通过时取金标准探针。
+    node --version 成功；(4) max_gold_s 不为空时（冷烟集）金标准评分墙钟不超过它；另外容器启动时工作区必须干净。
+    inst["image"] 由调用方按本机平台选好（name@digest）；评分与正式评分一样不加 SYS_ADMIN。每条不满足的标准各记一条原因；通过时取金标准探针。
     infra_error 同样配置重试最多 2 次，仍失败返回「unmeasurable」。"""
     run = f"precheck-{uuid.uuid4().hex[:8]}"
     last = ""
     for attempt in range(1, ATTEMPTS + 1):
         try:
             return _precheck_once(inst, bundle, run, RUNS / run / inst["instance_id"] / f"attempt-{attempt}", max_gold_s)
-        except (_Unmeasurable, *INFRA_ERRORS) as e:
+        except (_Unmeasurable, BaseMismatch, *INFRA_ERRORS) as e:
             last = f"{type(e).__name__}: {e}"
         finally:
             cleanup_run(run)
@@ -133,22 +142,21 @@ def _precheck_once(inst: dict, bundle, run: str, out: Path, max_gold_s: float | 
         reasons.append(f"empty patch: expected unresolved with every FAIL_TO_PASS failing, got {empty.status}, "
                        f"FAIL_TO_PASS passing: {'no report' if passing is None else passing}")
 
-    code, text = _node_version(inst["image"], bundle, run)
-    if code != 0 or not text.startswith("v"):
-        reasons.append(f"node --version with bundle failed ({code}): {text.strip()[-500:]}")
+    image_reasons = _image_checks(inst, bundle, run, out / "sandbox")
+    reasons += image_reasons
     blobs = [] if reasons else gold_probe_blobs({**inst, "run": run})  # 被排除的不需要探针；金标准打不上时它会抛错
     (out / "precheck.json").write_text(json.dumps({
         "image": inst["image"], "gold": gold.status, "gold_s": round(gold_s, 1), "gold_digest": gold.image_digest,
-        "arch": gold.arch, "empty": empty.status, "empty_f2p_passing": passing, "node": text.strip(),
+        "arch": gold.arch, "empty": empty.status, "empty_f2p_passing": passing, "image_checks": image_reasons,
         "reasons": reasons, "probe_blobs": blobs}, indent=2, ensure_ascii=False))
     return PrecheckResult(not reasons, reasons, blobs)
 
 
 def build_taskset(name: str, version: int, rows: list[dict], n: int, seed: int, bundle, out: Path) -> None:
-    """抽 n×1.5（向上取整）个候选逐个预检，再用同一种子从通过的候选里分层抽 n 个，写出任务集。
+    """抽 n×1.5（向上取整，不超过可选条数）个候选逐个预检，再用同一种子从通过的候选里分层抽 n 个，写出任务集。
     通过的不足 n 个（含全部无法测量）时报错，不写文件；不覆盖已有文件。名字以 smoke 开头的为冷烟集。"""
     by_id = {r["instance_id"]: r for r in rows}
-    candidates = stratified_sample(rows, math.ceil(n * 1.5), seed)
+    candidates = stratified_sample(rows, min(math.ceil(n * 1.5), len(rows)), seed)  # 可选条数不够 n×1.5 时全部预检
     max_gold_s = SMOKE_GOLD_MAX_S if name.startswith("smoke") else None
     images, results = {}, {}
     for iid in candidates:

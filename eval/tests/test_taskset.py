@@ -64,7 +64,7 @@ def test_sample_fewer_than_repos():
 
 def fake_refs(inst):
     iid = inst["instance_id"]
-    return {"linux-arm64": f"ghcr.io/epoch-research/swe-bench.eval.arm64.{iid}@sha256:a-{iid}",
+    return {"linux-arm64": f"swebench/sweb.eval.arm64.{iid.replace('__', '_1776_')}@sha256:a-{iid}",
             "linux-x64": f"{inst['image'].rsplit(':', 1)[0]}@sha256:x-{iid}"}
 
 
@@ -119,6 +119,15 @@ def test_build_smoke_taskset_limits_gold_time(build, tmp_path):
     assert build["max_gold_s"] == {600}
 
 
+def test_build_taskset_candidates_capped_at_rows(build, tmp_path):
+    # smoke-v1：候选只有 astropy 一条、n=1（作者 2026-11-26）；n×1.5 向上取整为 2，超过可选条数时取全部
+    rows = [r for r in make_rows() if r["repo"] == "org/one"]
+    out = tmp_path / "s.json"
+    build_taskset("smoke", 1, rows, 1, 1, tmp_path / "bundle", out)
+    doc = json.loads(out.read_text())
+    assert doc["selection"]["candidates"] == doc["instance_ids"] == ["one__x-0"]
+
+
 def test_build_taskset_too_few_passed_writes_nothing(build, tmp_path):
     rows = make_rows()
     build["failing"] = set(stratified_sample(rows, 12, seed=5)[:5])  # 只剩 7 个通过，不足 n=8
@@ -145,9 +154,9 @@ INST = {"instance_id": "org__repo-1", "image": "img@sha256:arm", "patch": "diff 
 @pytest.fixture
 def fakes(monkeypatch, tmp_path):
     """替换预检用到的 docker 操作，记录调用。st 里改各检查的结果；grade_s 为每次评分的假耗时。"""
-    calls = {"grade": [], "cleanup": [], "node": [], "probe": [], "pull": []}
-    st = {"gold": ["resolved"], "empty": ["unresolved"], "empty_f2p_success": [], "node": (0, "v24.15.0\n"),
-          "grade_s": 1.0, "node_raises": 0}
+    calls = {"grade": [], "cleanup": [], "checks": [], "probe": [], "pull": []}
+    st = {"gold": ["resolved"], "empty": ["unresolved"], "empty_f2p_success": [], "image_reasons": [],
+          "grade_s": 1.0, "checks_raise": 0}
     clock = [0.0]
 
     def fake_grade(inst, patch, out_dir, run, timeout_s=1800):
@@ -164,19 +173,19 @@ def fakes(monkeypatch, tmp_path):
                 "FAIL_TO_PASS": {"success": success, "failure": [t for t in f2p if t not in success]}}}}))
         return GradeResult(status, inst["image"], "sha256:x", "arm64")
 
-    def fake_node(image, bundle, run):
-        calls["node"].append((image, bundle, run))
-        if st["node_raises"]:
-            st["node_raises"] -= 1
-            raise DockerError("docker run failed (125): daemon hiccup")
-        return st["node"]
+    def fake_checks(inst, bundle, run, out):
+        calls["checks"].append((inst["image"], bundle, run))
+        if st["checks_raise"]:
+            st["checks_raise"] -= 1
+            raise st.get("checks_exc", DockerError("docker run failed (125): daemon hiccup"))
+        return list(st["image_reasons"])
 
     def fake_probe(inst):
         calls["probe"].append((inst["image"], inst["run"]))
         return ["blob1"]
 
     monkeypatch.setattr(taskset, "grade", fake_grade)
-    monkeypatch.setattr(taskset, "_node_version", fake_node)
+    monkeypatch.setattr(taskset, "_image_checks", fake_checks)
     monkeypatch.setattr(taskset, "_ensure_image", lambda image: calls["pull"].append(image))
     monkeypatch.setattr(taskset, "gold_probe_blobs", fake_probe)
     monkeypatch.setattr(taskset, "cleanup_run", calls["cleanup"].append)
@@ -191,7 +200,7 @@ def test_precheck_all_pass(fakes):
     assert r == PrecheckResult(True, [], ["blob1"])
     run = calls["grade"][0][2]
     assert [g[:3] for g in calls["grade"]] == [("img@sha256:arm", "gold", run), ("img@sha256:arm", "empty", run)]
-    assert calls["node"] == [("img@sha256:arm", "/bundle", run)]
+    assert calls["checks"] == [("img@sha256:arm", "/bundle", run)]
     assert calls["probe"] == [("img@sha256:arm", run)]
     assert calls["cleanup"] == [run]
     assert calls["pull"] == ["img@sha256:arm"]
@@ -200,13 +209,13 @@ def test_precheck_all_pass(fakes):
 def test_precheck_lists_each_failure(fakes):
     calls, st = fakes
     st["gold"], st["empty"] = ["unresolved"], ["resolved"]
-    st["node"] = (127, "exec: no such file\n")
+    st["image_reasons"] = ["worktree dirty", "node failed"]
     r = taskset.precheck(INST, "/bundle")
     assert not r.ok
-    assert len(r.reasons) == 3
+    assert len(r.reasons) == 4
     assert "gold" in r.reasons[0] and "unresolved" in r.reasons[0]
     assert "empty" in r.reasons[1] and "resolved" in r.reasons[1]
-    assert "node" in r.reasons[2] and "127" in r.reasons[2]
+    assert r.reasons[2:] == ["worktree dirty", "node failed"]
     assert r.probe_blobs == [] and calls["probe"] == []
     assert len(calls["grade"]) == 2  # 检查不通过不是 infra_error，不重试
 
@@ -242,9 +251,20 @@ def test_precheck_retries_infra_error(fakes):
 
 def test_precheck_retries_docker_error(fakes):
     calls, st = fakes
-    st["node_raises"] = 1
+    st["checks_raise"] = 1
     assert taskset.precheck(INST, "/bundle").ok
-    assert len(calls["node"]) == 2
+    assert len(calls["checks"]) == 2
+
+
+def test_precheck_retries_base_mismatch(fakes):
+    # 计划 Task 9：BaseMismatch 记为 infra_error
+    from forgepilot_eval.repo_prep import BaseMismatch
+
+    calls, st = fakes
+    st["checks_raise"], st["checks_exc"] = 3, BaseMismatch("not ancestor")
+    r = taskset.precheck(INST, "/bundle")
+    assert not r.ok and "unmeasurable" in r.reasons[0] and "BaseMismatch" in r.reasons[0]
+    assert len(calls["checks"]) == 3
 
 
 def test_precheck_unmeasurable_after_two_retries(fakes):
@@ -285,10 +305,10 @@ def test_image_refs_fixed_source_per_platform(monkeypatch):
     monkeypatch.setattr(taskset, "_docker", fake_docker)
     inst = {"instance_id": "psf__requests-2317", "image": "swebench/sweb.eval.x86_64.psf_1776_requests-2317:latest"}
     refs = taskset.image_refs(inst)
-    # Mac 统一用 Epoch（不先试官方 arm64、不逐实例回退）；x86 用数据集名
-    assert refs == {"linux-arm64": "ghcr.io/epoch-research/swe-bench.eval.arm64.psf__requests-2317@sha256:1",
+    # Mac 统一用官方 arm64（不逐实例回退，作者 2026-11-26）；x86 用数据集名
+    assert refs == {"linux-arm64": "swebench/sweb.eval.arm64.psf_1776_requests-2317@sha256:1",
                     "linux-x64": "swebench/sweb.eval.x86_64.psf_1776_requests-2317@sha256:2"}
-    assert [a[-3] for a in seen] == ["ghcr.io/epoch-research/swe-bench.eval.arm64.psf__requests-2317:latest",
+    assert [a[-3] for a in seen] == ["swebench/sweb.eval.arm64.psf_1776_requests-2317:latest",
                                      "swebench/sweb.eval.x86_64.psf_1776_requests-2317:latest"]
 
 
@@ -298,16 +318,48 @@ def test_local_platform(monkeypatch):
         assert taskset.local_platform() == want
 
 
-def test_node_version_docker_failure_is_infra(monkeypatch):
-    class R:
-        def __init__(self, code, out="", err=""):
-            self.returncode, self.stdout, self.stderr = code, out, err
+def test_image_checks(monkeypatch, tmp_path):
+    # 一个挂运行包的任务容器里查两项：启动时工作区干净（resolve_effective_base）、node --version 成功
+    from forgepilot_eval.repo_prep import BaseMismatch, DirtyWorktree
 
-    results = iter([R(125, err="pull access denied"), R(127, err="no such file")])
-    monkeypatch.setattr(taskset, "_docker", lambda *a, **k: next(results))
-    with pytest.raises(DockerError, match="125"):  # docker 自身出错 → 由 precheck 按 infra_error 重试
-        taskset._node_version("img", "/bundle", "r")
-    assert taskset._node_version("img", "/bundle", "r") == (127, "no such file")  # 运行包问题 → 检查不通过
+    seen = {}
+
+    class FakeSandbox:
+        def __init__(self, run, image, bundle, out_dir):
+            seen["sandbox"] = (run, image, bundle, out_dir)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            seen["exited"] = True
+
+        def exec(self, cmd, timeout_s):
+            return seen["node"]
+
+    def fake_base(sb, repo, base_commit):
+        seen["base"] = (repo, base_commit)
+        if seen.get("raise"):
+            raise seen["raise"]
+        return "head"
+
+    monkeypatch.setattr(taskset, "Sandbox", FakeSandbox)
+    monkeypatch.setattr(taskset, "ensure_network", lambda run: seen.setdefault("net", run))
+    monkeypatch.setattr(taskset, "resolve_effective_base", fake_base)
+    inst = {"image": "img@sha256:a", "base_commit": "abc"}
+
+    seen["node"] = (0, "v24.15.0\n")
+    assert taskset._image_checks(inst, "/bundle", "r1", tmp_path) == []
+    assert seen["sandbox"] == ("r1", "img@sha256:a", "/bundle", tmp_path) and seen["net"] == "r1"
+    assert seen["base"] == ("/testbed", "abc") and seen["exited"]
+
+    seen["raise"], seen["node"] = DirtyWorktree("worktree has uncommitted changes: M pyproject.toml"), (127, "no such file")
+    reasons = taskset._image_checks(inst, "/bundle", "r1", tmp_path)
+    assert len(reasons) == 2 and "pyproject.toml" in reasons[0] and "127" in reasons[1]
+
+    seen["raise"] = BaseMismatch("not ancestor")  # 计划 Task 9：记为 infra_error，由 precheck 重试
+    with pytest.raises(BaseMismatch):
+        taskset._image_checks(inst, "/bundle", "r1", tmp_path)
 
 
 def test_ensure_image_pulls_only_when_missing(monkeypatch):
