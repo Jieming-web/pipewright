@@ -33,6 +33,20 @@
 | D9 | 本机用 `/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
 | D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error` 与 `rate_limited`（429）最多重试 2 次，仍失败就从分母中排除并逐条列出；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
 
+### 平台变更 P1（2026-11-25 追加，待作者确认）：Task 6 起改在 Windows + WSL2 Ubuntu（x86_64）上开发
+
+作者决定从 Task 6 起在 Windows 机器的 WSL2 Ubuntu 26.04（x86_64，Docker Desktop 29.9.3 WSL 后端）上继续；Windows 原生下 T1 的 POSIX 依赖（FIFO、进程组、软链接）使 17 个测试失败，不做 Windows 原生兼容。WSL 内已核实：`pnpm test` 531/531、`typecheck`、`build`、`check:pi` 通过，`eval/.venv/bin/pytest eval/tests -q` 81 passed，与 Task 5 记录一致。对后续小任务的影响：
+
+| 原文 | 改为 |
+|---|---|
+| D9 `/usr/local/bin/python3.13 -m venv`，不装 uv | 本机无 sudo，用 uv 装的独立 CPython 3.13.18（`~/.local/bin/python3.13`）建 venv；uv 只用于取得解释器，venv 与 `requirements.txt` 用法不变 |
+| Task 6 Step 1「Task 0 拉到的那个 arm64 实例镜像」，`bundle-<本机架构>` | 同一实例的 x86_64 官方镜像（Task 0 Step 3 已验证 x86 镜像名可解析），`bundle-linux-x64`；`linux-arm64` 分支仍保留，本机不验证，注明「未执行」 |
+| Task 11 Step 4「从验证过 arm64 镜像的实例里选，在 Mac 上真实预检」 | 从 x86 镜像可用的实例里选，在本机（WSL x86）真实预检 |
+| Task 14「Mac 冒烟」 | 「本机冒烟」（WSL x86）；本机需另配 `.env`（`DASHSCOPE_API_KEY`），作者到 Task 14 前提供 |
+| Task 1 Step 5「macOS 上连跑 5 次」等已完成记录 | 不改，属历史记录 |
+
+本机与正式评测同为 x86_64，验收 9「Mac 上能跑少量冒烟任务」改由本机满足；Mac 不再作为必需环境，此处与 tasks.md T2 验收 9 字面不一致，收尾时在实现说明中注明，是否改 tasks.md 由作者定。
+
 **需要作者准备**：x86 服务器到 Task 15 才租，租之前先报价。两个模型都用 `.env` 里的 `DASHSCOPE_API_KEY`，T2 不使用 `MOONSHOT_API_KEY`（ADR 017）。
 
 ## Global Constraints
