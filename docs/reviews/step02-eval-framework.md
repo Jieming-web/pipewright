@@ -474,3 +474,14 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | `django__django-11099` | `sha256:9312a779b863a5c97cf7c473987bab8293bc702dbe44e637e983604d21f82717`（约 0.96 GB） | `sha256:cca302934edd881cc4f1e4647a389a25cdaa3c02bfa33667a4204934a09c4fb1` |
 
 官方 arm64 缺 `django__django-11099`（denied），所以 Mac 统一用 Epoch。T2-0 用过的官方 arm64 镜像（requests、astropy）不再用于冷烟。
+
+### 与计划的偏差（续，2026-11-26 追加：T2-11）
+
+| 偏差 | 提议人 | 理由 | 证据 | 确认人 |
+|---|---|---|---|---|
+| smoke-v1 由 2 个实例改为 1 个（astropy-12907） | 作者 | 3 个候选只有 astropy 通过入选标准 | Epoch arm64 预检（种子 20261126）：astropy 四项通过、金标准 62 秒；django-11099 空补丁时 F2P 的 `test_help_text (…UserAttributeSimilarityValidatorTest)` 通过，不满足标准 (2)；requests-2317 金标准 F2P 7/8、空补丁 6/8，测试连 httpbin.org 等外部服务（SSL 证书错误、连接断开）——详见 task-11-report | 作者 2026-11-26（本会话） |
+| Mac 镜像来源由 Epoch 改为官方 arm64 | 控制会话发现、作者决定 | Epoch astropy 镜像启动时 `pyproject.toml` 有未提交改动；官方 arm64 把它提交在 HEAD 的「SWE-bench」提交里，工作区干净 | 控制会话 2026-11-26 两镜像 `git status --porcelain` 对比；官方 arm64 astropy digest `sha256:6373496b634a2e95077bfa3407ea8d334fd3520439832f003a0d631ab8a0d348` | 作者 2026-11-26（本会话） |
+| 容器启动时工作区不干净就报错（`resolve_effective_base`） | 实现者发现风险、作者决定 | 镜像原有未提交改动会混进 agent 补丁，评分时可能打不上 | task-11-report | 作者 2026-11-26（本会话） |
+| Step 4b 的 x86 预检实例由 requests-2317 改为冷烟集里最小的实例 | 实现者建议、作者决定 | requests 依赖外网且已不在冷烟集 | 同上 | 作者 2026-11-26（本会话） |
+| 新增计划接口外的 `image_refs`、`local_platform`、`_ensure_image`、`_node_version`；`precheck` 的 `max_gold_s`；任务集 `images` 字段与 `selection` 两个字段 | 实现者 | 实现按平台选镜像、digest 锁定与 10 分钟上限 | task-11-report | 作者 2026-11-26（本会话，原话「认可」） |
+| 修 T2-9 `gold_probe_blobs` 两个 bug：`repo` 与数据集字段撞名改读 `repo_path`；以打补丁前的工作区为基准取探针 | 实现者 | 规范正确、实现有误（workflow 3.3 可自行修，先写复现测试） | e2e965c 中的复现测试 | 不需确认（workflow 3.3） |
