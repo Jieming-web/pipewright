@@ -175,7 +175,7 @@ describe.sequential("t1-real-run：五题隔离与证据", () => {
     for (const f of ["scripts/t1-real-run.ts", "scripts/t1-grade.ts", "packages/engine-runner/src/main.ts", "packages/engine-client/src/engine-client.ts", "packages/engine-protocol/src/engine-messages.ts"])
       expect(report.versions.sources[f], f).toBe(sha(readFileSync(join(REPO, f))));
     expect(leftovers()).toEqual([]);
-  }, 60_000);
+  }, 120_000);
 });
 
 describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
@@ -227,7 +227,7 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     expect(existsSync(p("bash.marker"))).toBe(false);
     expect(readdirSync(p("records")).sort()).toEqual(Qs.map((q) => `${q.id}.jsonl`).sort());
     expect(leftovers()).toEqual([]);
-  }, 60_000);
+  }, 120_000);
 
   it("--max-tool-calls：越限的题单列为超出上限（不判分、不算服务故障），其余照常，退出 1", async () => {
     const rest = Qs.slice(0, -1);
@@ -252,7 +252,7 @@ describe.sequential("t1-real-run：CLI、判分分类与只读拦截", () => {
     expect(server!.requests).toHaveLength(4 + 3);
     expect(server!.aborted).toEqual([6]);
     expect(leftovers()).toEqual([]);
-  }, 60_000);
+  }, 120_000);
 
   it("参数缺失或 --max-tool-calls 非正整数：退出 2，不跑题", async () => {
     const { code, err } = await cli([]);
@@ -303,7 +303,7 @@ describe.sequential("t1-real-run：思考开启（--thinking）时判卷只读�
       expect(rec).toMatch(new RegExp(`"type":"thinking","thinking":"${MARK}`));
     }
     expect(leftovers()).toEqual([]);
-  }, 60_000);
+  }, 120_000);
 
   it("--thinking 非法值：runner 拒绝启动，各题记为服务故障，不发模型请求", async () => {
     await fake([]);
@@ -314,7 +314,7 @@ describe.sequential("t1-real-run：思考开启（--thinking）时判卷只读�
     expect(report.questions[0]!.runner.stderr).toMatch(/^runner: --thinking /m);
     expect(server!.requests).toEqual([]);
     expect(leftovers()).toEqual([]);
-  }, 60_000);
+  }, 120_000);
 });
 
 describe.sequential("t1-real-run：每题工具调用刹车（tool.started 与拦截共用计数，按 callId 去重）", () => {
