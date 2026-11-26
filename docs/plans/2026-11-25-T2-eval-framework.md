@@ -213,7 +213,7 @@
 
 **Interfaces:**
 - `ensure_network(run: str) -> str`：创建 `fp-eval-<run>`（`--internal`，带 `fp-run` 标签），已存在就复用。
-- `start_proxy(run: str, routes: dict, env: dict) -> ProxyHandle`：容器名 `fp-proxy-<run>`，镜像 `node:24-slim@<Task 0 记录的 digest>`，用 `docker cp` 把 `model-proxy.mjs` 放进去；接 internal 网络（别名 `fp-model-proxy`）和默认网络；key 用 `-e 变量名` 传入。`ProxyHandle.logs() -> list[dict]` 返回代理的日志行。
+- `start_proxy(run: str, routes: dict, env: dict) -> ProxyHandle`：容器名 `fp-proxy-<run>`，镜像 `node:24-slim@<Task 0 记录的 digest>`，用 `docker cp` 把 `model-proxy.mjs` 放进去；接 internal 网络（别名 `fp-model-proxy`）和本次运行专用的出网网络 `fp-egress-<run>`（普通 bridge，带 `fp-run` 标签，`cleanup_run` 一并删除），不接 Docker 默认网络：评分容器（Task 10）在默认网络上运行 agent 的补丁与测试，不得能连到代理（作者 2026-11-25，T2-7 审查发现；测试须证明默认网络上的容器连不到代理）；key 用 `-e 变量名` 传入。`ProxyHandle.logs() -> list[dict]` 返回代理的日志行。
 - `class Sandbox`（上下文管理器）：`Sandbox(run, image, bundle: Path, out_dir: Path)`。
   - `__enter__`：`docker run -d --label fp-run=<run> --network fp-eval-<run> -v bundle:/fp:ro -v out_dir:/fp-out <image> sleep infinity`；
   - `exec(cmd, timeout_s) -> (code, out)`；
