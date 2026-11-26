@@ -448,3 +448,4 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | T2-8：普通 docker 命令默认时限 600 秒 → 60 秒；`cleanup_run` 批量删除另用 300 秒，删容器失败仍继续删网络 | 返修实现者（60 秒）；控制会话（`cleanup_run` 单独放宽） | docker 卡住时更快发现；批量删除在高负载下可能超过 60 秒 | 复审（t2-6to9-rereview-1）：受影响的是 ps、network、cp、代理启动、logs/inspect、`cleanup_run`；`docker exec`、run（1800 秒）、create（600 秒）不受影响 | 作者 2026-11-26 确认（本会话） |
 | T2-8：新增计划接口外的 `ensure_egress_network(run)`、`Sandbox.name` 与三个超时常量 | 返修实现者 | 实现代理专用出网网络（计划 Task 8 已改）所需 | 复审判定只影响写法：RUN、READY 两个常量与原值相同，RM 是清单第 5 项要求的短时限 | **待作者确认** |
 | 计划 Task 13 第 7 步：任何结束方式都在 `finally` 里清理，启动时清扫遗留资源 | 复审员发现、作者给出要求 | 原文只在 Ctrl-C 与异常时清理，正常结束会残留代理容器与网络 | 复审 t2-6to9-rereview-1 | 作者 2026-11-26（本会话，原话已写入计划） |
+- 更正（追加）：上表「新增计划接口外的 `ensure_egress_network(run)`、`Sandbox.name` 与三个超时常量」一行，作者 2026-11-26 确认（本会话，原话「认可」）。
