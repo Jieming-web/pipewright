@@ -267,8 +267,8 @@
 - 用 swebench 的带超时执行跑 `make_test_spec(inst).eval_script`，再用 `get_eval_report` 判定；超时记为 `unresolved`，并在日志中注明。
 - 日志写入 `grade.log`；无论结果如何，容器都删除。
 
-- [ ] **Step 1：写失败测试**（标记 `docker`、`swebench`，用 Task 0 拉到的一个实例）：金标准补丁得到 `resolved`；空补丁得到 `unresolved`；乱码补丁得到 `patch_apply_failed`；`timeout_s=1` 得到 `unresolved` 且日志里有超时说明；（返修追加）评分容器带 `fp-run=<run>`；`image_assets` 不为空时报错；容器坏掉或 docker 出错时得到 `infra_error`；返回值含镜像名、digest、架构。
-- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): swebench 评分`。
+- [x] **Step 1：写失败测试**（标记 `docker`、`swebench`，用 Task 0 拉到的一个实例）：金标准补丁得到 `resolved`；空补丁得到 `unresolved`；乱码补丁得到 `patch_apply_failed`；`timeout_s=1` 得到 `unresolved` 且日志里有超时说明；（返修追加）评分容器带 `fp-run=<run>`；`image_assets` 不为空时报错；容器坏掉或 docker 出错时得到 `infra_error`；返回值含镜像名、digest、架构。
+- [x] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): swebench 评分`。 — 2026-11-26（Mac arm64）：5033e23（实现）、8e64bd6（返修 1：`run` 必填、`GradeResult`、`infra_error`、拒绝 `image_assets`）、f71ff3b（返修 2：urllib3 异常归 `infra_error`）；偏差均经作者确认（实现说明偏差表）。RED：`ModuleNotFoundError: forgepilot_eval.grade`；返修 1 另做 6 个变异均被抓。控制会话复跑 `eval/.venv/bin/pytest eval/tests -q` → 127 passed，`fp-run` 标签无残留容器与网络。未执行：WSL x86 上的 `test_grade` 与 `pip install -r`，待协作者复验。
 
 ### Task 11：任务集与金标准预检（验收 1，作者补 8）
 
