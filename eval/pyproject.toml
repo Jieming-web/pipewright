@@ -7,4 +7,7 @@ requires-python = ">=3.10"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["docker: 需要本机 Docker（Docker 不可用时跳过）"]
+markers = [
+  "docker: 需要本机 Docker（Docker 不可用时跳过）",
+  "swebench: 需要 swebench 依赖与 SWE-bench_Verified 数据集",
+]
