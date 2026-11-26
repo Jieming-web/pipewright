@@ -201,6 +201,7 @@
 
 **Interfaces:**
 - 用法：`node model-proxy.mjs`，监听 8080。环境变量 `FP_PROXY_ROUTES` 为 JSON：`{"<route>": {"base": "https://…/v1", "keyEnv": "DASHSCOPE_API_KEY", "model": "<固定模型 ID>"}}`。
+- 路由可选 `params: {temperature, top_p}`：转发时覆盖请求体里的这两个字段（作者 2026-11-26，T2-12 发现 pi 1.5.1 不发 `top_p`、只在调用参数带 `temperature` 时才发，runner 与契约也没有采样参数；由代理注入只对评测生效、不改契约，对任何引擎通用）。代理日志的 `sampling` 记录覆盖后的值。
 - 只放行 `POST /<route>/chat/completions`，其余一律 404。请求体的 `model` 改写为路由固定的值，删除 D1 列出的联网搜索类参数；丢弃客户端带来的 `authorization`，改用 `Bearer <env[keyEnv]>`。响应体按流原样回传，SSE 不缓冲。
 - 每个请求往 stdout 写一行 JSON 日志：`{route, status, fields: [请求体顶层字段名，已排序], sampling: {temperature, top_p, max_tokens, enable_thinking, …实际出现的}}`。日志里不写请求体内容，也不写 key。
 
@@ -296,7 +297,7 @@
 
 **MVP 的定义**：一条命令在 Mac 上跑完 smoke-v1——每个实例起容器 → 截断历史 → agent 经代理调用 Qwen → 取补丁 → 评分 → 输出成功率、token、轮数、耗时、失败类型、实际花费，并保存每个任务的轨迹。
 
-**已建好的部分全部复用，不改**（T1、T2-1 至 T2-11）。`truncate_history` 的 `probe_blobs` 直接取 smoke-v1 里已算好的值。
+**已建好的部分全部复用，不改**（T1、T2-1 至 T2-11）；唯一例外：T2-7 代理路由加可选 `params` 注入采样参数（作者 2026-11-26，见 Task 7）。`truncate_history` 的 `probe_blobs` 直接取 smoke-v1 里已算好的值。
 
 **MVP 要做的**：
 - **T2-12 精简版**：Task 12 的配置加载（含 `sampling` 必填、危险命令清单、30 分钟与 100 次工具调用上限、价格）与 `run_instance` 的 6 步运行流程照做；`TaskRecord` 只写最少字段：`instance_id`、`failure_type`、`failure_reason`、`usage`、`requests`、`tool_calls`、`wall_s`、`snapshot`、`patch.diff`、评分结果（`GradeResult` 四项）、`config_hash`、`taskset_sha256`。不做 `proxy-fields.json`。
@@ -316,7 +317,7 @@
   - 提示词与花费：`prompt_file`、`price: {input_per_m, output_per_m}`、`assumed_tokens_per_run: {input, output, source}`；
   - 计分：`scoring`（D10 的口径与 5% 阈值）。
 - `config_hash(cfg) -> str`：对规范化 YAML、提示词文件内容和 `sampling` 一起做 sha256。
-- `run_instance(inst, cfg, run: str, out_dir: Path, attempt: int, budget: Budget) -> TaskRecord`，写出 `out_dir/<instance_id>/<attempt>/` 下的四个文件：
+- `run_instance(inst, cfg, run: str, out_dir: Path, attempt: int) -> TaskRecord`（MVP：去掉 `budget` 参数，Budget 挪后；`run_instance` 不评分，`TaskRecord` 的评分字段默认为 null，由 T2-13 跑完后调用 `grade` 填上——作者 2026-11-26 认可），写出 `out_dir/<instance_id>/<attempt>/` 下的四个文件：
   - `events.jsonl`：全部协议事件；
   - `raw.jsonl`：诊断用；
   - `patch.diff`；
