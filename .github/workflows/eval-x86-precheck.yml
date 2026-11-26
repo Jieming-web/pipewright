@@ -1,11 +1,16 @@
-# T2 计划 Task 11 Step 4b：在 x86 上预检冷烟集里最小的实例 psf__requests-2317（作者 2026-11-26）。
-# 只能手动触发；不用任何密钥，不读 .env。镜像按 digest 锁定（实现说明「冷烟候选镜像 digest」）。
+# T2 计划 Task 11 Step 4b：在 x86 上预检冷烟集里的实例（默认镜像最小的 astropy__astropy-12907，作者 2026-11-26）。
+# 只能手动触发；不用任何密钥，不读 .env。x86 镜像按 digest 锁定，取自 eval/tasksets/smoke-v1.json 的 images。
 # 入选标准同 Mac：金标准 → resolved、空补丁时 FAIL_TO_PASS 每一条都失败、挂载运行包后 node --version 成功、
-# 冷烟集金标准评分墙钟 ≤ 600 秒；infra_error 重试 2 次后记为无法测量。
+# 冷烟集金标准评分墙钟 ≤ 600 秒、容器启动时工作区干净；infra_error 重试 2 次后记为无法测量。
 name: eval-x86-precheck
 
 on:
   workflow_dispatch:
+    inputs:
+      instance_id:
+        description: smoke-v1 里的实例 id
+        default: astropy__astropy-12907
+        required: true
 
 permissions:
   contents: read
@@ -15,8 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      INSTANCE: psf__requests-2317
-      IMAGE: swebench/sweb.eval.x86_64.psf_1776_requests-2317@sha256:c6b5c8846507b5e48e307decca28dbdfa4f5ef17070c1087aacde765e8c4b178
+      INSTANCE: ${{ inputs.instance_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,7 +41,10 @@ jobs:
         run: bash scripts/build-eval-bundle.sh linux-x64
 
       - name: Pull image by digest
-        run: docker pull "$IMAGE"
+        run: |
+          IMAGE=$(jq -er --arg id "$INSTANCE" '.images[$id]["linux-x64"]' eval/tasksets/smoke-v1.json)
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker pull "$IMAGE"
 
       - name: Precheck
         working-directory: eval
