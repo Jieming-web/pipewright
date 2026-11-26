@@ -284,11 +284,11 @@
 - **预检中的 `infra_error`**（作者 2026-11-26）：同样配置自动重试最多 2 次，仍失败的记为「无法测量」，从候选中排除（在 `excluded` 里注明原因）；通过预检的候选不足 `n` 个、或全部候选都无法测量时，报错停下，不生成任务集。
 - `build_taskset(name, version, rows, n, seed, bundle, out) -> None`：先抽 `min(ceil(n × 1.5), 可选条数)` 个候选（作者 2026-11-26 追认：smoke-v1 只有 1 行，原写法会要 2 个候选而报错；dev-v1 从 500 行取 60 个，不变），逐个预检，再用同一种子从通过预检的候选里分层抽 `n` 个。写出的任务集文件包含：`{name, version, dataset, revision, seed, created, selection, precheck: {passed, excluded: [{id, reasons}]}, instance_ids, probe_blobs: {<instance_id>: [blob…]}}`。`taskset_sha256(path) -> str` 对文件内容做 sha256，记录与续跑核对都用它。任务集一旦提交就不再修改，有变更就发新版本。
 
-- [ ] **Step 1：写失败测试**：用 3 个仓库、条数 10/5/1 的假数据：`n=8` 时覆盖全部 3 个仓库；同一种子结果相同，不同种子结果不同；`n` 过大时抛错。`build_taskset` 中预检用假函数，让 2 个候选不通过：它们出现在 `excluded` 里，不出现在 `instance_ids` 里；每个入选实例在 `probe_blobs` 里都有非空列表。
-- [ ] **Step 2：运行确认失败**；**Step 3：实现**。
-- [ ] **Step 4：生成 `smoke-v1`**：**1 个实例** `astropy__astropy-12907`（作者 2026-11-26：原定 2 个，3 个候选在 Epoch arm64 上预检后 django-11099 空补丁有一条 FAIL_TO_PASS 通过、requests-2317 测试依赖外网，均被排除），用官方 arm64 镜像按 digest 在 Mac 上重跑四项预检后定版。
+- [x] **Step 1：写失败测试**：用 3 个仓库、条数 10/5/1 的假数据：`n=8` 时覆盖全部 3 个仓库；同一种子结果相同，不同种子结果不同；`n` 过大时抛错。`build_taskset` 中预检用假函数，让 2 个候选不通过：它们出现在 `excluded` 里，不出现在 `instance_ids` 里；每个入选实例在 `probe_blobs` 里都有非空列表。
+- [x] **Step 2：运行确认失败**；**Step 3：实现**。
+- [x] **Step 4：生成 `smoke-v1`**：**1 个实例** `astropy__astropy-12907`（作者 2026-11-26：原定 2 个，3 个候选在 Epoch arm64 上预检后 django-11099 空补丁有一条 FAIL_TO_PASS 通过、requests-2317 测试依赖外网，均被排除），用官方 arm64 镜像按 digest 在 Mac 上重跑四项预检后定版。
 - [ ] **Step 4b：x86 预检**（作者 2026-11-26，不找协作者）：在 GitHub Actions 的 ubuntu 运行器上，对冷烟集里最小的实例跑金标准与空补丁预检（作者 2026-11-26：原定 requests-2317 已被排除，改为冷烟集里镜像最小的实例，现为 astropy-12907；workflow 以实例 id 为输入）（手动触发的 workflow，用 x86 镜像 digest，不需要任何密钥）；运行器跑不了的实例在 Task 15 的 x86 服务器上补跑，不通过就发 smoke-v2。结果追加到实现说明。
-- [ ] **Step 5：提交** `feat(step02): 任务集抽样与金标准预检`。
+- [x] **Step 5：提交** `feat(step02): 任务集抽样与金标准预检`。 — 2026-11-26（Mac arm64）：e2e965c、f0acbb3（实现与 smoke-v1.json，sha256 `7462bbd3…6ecd`）、51ca08f（预检结果）、5414a5e（审查返修 1）；workflow 23e9674（未推送、未运行，Step 4b 待作者同意后执行）。偏差均经作者确认（实现说明偏差表）。`eval/.venv/bin/pytest eval/tests -q` → 155 passed，`fp-run` 无残留。返修后按新检查顺序在官方 arm64 astropy 上真实预检（`eval/runs/precheck-68453747/`）：镜像检查 1.4 s → 金标准 52.3 s（F2P 2/2、P2P 13/13）→ 空补丁 53.3 s（F2P 0/2）→ 探针 `45bea360…`，与 smoke-v1 一致。
 
 ### Task 12：单任务运行（验收 2、3、4，作者补 6、7）
 
