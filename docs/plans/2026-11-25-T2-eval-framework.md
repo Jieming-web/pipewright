@@ -31,7 +31,7 @@
 | D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；采样参数 `temperature`、`top_p` 在两个模型的配置里显式写出，取各自模型卡里做 SWE 类评测所用的值（模型卡没给 SWE 专用值时，取模型卡对所用模式的推荐值，并注明），出处写在配置注释里，不依赖服务端默认值（作者 2026-11-25）；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
 | D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`&`、`$(`、反引号之后；引号里的分隔符不算命令位置：单引号里全部不算，双引号里 `;`、`|`、`&` 等不算、`$(` 与反引号本身仍算命令位置；只是不把分隔符当命令位置，引号里的内容照样参与匹配，如 `rm -rf "/"`；已知不拦：`sudo`/`env`/`time`/`nohup`/`xargs` 等前缀命令、`bash -c '…'`、子 shell `( … )`、命令组 `{ …; }`、绝对路径（`/usr/bin/curl`）、双引号里 `$(…)` 内部分隔符之后的命令（如 `"$(true; curl x)"`）——任务容器只接 internal 网络，清单只是临时的、T3 起被替换，多一条规则就多一分误拦，作者 2026-11-25）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
 | D9 | 本机用 Python 3.13（补丁版本不限）建 venv：Mac 用 `/usr/local/bin/python3.13`；没有 sudo 的 Linux/WSL 可以用 uv 取得 3.13 解释器，uv 只用于取得解释器，venv 和 `requirements.txt` 的用法不变；评测报告记录实际的 Python 版本（作者 2026-11-25，P1 修订；同日作者改为补丁版本不限——3.13.18 起 python.org 不再提供 macOS 安装包，且补丁版本差异不影响评测结果；原文「`/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv」）；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
-| D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error` 与 `rate_limited`（429）最多重试 2 次，仍失败就从分母中排除并逐条列出；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
+| D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error`（定义见 design 3.11：不是由 agent 或补丁引起的失败，含任何阶段的 Docker/守护进程/容器故障；测试超时不算）与 `rate_limited`（429）最多重试 2 次，仍失败的记为「无法测量」，从分母中排除并逐条列出（T2 基线仍用本条；配对比较按 design 3.11「一格无法测量即不确定」，作者 2026-11-26）；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
 
 ### 平台变更 P1（2026-11-25 追加；协作者提议，作者 2026-11-25 修订后确认）：Task 6 起增加 Windows + WSL2 Ubuntu（x86_64）开发环境，Mac 仍为必需环境
 
@@ -275,13 +275,17 @@
 **Files:** Create `eval/forgepilot_eval/taskset.py`、`eval/tests/test_taskset.py`、`eval/tasksets/smoke-v1.json`。开发集在 Task 15 定版。
 
 **Interfaces:**
-- `stratified_sample(rows: list[dict], n: int, seed: int) -> list[str]`：按 `repo` 分层，每个仓库至少 1 个；其余名额按仓库条数比例分配，余数按种子随机分；仓库内按种子随机抽；结果按 `instance_id` 排序。`n` 大于可选条数时抛错。
+- `stratified_sample(rows: list[dict], n: int, seed: int) -> list[str]`：按 `repo` 分层，每个仓库至少 1 个（`n` 小于仓库数时，按种子随机选 `n` 个仓库、每个仓库 1 个，作者 2026-11-26）；其余名额按仓库条数比例分配，余数按种子随机分；仓库内按种子随机抽；结果按 `instance_id` 排序。`n` 大于可选条数时抛错。
 - `precheck(inst, bundle) -> PrecheckResult(ok: bool, reasons: list[str], probe_blobs: list[str])`：三项检查，分别是金标准补丁 → `resolved`、空补丁 → `unresolved`、在该镜像里挂载运行包后 `/fp/node/bin/node --version` 成功；调用 `grade` 时传入按本机架构选好的镜像；金标准评分与正式评分一样不加 `SYS_ADMIN`，定版任务集的每个实例金标准运行 FAIL_TO_PASS 必须全部通过，结果写进实现说明的偏差表，注明对照的是 swebench 5.0.2；因金标准失败被排除的候选逐条列出原因（作者 2026-11-26，T2-10 审查后）；同时调用 `gold_probe_blobs` 记下探针。
+- **镜像来源**（作者 2026-11-26）：每个平台只用一个来源，不逐个实例回退。Mac arm64 统一用 Epoch 的 `ghcr.io/epoch-research/swe-bench.eval.arm64.<instance_id>`（官方 arm64 没有 `django__django-11099`，Epoch 覆盖全部 3 个候选）；x86 用数据集里的镜像名。所有镜像按 digest 锁定，任务集文件记录两个平台的 `name@digest`，并记入实现说明（规则同 node 镜像）。2026-11-26 控制会话查到的候选 digest：Epoch arm64 requests-2317 `sha256:dacf1300f00c585d18f5cbcd331777825b5437f682c1a846b2fd90606e1b570b`、astropy-12907 `sha256:fbbd240e3fee2881c98d74895bd614e5252e714bd6ab741c1c440c048304f750`、django-11099 `sha256:9312a779b863a5c97cf7c473987bab8293bc702dbe44e637e983604d21f82717`；官方 x86 requests-2317 `sha256:c6b5c8846507b5e48e307decca28dbdfa4f5ef17070c1087aacde765e8c4b178`、astropy-12907 `sha256:e082963099ed7d5a5f75a0be46e338be36faae33b2cba5289a9ddbd505997f1f`、django-11099 `sha256:cca302934edd881cc4f1e4647a389a25cdaa3c02bfa33667a4204934a09c4fb1`。
+- **入选标准**（作者 2026-11-26，预检之前写定）：(1) 金标准补丁 → `resolved`；(2) 空补丁时 FAIL_TO_PASS 的**每一条**测试都失败（不只是整体 `unresolved`；用于证明评分器真在区分对错，这一条最重要）——`grade` 需把 swebench 的报告（含各测试状态）写到 `out_dir/report.json` 供预检读取；(3) 挂载运行包后 `/fp/node/bin/node --version` 成功；(4) 冷烟集额外要求：本平台金标准评分墙钟不超过 10 分钟（开发集不套用）。金标准超时视为不通过，排除该实例（不算 `infra_error`）。T2-10 的另外两条条件仍然适用：`image_assets` 不为空时报错（Task 10）；评分结果记录镜像名、digest、架构，正式评测拒绝非 amd64（Task 10、12、13）。
+- **预检中的 `infra_error`**（作者 2026-11-26）：同样配置自动重试最多 2 次，仍失败的记为「无法测量」，从候选中排除（在 `excluded` 里注明原因）；通过预检的候选不足 `n` 个、或全部候选都无法测量时，报错停下，不生成任务集。
 - `build_taskset(name, version, rows, n, seed, bundle, out) -> None`：先抽 `n × 1.5` 个候选，逐个预检，再用同一种子从通过预检的候选里分层抽 `n` 个。写出的任务集文件包含：`{name, version, dataset, revision, seed, created, selection, precheck: {passed, excluded: [{id, reasons}]}, instance_ids, probe_blobs: {<instance_id>: [blob…]}}`。`taskset_sha256(path) -> str` 对文件内容做 sha256，记录与续跑核对都用它。任务集一旦提交就不再修改，有变更就发新版本。
 
 - [ ] **Step 1：写失败测试**：用 3 个仓库、条数 10/5/1 的假数据：`n=8` 时覆盖全部 3 个仓库；同一种子结果相同，不同种子结果不同；`n` 过大时抛错。`build_taskset` 中预检用假函数，让 2 个候选不通过：它们出现在 `excluded` 里，不出现在 `instance_ids` 里；每个入选实例在 `probe_blobs` 里都有非空列表。
 - [ ] **Step 2：运行确认失败**；**Step 3：实现**。
-- [ ] **Step 4：生成 `smoke-v1`**：2 个实例，从 Task 0 验证过 arm64 镜像的实例里选，在 Mac 上真实预检。
+- [ ] **Step 4：生成 `smoke-v1`**：2 个实例，候选为 `psf__requests-2317`、`astropy__astropy-12907`、`django__django-11099`，用 Epoch arm64 镜像在 Mac 上真实预检；smoke-v1 先按 Mac 结果定版（作者 2026-11-26）。
+- [ ] **Step 4b：x86 预检**（作者 2026-11-26，不找协作者）：在 GitHub Actions 的 ubuntu 运行器上，对冷烟集里最小的实例（`psf__requests-2317`）跑金标准与空补丁预检（手动触发的 workflow，用 x86 镜像 digest，不需要任何密钥）；运行器跑不了的实例在 Task 15 的 x86 服务器上补跑，不通过就发 smoke-v2。结果追加到实现说明。
 - [ ] **Step 5：提交** `feat(step02): 任务集抽样与金标准预检`。
 
 ### Task 12：单任务运行（验收 2、3、4，作者补 6、7）
@@ -387,7 +391,7 @@
   - 安装 docker、node 24、pnpm；运行 `scripts/build-eval-bundle.sh linux-x64`；建 Python venv；
   - `.env` 经 scp 传上去，并 `chmod 600`；
   - 所有评测在 tmux 里运行；结果用 `rsync -a` 拉回本机 `eval/runs/`；
-  - 先跑 `smoke-v1` 的 x86 版本，确认同一条命令可用（验收 9）。
+  - 先跑 `smoke-v1` 的 x86 版本，确认同一条命令可用（验收 9）；开始正式评测之前，冷烟集的所有实例必须在 x86 上通过预检（Task 11 入选标准），Task 11 Step 4b 没覆盖的实例在这里补跑，不通过就发 smoke-v2（作者 2026-11-26）。
 - [ ] **Step 3：任务集定版**：在服务器上执行 `build_taskset`，生成 `dev-v1`（40 个，种子 20261125，候选 60）。预检结果和金标准 blob 在这一步一起写进任务集文件（x86 上算出），不拆开。文件拉回本机提交；开发集规模写进实现说明（验收 1）。
 
 ### Task 16：开发集基线与报告（验收 6，作者补 4）
