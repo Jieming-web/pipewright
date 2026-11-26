@@ -420,3 +420,19 @@ docker rm -f fp-b; docker network rm fp-probe fp-probe-out
 - 「启动被拒」那条的 `stopTimeoutMs=3000` 没有调（作者未选 C），卡顿超过约 3 秒时仍可能得到 `forced:true`，本轮复现了 1 次。
 - 断言里的时间界限（如上面的 `stopped.at - t0 < 11000`）在长卡顿或重负载下仍可能超限。调高用例超时对这类失败无效；按约定不放宽断言。
 - 卡顿超过 60s（FIFO 类超过 90s、t1 超过 120s）时仍会超时，但隔离后只影响这一条用例。
+
+### 与计划的偏差（续，按 workflow 3.3 新格式，2026-11-25 追加）
+
+T2-6 至 T2-9 由协作者在 Windows + WSL2 x86 上完成并直接推送；以下偏差在 2026-11-25 补审时整理。
+
+| 偏差 | 提议人 | 理由 | 证据 | 确认人 |
+|---|---|---|---|---|
+| T2-6：fd 没有官方校验文件，改用 GitHub release API 附件的 `digest` 字段 | 协作者 | 计划要求官方校验文件，fd 项目未发布 | 审查员 2026-11-25 核对脚本值与 API digest 逐位一致；计划原写「aarch64 值与 T2-0 自算值一致」不成立（T2-0 缩写 `4b144f38…dba6` 与脚本 `…efba6dd` 尾部不符），已在计划更正 | 作者 2026-11-25 确认（本会话，条件：记录写明协作者提议、审查员核对、作者确认） |
+| T2-9：`git fsck` 加 `--connectivity-only` | 协作者 | 加快自检 | 审查员 2026-11-25 实测仍会列出不可达 blob，不削弱泄漏检测 | 作者 2026-11-25 确认（本会话） |
+| T2-9：`truncate_history` 增加 `probe_blobs` 参数，截断后一并自检 | 协作者 | 调用方不必再单独调 `verify_truncated` | 计划接口没有该参数；默认空时不传也不报错，Task 12 可能漏传 | 作者 2026-11-25 确认（本会话），条件：改为必填或补测试；计划 Task 9 接口与 Task 12 流程已同步为必填 |
+| T2-8：代理镜像固定为 `node:24-slim@sha256:873f586f…b6b34530` | 协作者 | 计划写「Task 0 记录的 digest」，但 Task 0 没记录 | 见下方 T2-0 补记 | **待作者确认** |
+| P1：Task 6 起改在 WSL2 x86 上开发，用 uv 取得 Python 3.13 | 协作者 | 协作者用 Windows；WSL 无 sudo | 计划「平台变更 P1」；与 D9「不装 uv」、tasks.md 验收 9「Mac 上能跑少量冒烟任务」字面不一致 | **待作者确认**（作者要求单独讨论） |
+
+### T2-0 补记：代理镜像 digest（2026-11-25 追加）
+
+T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时没有记录 digest。2026-11-25 用 `docker buildx imagetools inspect` 核对 T2-8 固定的 `sha256:873f586f3794f52281bd039bf02c048a0be08fde619338f9941bad1eb6b34530`：它是 Docker Hub 官方 `docker.io/library/node:24-slim` 的多架构索引（OCI image index），含 `linux/amd64` 与 `linux/arm64/v8`；核对时 `node:24-slim` 标签当前也指向这个 digest。

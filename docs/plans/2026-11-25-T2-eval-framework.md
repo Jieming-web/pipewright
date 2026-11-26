@@ -185,7 +185,7 @@
   - `node/`：node 24 官方 Linux 发行包；
   - `bin/rg`、`bin/fd`：官方发行包；
   - 三者的 sha256 先与官方发布的校验文件比对（node 的 `SHASUMS256.txt`，rg、fd 的 GitHub release 中官方发布的校验文件），一致后再写死进脚本，脚本注释写明校验文件的 URL（作者 2026-11-25：T2-0 是下载后自己算的，只能证明文件以后没被改过，证明不了下载到的就是官方那份）。某个项目没有发布官方校验文件时，停下报告作者，不用自己算的值代替；
-  - fd 没有发布官方校验文件（2026-11-25 核实 v10.5.2 的 release 附件与说明）：作者决定改用 GitHub release API 中附件的 `digest` 字段（GitHub 在项目 CI `github-actions[bot]` 上传时计算），脚本注释写明 API URL；aarch64 值与 T2-0 自算值一致（P1 之后追加，作者 2026-11-25）；
+  - fd 没有发布官方校验文件（2026-11-25 核实 v10.5.2 的 release 附件与说明）：改用 GitHub release API 中附件的 `digest` 字段（GitHub 在项目 CI `github-actions[bot]` 上传时计算），脚本注释写明 API URL——协作者提议（P1 之后追加），审查员 2026-11-25 核对脚本值与 API digest 逐位一致，作者 2026-11-25 确认；原写「aarch64 值与 T2-0 自算值一致」不成立：T2-0 只记了缩写 `4b144f38…dba6`，与脚本值 `4b144f38…efba6dd` 尾部不符、又无完整值，无法核对，以 API digest 为准（2026-11-25 更正）；
   - `bin/fp-entry`：即 `fp-entry.sh`；
   - `app/runner/`、`app/client/`：先 `pnpm -r build`，再两次 `pnpm deploy --legacy --prod` 的产物（T2-0 实测：先构建时不需要 `files` 字段，`dist/` 会被带上）；
   - `VERSION`：内容为 `<git commit> pi@1.5.1 node@<版本>`。
@@ -233,7 +233,7 @@
 **Interfaces:**
 - **有效基准**（作者 2026-11-25 决定）：容器启动时 `/testbed` 的 HEAD。swebench 镜像的 HEAD 是 `base_commit` 之上的额外提交 `SWE-bench`（环境设置），Epoch 镜像的 HEAD 就是 `base_commit`（实现说明 0.8a）。评分容器也是在这个 HEAD 上打补丁，所以截断、自检、取补丁、金标准 blob 都以有效基准为准，不用数据集的 `base_commit`。
 - `resolve_effective_base(sb: Sandbox, repo: str, base_commit: str) -> str`：返回 `git rev-parse HEAD`；`git merge-base --is-ancestor <base_commit> HEAD` 不成立（`base_commit` 既不是 HEAD 也不是它的祖先）时抛 `BaseMismatch`，这一次运行记为 `infra_error`。
-- `truncate_history(sb: Sandbox, repo: str, eff_base: str) -> None`：
+- `truncate_history(sb: Sandbox, repo: str, eff_base: str, probe_blobs: list[str]) -> None`（`probe_blobs` 必填，传任务集里的金标准 blob，截断后一并自检；T2-9 偏差，协作者提议、作者 2026-11-25 确认）：
   1. `git checkout -B fp-base <eff_base>`（工作区内容不变）；
   2. 删除其他所有分支、标签、远程、stash、notes，以及 `refs/original`、`refs/replace`；
   3. `git reflog expire --expire=now --all && git gc --prune=now --quiet`；
@@ -241,7 +241,7 @@
 - `verify_truncated(sb, repo, eff_base, probe_blobs: list[str]) -> list[str]`：返回所有仍存在的问题，空列表表示通过。检查项：
   - `git rev-list --all --not <eff_base>` 非空；
   - `git for-each-ref` 中除 `refs/heads/fp-base` 外还有别的引用；
-  - `git fsck --unreachable --no-reflogs` 有输出；
+  - `git fsck --unreachable --no-reflogs --connectivity-only` 有输出（T2-9 偏差：加 `--connectivity-only`，审查员实测仍会列出不可达 blob；协作者提议、作者 2026-11-25 确认）；
   - `probe_blobs` 中任何一个 `git cat-file -e` 成功。
 - `extract_patch(sb, repo, eff_base) -> str`：`git add -A && git diff --cached --binary <eff_base>`（Task 12 调用）。
 - `gold_probe_blobs(inst) -> list[str]`：在一个临时容器里把金标准补丁打到有效基准（容器启动时的 HEAD）上，取补丁改动的每个文件的新 blob hash。这些 blob 只存在于修复之后，不受 `environment_setup_commit` 影响。只在预检时调用一次，结果存进任务集（Task 11），运行时直接读取，不再每次起临时容器（作者补 2）。
@@ -304,7 +304,7 @@
 - `Budget`：线程安全的累计实际花费，每收到一条 `model.request.finished` 就按 `input + cacheRead + cacheWrite` 与 `output` 累加（不加 `reasoning`）；达到上限时把 `exceeded` 置为 True，`run_instance` 随即取消自己，记为 `budget_cancelled`。
 - 运行流程：
   1. 创建 `Sandbox`；
-  2. `eff = resolve_effective_base(sb, "/testbed", inst["base_commit"])`，再 `truncate_history(sb, "/testbed", eff)`，探针取任务集里的 `probe_blobs[instance_id]`；
+  2. `eff = resolve_effective_base(sb, "/testbed", inst["base_commit"])`，再 `truncate_history(sb, "/testbed", eff, probe_blobs)`，`probe_blobs` 取任务集里的 `probe_blobs[instance_id]`，为必填参数（T2-9 偏差，作者 2026-11-25 确认）；
   3. 写 `/fp-out/models.json`：baseUrl 为 `http://fp-model-proxy:8080/<route>`，apiKey 为字面占位串 `unused`；
   4. 调用 `run_task(sb.entry_cmd([... --workdir /testbed --sessions-root /fp-out/sessions --record-pi-events /fp-out/raw.jsonl --tools … --thinking …]), kill=sb.kill)`；
   5. `extract_patch(sb, "/testbed", eff)` 取出补丁；
