@@ -1,0 +1,56 @@
+# Qwen3.6-35B-A3B 评测配置（T2 计划 Task 12；D7、D8、D10）。经百炼北京端点，key 只给模型代理容器。
+model:
+  provider: qwen-api
+  id: qwen3.6-35b-a3b
+  route: qwen
+  base: https://dashscope.aliyuncs.com/compatible-mode/v1
+  keyEnv: DASHSCOPE_API_KEY
+  # 以下写进容器里 runner 读的 models.json（pi 1.5.1 格式，同 T2-0 探测，实现说明附录 A）
+  compat: {thinkingFormat: qwen, supportsDeveloperRole: false, supportsStore: false, supportsReasoningEffort: false, thinkingTokenBudgetField: thinking_budget}
+  pi: {reasoning: true, input: [text], contextWindow: 262144, maxTokens: 8192}
+
+thinking: low
+
+# 由模型代理写进每个请求（pi 1.5.1 不发 top_p，计划 Task 7）。
+# 出处：Hugging Face 模型卡 https://huggingface.co/Qwen/Qwen3.6-35B-A3B ，
+# 「Benchmark Results > Language」脚注：SWE-bench 系列 "temp=1.0, top_p=0.95"（SWE 专用值，优先于各模式的推荐值）。
+sampling:
+  temperature: 1.0
+  top_p: 0.95
+
+tools: [read, bash, edit, write, grep, find, ls]
+
+# D8 临时危险命令清单：只写命令本身，命令位置的锚定由 Policy 负责；T3 起由策略服务替换
+danger_patterns:
+  - 'rm\s+(?:-[\w-]+\s+)+(["'']?)/\*?\1'  # / 两侧可带成对引号
+  - 'git\s+push'
+  - 'curl'
+  - 'wget'
+  - 'nc'
+  - 'ssh'
+  - 'scp'
+  - 'shutdown'
+  - 'reboot'
+  - 'mkfs(?:\.\w+)?'
+  - 'dd'
+  - ':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:'  # fork 炸弹
+
+max_tool_calls: 100
+task_timeout_s: 1800
+grade_timeout_s: 1800
+
+prompt_file: ../prompts/swe-v1.txt  # 相对本文件
+
+# 元/百万 token，百炼北京，不支持缓存（实现说明 0.6）
+price: {input_per_m: 1.8, output_per_m: 10.8}
+assumed_tokens_per_run:
+  input: 1500000
+  output: 30000
+  source: 未校准的保守估计（约 40 次请求、平均 3.7 万输入 token）；T2-14 冒烟后按 p90 校准
+
+# D10 计分口径，开跑前固定
+scoring:
+  failures: [patch_apply_failed, empty_patch, run_failed, timeout, tool_budget]
+  retry_then_exclude: [infra_error, rate_limited]
+  max_retries: 2
+  max_excluded_fraction: 0.05
