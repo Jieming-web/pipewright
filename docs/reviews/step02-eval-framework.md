@@ -461,3 +461,4 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | 按架构换镜像由调用方负责，`grade` 直接用传入实例的 `image` | 实现者 | 数据集 `image` 为 x86 名，Mac 冒烟要换 arm64 | 条件：`grade` 结果记录镜像名、digest、架构；正式评测拒绝非 amd64 的结果，arm64 只用于冒烟（计划 Task 10/12/13 已写入） | 作者 2026-11-26（本会话，附条件） |
 | `grade` 增加必填参数 `run`，返回 `GradeResult` | 审查员（Important：缺省标签 `fp-run=grade` 使 `cleanup_run` 清不到） | 保证所有容器带本次运行名标签 | task-10-review.md | 作者 2026-11-26（本会话） |
 | swebench infra_failure 与 docker/容器出错归为 `infra_error`（官方留在分母） | 审查员提出、控制会话建议 | 断网或容器坏掉不应算模型失败、悄悄拉低成功率 | task-10-review.md；报告需注明与官方算法不同 | 作者 2026-11-26（本会话） |
+- 更正（追加）：T2-6 至 T2-10 返修后的 WSL x86 复验取消——作者 2026-11-26 确认（本会话，原话「在我这跑通就可以了」）。现状：Mac arm64 上 Python 全量 127 passed（T2-10 后）、TS 541/541（T2-6~9 返修后）；`linux-x64` 运行包的 GNU tar 解压写法与 x86 镜像用例在返修后未执行，首次验证在 Task 15 Step 2。
