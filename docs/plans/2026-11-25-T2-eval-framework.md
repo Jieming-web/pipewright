@@ -204,8 +204,8 @@
 - 只放行 `POST /<route>/chat/completions`，其余一律 404。请求体的 `model` 改写为路由固定的值，删除 D1 列出的联网搜索类参数；丢弃客户端带来的 `authorization`，改用 `Bearer <env[keyEnv]>`。响应体按流原样回传，SSE 不缓冲。
 - 每个请求往 stdout 写一行 JSON 日志：`{route, status, fields: [请求体顶层字段名，已排序], sampling: {temperature, top_p, max_tokens, enable_thinking, …实际出现的}}`。日志里不写请求体内容，也不写 key。
 
-- [ ] **Step 1：写失败测试**：转发路径和请求体正确；`model` 被改写；`enable_search: true`、`search_options`、`{type: "web_search"}` 都被删除，`type: "function"` 的工具保留；替换 `authorization`；其他路径和 GET 请求返回 404；上游 429 原样回传；SSE 分块按到达顺序回传；日志里没有 key。
-- [ ] **Step 2：运行确认失败**：`pnpm vitest run tests/unit/model-proxy.test.ts`；**Step 3：实现**；**Step 4：提交** `feat(step02): 评测模型代理`。
+- [x] **Step 1：写失败测试**：转发路径和请求体正确；`model` 被改写；`enable_search: true`、`search_options`、`{type: "web_search"}` 都被删除，`type: "function"` 的工具保留；替换 `authorization`；其他路径和 GET 请求返回 404；上游 429 原样回传；SSE 分块按到达顺序回传；日志里没有 key。 — 2026-11-25：9 个用例（代理作子进程、上游为测试内假服务）。计划之外另加：工具全被删时去掉 `tools`、客户端断开时中止上游（取消后不再计费）、上游连不上 502、请求体非 JSON 对象 400、缺 key 或配置非法启动即退出 2；日志同时断言不含提示词与客户端 token。写法细节：`FP_PROXY_PORT`（默认 8080，0 为随机，测试用）、启动行 `model-proxy listening on <port>` 写 stderr（stdout 只放请求日志）、请求体上限 32 MiB（413）、非已知路由的日志 `route: null`。
+- [x] **Step 2：运行确认失败**：`pnpm vitest run tests/unit/model-proxy.test.ts`；**Step 3：实现**；**Step 4：提交** `feat(step02): 评测模型代理`。 — 2026-11-25：RED 9 failed（代理不存在）；实现后 9 passed；变异 4 项均被抓住（不中止上游、不删搜索参数、缓冲整个响应、转发客户端 authorization）；全量 `pnpm test` 540/540、typecheck、check:pi、`pytest eval/tests` 87 passed。9c1bf88。未做：ponytail-review（同 T2-6）。
 
 ### Task 8：容器沙箱与网络（作者补 2）
 
