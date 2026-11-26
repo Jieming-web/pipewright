@@ -42,6 +42,18 @@ class TaskRecord:
     grade_arch: str | None = None
 
 
+def add_request(rec: TaskRecord, ev: dict) -> None:
+    """累加一条 model.request.finished 的用量。出错或中止的请求按契约用量为 null，不算用量未知；
+    成功返回却没有用量才标 usage_complete=False（作者 2026-11-26）。"""
+    rec.requests += 1
+    if ev.get("usage") is None:
+        if ev.get("stopReason") not in ("error", "aborted"):
+            rec.usage_complete = False
+    else:
+        for k in USAGE_KEYS:
+            rec.usage[k] += ev["usage"].get(k, 0)
+
+
 def proxy_routes(cfg: EvalConfig) -> dict:
     """start_proxy 的 routes：采样参数经 params 由代理写进每个请求（pi 1.5.1 不发 top_p）。"""
     m = cfg.model
@@ -53,7 +65,7 @@ def models_json(cfg: EvalConfig) -> dict:
     m = cfg.model
     return {"providers": {m["provider"]: {
         "baseUrl": f"http://{PROXY_ALIAS}:{PROXY_PORT}/{m['route']}", "api": "openai-completions", "apiKey": "unused",
-        "compat": m.get("compat", {}), "models": [{"id": m["id"], **m.get("pi", {})}],
+        "compat": m["compat"], "models": [{"id": m["id"], **m["pi"]}],
     }}}
 
 
@@ -74,17 +86,11 @@ def run_instance(inst: dict, cfg: EvalConfig, run: str, out_dir: Path, attempt: 
         if ev["type"] == "run.started":
             rec.snapshot = ev.get("snapshot")
         elif ev["type"] == "model.request.finished":
-            rec.requests += 1
+            add_request(rec, ev)
             last_error[0] = ev.get("errorMessage")
-            if ev.get("usage") is None:
-                rec.usage_complete = False
-            else:
-                for k in USAGE_KEYS:
-                    rec.usage[k] += ev["usage"].get(k, 0)
 
     with open(d / "events.jsonl", "w", encoding="utf-8") as events:
         try:
-            (d / "sessions").mkdir()
             (d / "models.json").write_text(json.dumps(models_json(cfg)), encoding="utf-8")
             prompt = cfg.prompt_file.read_text(encoding="utf-8").replace("{problem_statement}", inst["problem_statement"])
             start = {"type": "start_task", "requestId": "py-start", "sessionId": f"{iid}-{attempt}", "prompt": prompt,
@@ -101,9 +107,14 @@ def run_instance(inst: dict, cfg: EvalConfig, run: str, out_dir: Path, attempt: 
                                should_cancel=lambda: policy.exhausted)
                 rec.wall_s = round(time.monotonic() - t0, 3)
                 rec.failure_type, rec.failure_reason = _classify(res, policy, last_error[0])
-                if rec.failure_type == "none":  # 只有正常结束的运行才取补丁、才会评分；其余容器可能已被强删
-                    patch = extract_patch(sb, REPO_DIR, eff)
-                    if not patch.strip():
+                if rec.failure_type != "infra_error":  # 失败运行的半成品补丁也留作诊断
+                    try:
+                        patch = extract_patch(sb, REPO_DIR, eff)
+                    except Exception as e:
+                        if rec.failure_type == "none":  # 待评分的运行没有补丁就是基础设施错误
+                            raise
+                        rec.failure_reason = f"{rec.failure_reason}; patch not extracted: {type(e).__name__}: {e}"
+                    if rec.failure_type == "none" and not patch.strip():
                         rec.failure_type, rec.failure_reason = "empty_patch", "agent made no changes"
         except BaseException as e:
             rec.failure_type, rec.failure_reason = "infra_error", f"{type(e).__name__}: {e}"

@@ -13,7 +13,7 @@ from .taskset import local_platform
 
 FIELDS = ["model", "thinking", "sampling", "tools", "danger_patterns", "max_tool_calls", "task_timeout_s",
           "grade_timeout_s", "prompt_file", "price", "assumed_tokens_per_run", "scoring"]
-MODEL_FIELDS = ["provider", "id", "route", "base", "keyEnv"]
+MODEL_FIELDS = ["provider", "id", "route", "base", "keyEnv", "compat", "pi"]  # compat、pi 写进 pi 的 models.json，缺了 thinking 可能悄悄失效
 SAMPLING_FIELDS = ["temperature", "top_p"]  # D7：必须显式写出；只允许这两项（代理只注入这两项）
 DEFAULT_BUNDLE = Path(__file__).resolve().parents[1] / ".cache" / f"bundle-{local_platform()}"
 

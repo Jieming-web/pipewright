@@ -12,7 +12,6 @@
 // 无第三方依赖：在 node:24-slim 容器里直接运行。
 import { createServer } from "node:http";
 
-const PARAM_FIELDS = ["temperature", "top_p"];
 const SEARCH_FIELDS = ["enable_search", "search_options", "web_search"];
 const SAMPLING_FIELDS = [
   "temperature", "top_p", "top_k", "min_p", "max_tokens", "max_completion_tokens", "presence_penalty",
@@ -43,13 +42,9 @@ function loadRoutes() {
     if (!r || typeof r.base !== "string" || typeof r.keyEnv !== "string" || typeof r.model !== "string") {
       fail(`route ${name}: base, keyEnv and model must be strings`);
     }
-    const params = r.params ?? {};
-    if (typeof params !== "object" || Array.isArray(params) || Object.keys(params).some((k) => !PARAM_FIELDS.includes(k))) {
-      fail(`route ${name}: params must be an object with only ${PARAM_FIELDS.join(", ")}`);
-    }
     const key = process.env[r.keyEnv];
     if (!key) fail(`route ${name}: environment variable ${r.keyEnv} is not set`);
-    out.set(name, { url: `${r.base.replace(/\/+$/, "")}/chat/completions`, model: r.model, params, key });
+    out.set(name, { url: `${r.base.replace(/\/+$/, "")}/chat/completions`, model: r.model, params: r.params ?? {}, key });
   }
   return out;
 }

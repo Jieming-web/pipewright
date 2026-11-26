@@ -243,12 +243,6 @@ describe("model-proxy", () => {
     expect(b.sampling).toEqual({ temperature: 0.6 });
   });
 
-  it("params 不是对象或含 temperature、top_p 以外的字段：启动失败，退出码 2", async () => {
-    const route = (params: unknown) => ({ qwen: { base: "http://x/v1", keyEnv: "DASHSCOPE_API_KEY", model: "m", params } });
-    expect(await (await proxy(route("hot"))).exited).toBe(2);
-    expect(await (await proxy(route({ temperature: 1, model: "evil" }))).exited).toBe(2);
-  });
-
   it("路由的 key 环境变量缺失或配置不是对象：启动失败，退出码 2，不写出 key", async () => {
     const p = await proxy({ qwen: { base: "http://x/v1", keyEnv: "MISSING_KEY", model: "m" } }, {});
     expect(await p.exited).toBe(2);

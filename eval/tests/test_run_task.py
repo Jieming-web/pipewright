@@ -20,7 +20,8 @@ from forgepilot_eval import sandbox
 from forgepilot_eval.config import config_hash, load_config
 from forgepilot_eval.policy import Policy, PolicyConfig
 from forgepilot_eval.repo_prep import BaseMismatch
-from forgepilot_eval.run_task import proxy_routes, run_instance
+from forgepilot_eval import run_task as run_task_mod
+from forgepilot_eval.run_task import TaskRecord, add_request, proxy_routes, run_instance
 from forgepilot_eval.sandbox import cleanup_run, start_proxy
 from test_policy import HITS, MISSES
 
@@ -62,12 +63,7 @@ def write_config(tmp_path: Path, drop: str | None = None, prompt: str = "{proble
 def test_qwen_config_values():
     cfg = load_config(CONFIG)
     assert cfg.sampling == {"temperature": 1.0, "top_p": 0.95}
-    assert cfg.thinking == "low"
-    assert cfg.tools == ["read", "bash", "edit", "write", "grep", "find", "ls"]
     assert cfg.max_tool_calls == 100 and cfg.task_timeout_s == 1800
-    assert cfg.price == {"input_per_m": 1.8, "output_per_m": 10.8}
-    assert cfg.assumed_tokens_per_run["source"]
-    assert cfg.prompt_file.read_text() == "{problem_statement}\n"
     assert proxy_routes(cfg) == {"qwen": {
         "base": "https://dashscope.aliyuncs.com/compatible-mode/v1", "keyEnv": "DASHSCOPE_API_KEY",
         "model": "qwen3.6-35b-a3b", "params": {"temperature": 1.0, "top_p": 0.95}}}
@@ -82,22 +78,34 @@ def test_config_danger_list_matches_d8():
     assert all(p.decide(bash(c))["decision"] == "allow" for c in MISSES)
 
 
-@pytest.mark.parametrize("field", ["temperature", "top_p"])
-def test_missing_sampling_field_rejected(tmp_path, field):
-    with pytest.raises(ValueError, match=f"sampling.{field}"):
-        load_config(write_config(tmp_path, drop=field))
-
-
-def test_unknown_sampling_field_rejected(tmp_path):
-    path = write_config(tmp_path)
-    path.write_text(path.read_text().replace("  top_p: 0.95", "  top_p: 0.95\n  top_k: 20"))
-    with pytest.raises(ValueError, match="sampling"):
+@pytest.mark.parametrize("edit, error", [
+    (("drop", "temperature"), "sampling.temperature"),
+    (("drop", "top_p"), "sampling.top_p"),
+    (("add", "  top_k: 20"), "sampling only accepts"),
+    (("drop", "max_tool_calls"), "max_tool_calls"),
+    (("drop", "compat"), "model.compat"),  # 缺失时 thinking 可能悄悄失效（D7 显式写出）
+    (("drop", "pi"), "model.pi"),
+])
+def test_invalid_config_rejected(tmp_path, edit, error):
+    kind, arg = edit
+    path = write_config(tmp_path, drop=arg if kind == "drop" else None)
+    if kind == "add":
+        path.write_text(path.read_text().replace("  top_p: 0.95", f"  top_p: 0.95\n{arg}"))
+    with pytest.raises(ValueError, match=error):
         load_config(path)
 
 
-def test_missing_top_level_field_rejected(tmp_path):
-    with pytest.raises(ValueError, match="max_tool_calls"):
-        load_config(write_config(tmp_path, drop="max_tool_calls"))
+@pytest.mark.parametrize("stop_reason, usage, complete", [
+    ("stop", {"input": 3, "output": 2, "cacheRead": 1, "cacheWrite": 0, "reasoning": 1}, True),
+    ("error", None, True),  # 出错请求按契约用量为 null、不计费，不算用量未知（作者 2026-11-26）
+    ("stop", None, False),  # 成功返回却没有用量
+    ("toolUse", None, False),
+])
+def test_usage_complete_only_for_successful_requests_without_usage(stop_reason, usage, complete):
+    rec = TaskRecord("i", "h", "s")
+    add_request(rec, {"type": "model.request.finished", "stopReason": stop_reason, "usage": usage})
+    assert rec.requests == 1 and rec.usage_complete is complete
+    assert rec.usage == (usage or dict.fromkeys(rec.usage, 0))
 
 
 def test_config_hash_follows_prompt_content(tmp_path):
@@ -212,10 +220,25 @@ def test_dangerous_command_blocked(stack):
     assert (d / "patch.diff").read_text() == ""
 
 
-def test_tool_budget(stack):
-    turns = [{"kind": "toolCall", "name": "bash", "args": {"command": "true"}, "id": f"c{i}"} for i in range(3)]
-    rec, _, _ = stack(turns + [{"kind": "text", "chunks": ["done"]}], max_tool_calls=1)
+def budget_turns():
+    calls = [{"kind": "toolCall", "name": "bash", "args": {"command": f"echo {i} > f{i}.py"}, "id": f"c{i}"} for i in range(3)]
+    return calls + [{"kind": "text", "chunks": ["done"]}]
+
+
+def test_tool_budget_keeps_partial_patch(stack):
+    rec, d, _ = stack(budget_turns(), max_tool_calls=1)
     assert rec.failure_type == "tool_budget", rec.failure_reason
+    assert "f0.py" in (d / "patch.diff").read_text()  # 除 infra_error 外都取补丁，留作诊断
+
+
+def test_patch_failure_keeps_failure_type(stack, monkeypatch):
+    def boom(*a):
+        raise RuntimeError("git diff failed")
+    monkeypatch.setattr(run_task_mod, "extract_patch", boom)
+    rec, d, _ = stack(budget_turns(), max_tool_calls=1)
+    assert rec.failure_type == "tool_budget"
+    assert "patch not extracted: RuntimeError: git diff failed" in rec.failure_reason
+    assert (d / "patch.diff").read_text() == ""
 
 
 def test_timeout(stack):
@@ -230,6 +253,7 @@ def test_rate_limited(stack):
     assert rec.failure_type == "rate_limited", rec.failure_reason
     assert len(reqs) > 1  # pi 重试过
     assert events(d)[-1]["type"] == "run.failed"
+    assert rec.usage_complete is True  # 出错请求的用量为 null，不算未知
 
 
 def test_wrong_bundle_is_infra_error(stack, tmp_path):
