@@ -125,6 +125,7 @@ async function handle(req, res) {
         authorization: `Bearer ${route.key}`,
       },
       body: JSON.stringify(forwarded),
+      redirect: "manual", // 只转发到配置的上游：3xx 原样回给客户端，不把请求体发到 Location 指向的主机
       signal: ac.signal,
     });
   } catch {

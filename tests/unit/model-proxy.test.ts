@@ -140,6 +140,22 @@ describe("model-proxy", () => {
     expect(await res.text()).toBe('{"error":{"code":"Throttling"}}');
   });
 
+  it("上游重定向不跟随：3xx 原样回给客户端，请求体不发到别的主机", async () => {
+    const other = await upstream(okJson);
+    const up = await upstream((_q, _b, res) => {
+      res.writeHead(307, { location: `${other.base}/chat/completions` });
+      res.end();
+    });
+    const p = await proxy(routesFor(up.base));
+    const res = await fetch(`${p.url}/qwen/chat/completions`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}", redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(up.seen).toHaveLength(1);
+    expect(other.seen).toHaveLength(0);
+    await expect.poll(() => logLines(p.logs()).at(-1)?.status).toBe(307);
+  });
+
   it("SSE 不缓冲：上游每发一块，客户端在下一块之前就收到", async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
