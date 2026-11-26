@@ -100,8 +100,9 @@ def test_invalid_config_rejected(tmp_path, edit, error):
     ("error", None, True),  # 出错请求按契约用量为 null、不计费，不算用量未知（作者 2026-11-26）
     ("stop", None, False),  # 成功返回却没有用量
     ("toolUse", None, False),
+    ("aborted", None, False),  # 中止的请求上游可能已部分计费，算用量未知（作者 2026-11-26）
 ])
-def test_usage_complete_only_for_successful_requests_without_usage(stop_reason, usage, complete):
+def test_usage_complete_false_unless_error_request(stop_reason, usage, complete):
     rec = TaskRecord("i", "h", "s")
     add_request(rec, {"type": "model.request.finished", "stopReason": stop_reason, "usage": usage})
     assert rec.requests == 1 and rec.usage_complete is complete

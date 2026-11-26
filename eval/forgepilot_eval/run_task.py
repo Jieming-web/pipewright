@@ -43,11 +43,11 @@ class TaskRecord:
 
 
 def add_request(rec: TaskRecord, ev: dict) -> None:
-    """累加一条 model.request.finished 的用量。出错或中止的请求按契约用量为 null，不算用量未知；
-    成功返回却没有用量才标 usage_complete=False（作者 2026-11-26）。"""
+    """累加一条 model.request.finished 的用量。出错的请求（如 429）按契约用量为 null 且不计费，不算用量未知；
+    其余请求（含中止的，上游可能已部分计费）没有用量就标 usage_complete=False（作者 2026-11-26）。"""
     rec.requests += 1
     if ev.get("usage") is None:
-        if ev.get("stopReason") not in ("error", "aborted"):
+        if ev.get("stopReason") != "error":
             rec.usage_complete = False
     else:
         for k in USAGE_KEYS:
