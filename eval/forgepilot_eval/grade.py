@@ -16,6 +16,7 @@ from pathlib import Path
 
 import docker
 import requests
+import urllib3
 from swebench.harness.constants import APPLY_PATCH_FAIL, APPLY_PATCH_PASS
 from swebench.harness.docker_utils import exec_run_with_timeout
 from swebench.harness.grading import get_eval_report
@@ -25,8 +26,8 @@ from swebench.harness.utils import make_test_spec
 from .sandbox import LABEL, RUN_TIMEOUT_S, DockerError, _docker, _force_remove
 
 PATCH_FILE = "/tmp/patch.diff"
-# docker 或容器本身出错：按 D10 记 infra_error，不算模型失败
-INFRA_ERRORS = (DockerError, docker.errors.DockerException, requests.RequestException)
+# docker 或容器本身出错：按 D10 记 infra_error，不算模型失败；urllib3 的异常来自 SDK 读原始流（守护进程重启、连接重置）
+INFRA_ERRORS = (DockerError, docker.errors.DockerException, requests.RequestException, urllib3.exceptions.HTTPError)
 
 
 @dataclass

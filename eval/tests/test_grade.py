@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 import requests
+import urllib3
 
 from conftest import ARCH
 from forgepilot_eval import grade as grade_mod
@@ -105,6 +106,15 @@ def test_sdk_connection_error_is_infra_error(inst, run, tmp_path, monkeypatch):
     r = grade(inst, "", tmp_path, run)
     assert r.status == "infra_error"
     assert "stream broken" in (tmp_path / "grade.log").read_text(encoding="utf-8")
+
+
+def test_urllib3_stream_error_is_infra_error(inst, run, tmp_path, monkeypatch):
+    def boom(container, cmd, timeout):
+        raise urllib3.exceptions.ProtocolError("connection reset")  # 读原始流时守护进程重启
+
+    fake_exec(monkeypatch, boom)
+    assert grade(inst, "", tmp_path, run).status == "infra_error"
+    # 容器已删由 run fixture 的 teardown 断言
 
 
 def test_container_broken_during_apply_is_infra_error(inst, run, tmp_path, monkeypatch):
