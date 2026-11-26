@@ -5,42 +5,21 @@
 """
 
 import os
-import platform
-import shutil
 import subprocess
 import uuid
 from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[2]
+from conftest import ARCH, REPO, REQUESTS_IMAGE as IMAGE
+
 BUILD = REPO / "scripts" / "build-eval-bundle.sh"
 
 pytestmark = pytest.mark.docker
 
-ARCH = {"x86_64": "linux-x64", "amd64": "linux-x64", "aarch64": "linux-arm64", "arm64": "linux-arm64"}[
-    platform.machine().lower()
-]
-# Task 0 已验证的实例；x86 用 swebench 官方镜像（平台变更 P1），arm64 同一实例在 swebench 命名空间下也有
-IMAGE = {
-    "linux-x64": "swebench/sweb.eval.x86_64.psf_1776_requests-2317:latest",
-    "linux-arm64": "swebench/sweb.eval.arm64.psf_1776_requests-2317:latest",
-}[ARCH]
-
 
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-
-@pytest.fixture(scope="module")
-def bundle() -> Path:
-    if shutil.which("docker") is None or run(["docker", "info"]).returncode != 0:
-        pytest.skip("Docker 不可用")
-    r = run(["bash", str(BUILD), ARCH], cwd=REPO, timeout=1800)
-    assert r.returncode == 0, f"构建运行包失败：\n{r.stdout}\n{r.stderr}"
-    out = REPO / "eval" / ".cache" / f"bundle-{ARCH}"
-    assert out.is_dir()
-    return out
 
 
 @pytest.fixture(scope="module")
