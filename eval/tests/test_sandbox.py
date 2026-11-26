@@ -66,7 +66,8 @@ def fake_upstream(docker, run_name):
 
 @pytest.fixture
 def fake_docker(tmp_path, monkeypatch):
-    """PATH 最前面放一个假 docker：记录每次调用的参数；hang(子命令…) 让这些子命令卡住。
+    """PATH 最前面放一个假 docker：记录每次调用的参数；hang(子命令…) 让这些子命令卡住，
+    环境变量 FAKE_DOCKER_FAIL 里列出的子命令以 1 退出；run/ps/network 在 stdout 打印 fake-id。
     用 exec sleep，超时时被杀的就是卡住的进程本身，不留下占着管道的孙进程。超时常量调成 1 秒。"""
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
@@ -74,11 +75,12 @@ def fake_docker(tmp_path, monkeypatch):
     (bin_dir / "docker").write_text(
         '#!/bin/bash\necho "$*" >> "$FAKE_DOCKER_LOG"\n'
         'case " $FAKE_DOCKER_HANG " in *" $1 "*) exec sleep 30;; esac\n'
-        '[ "$1" = run ] && echo fake-id\nexit 0\n')
+        'case " $FAKE_DOCKER_FAIL " in *" $1 "*) exit 1;; esac\n'
+        'case "$1" in run|ps|network) echo fake-id;; esac\nexit 0\n')
     (bin_dir / "docker").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_DOCKER_LOG", str(log))
-    for k in ("RUN_TIMEOUT_S", "RM_TIMEOUT_S", "PROXY_READY_S"):
+    for k in ("RUN_TIMEOUT_S", "RM_TIMEOUT_S", "PROXY_READY_S", "CLEANUP_RM_TIMEOUT_S"):
         monkeypatch.setattr(sandbox, k, 1, raising=False)
 
     def hang(*subcmds: str) -> None:
@@ -245,6 +247,22 @@ def test_proxy_ready_wait_bounded(fake_docker):
         start_proxy("t8-fake", {"fake": {"base": "http://x/v1", "keyEnv": "K", "model": "m"}}, {"K": "v"})
     assert time.monotonic() - t < 10
     assert "rm -f fp-proxy-t8-fake" in calls()
+
+
+@pytest.mark.parametrize("mode", ["hang", "fail"])
+def test_cleanup_run_container_rm_failure_still_removes_networks(fake_docker, monkeypatch, mode):
+    """批量删容器超时或失败：仍继续删网络，最后再抛 DockerError（计划 Task 8，作者 2026-11-26）。"""
+    hang, calls = fake_docker
+    if mode == "hang":
+        hang("rm")
+    else:
+        monkeypatch.setenv("FAKE_DOCKER_FAIL", "rm")
+    t = time.monotonic()
+    with pytest.raises(DockerError):
+        cleanup_run("t8-fake")
+    assert time.monotonic() - t < 10
+    assert "rm -f fake-id" in calls()
+    assert "network rm fake-id" in calls()
 
 
 def test_cleanup_run_removes_everything(run_name, fake_upstream, bundle, tmp_path):

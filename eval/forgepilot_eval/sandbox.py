@@ -26,6 +26,7 @@ PROXY_PORT = 8080
 LABEL = "fp-run"
 RUN_TIMEOUT_S = 1800  # docker run 首次使用镜像时含拉取
 RM_TIMEOUT_S = 30
+CLEANUP_RM_TIMEOUT_S = 300  # cleanup_run 一次删整次运行的容器，高负载下可能超过 60 秒
 PROXY_READY_S = 30
 
 
@@ -168,10 +169,16 @@ class Sandbox:
 
 
 def cleanup_run(run: str) -> None:
-    """按标签删除本次评测的所有容器与网络。"""
+    """按标签删除本次评测的所有容器与网络。删容器失败（含超时）时仍继续删网络，最后再抛 DockerError。"""
+    error = None
     ids = _docker("ps", "-aq", "--filter", f"label={LABEL}={run}").stdout.split()
     if ids:
-        _docker("rm", "-f", *ids, check=False)
+        try:
+            _docker("rm", "-f", *ids, timeout=CLEANUP_RM_TIMEOUT_S)
+        except DockerError as e:
+            error = e
     nets = _docker("network", "ls", "-q", "--filter", f"label={LABEL}={run}").stdout.split()
     for n in nets:
         _docker("network", "rm", n, check=False)
+    if error:
+        raise error
