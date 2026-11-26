@@ -223,6 +223,7 @@
 - `cleanup_run(run: str) -> None`：按标签删除容器和网络。
 
 - [x] **Step 1–4**（2026-11-25，WSL x86）：11 个用例：internal 网络带标签且复用；github、host.docker.internal、1.1.1.1 都不通；经 `fp-model-proxy:8080` 拿到假服务回复且代理日志记 200；任务容器环境无 key、key 只在代理容器环境里；docker 命令行参数（spy 每次调用）不含 key；`/fp` 只读、`/fp-out` 可写、`entry_cmd` 形状、`image_digest`；`exec` 超时返回 124；`with` 内异常后容器已删；`kill`；模拟崩溃后 `cleanup_run` 按标签删光容器与网络；代理镜像固定 digest。RED：模块不存在。变异 3 项被抓住（去掉 `--internal`、key 改为 `-e K=V`、`__exit__` 不删容器）；第一次「key 进参数」没被抓住（`docker inspect` 看不到 CLI 参数），测试改为 spy argv 后抓住。写法细节：`node:24-slim` 的 digest 由 Task 8 固定（Task 0 未记录）；假服务辅助容器只接默认 bridge，代理按其 bridge IP 转发（默认 bridge 无容器名解析）；共用 fixture 移到 `eval/tests/conftest.py`。全量：`pytest eval/tests` 98 passed，`pnpm test` 两次 540/540（此前一次在 docker 测试刚结束时出现 22 个失败，重跑 3 次未复现，记为负载下的偶发，未定位）。未做：ponytail-review。
+  - 更正（2026-11-26，返修第 1 轮 bad2712）：代理改接 `fp-egress-<run>`、不接默认网络，假上游改在 egress 网络上按容器名访问、不再依赖宿主机 node_modules；新增「默认网络上的容器连不到代理」用例。上面关于假服务「只接默认 bridge、按 IP 转发」的描述已过时。
 - 原步骤：**Step 1：写失败测试**（`docker`）：容器里 `curl -sS --max-time 5 https://github.com` 失败；`curl --max-time 5 http://host.docker.internal` 失败；`http://fp-model-proxy:8080/fake/chat/completions` 能拿到假模型服务的回复（假服务以 `--host 0.0.0.0` 跑在一个也接入默认网络的辅助容器里，因为 internal 网络访问不到宿主机）；任务容器的环境变量里没有 `DASHSCOPE_API_KEY`；`with Sandbox(...)` 内抛出异常后容器已删除；`cleanup_run` 之后按标签查不到任何容器和网络。
 - [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 评测容器沙箱与网络`。
 
