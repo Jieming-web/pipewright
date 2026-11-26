@@ -257,13 +257,17 @@
 
 **Files:** Create `eval/forgepilot_eval/grade.py`、`eval/tests/test_grade.py`。
 
-**Interfaces:** `grade(inst: dict, patch: str, out_dir: Path, timeout_s: int = 1800) -> str`，返回 `resolved` / `unresolved` / `patch_apply_failed`。
+**Interfaces:** `grade(inst: dict, patch: str, out_dir: Path, run: str, timeout_s: int = 1800) -> GradeResult`；`GradeResult(status: str, image: str, image_digest: str, arch: str)`，`status` 为 `resolved` / `unresolved` / `patch_apply_failed` / `infra_error`。（作者 2026-11-26，T2-10 审查后）原接口为 `grade(inst, patch, out_dir, timeout_s) -> str`，三种结果：
+  - `run` 必填，评分容器打 `fp-run=<run>` 标签，`cleanup_run(run)` 能清到；
+  - swebench 报告标出 infra_failure，或 docker/容器本身出错（含打补丁阶段容器坏掉）时返回 `infra_error`，按 D10 重试与排除；这与 swebench 官方把它留在分母里的算法不同，报告注明；
+  - 结果记录评分用的镜像名、digest 与架构；
+  - 与 swebench 5.0.2 的有意差异：评分容器不加 `SYS_ADMIN`；不还原 `image_assets`，实例的 `image_assets` 不为空时直接报错，不静默跳过；按架构换镜像由调用方负责（Task 11、12）。
 - 新建容器：同一镜像、默认网络、不挂运行包，带 `fp-run` 标签。
 - 打补丁沿用 swebench 的 `GIT_APPLY_CMDS` 回退链，全部失败返回 `patch_apply_failed`。
 - 用 swebench 的带超时执行跑 `make_test_spec(inst).eval_script`，再用 `get_eval_report` 判定；超时记为 `unresolved`，并在日志中注明。
 - 日志写入 `grade.log`；无论结果如何，容器都删除。
 
-- [ ] **Step 1：写失败测试**（标记 `docker`、`swebench`，用 Task 0 拉到的一个实例）：金标准补丁得到 `resolved`；空补丁得到 `unresolved`；乱码补丁得到 `patch_apply_failed`；`timeout_s=1` 得到 `unresolved` 且日志里有超时说明。
+- [ ] **Step 1：写失败测试**（标记 `docker`、`swebench`，用 Task 0 拉到的一个实例）：金标准补丁得到 `resolved`；空补丁得到 `unresolved`；乱码补丁得到 `patch_apply_failed`；`timeout_s=1` 得到 `unresolved` 且日志里有超时说明；（返修追加）评分容器带 `fp-run=<run>`；`image_assets` 不为空时报错；容器坏掉或 docker 出错时得到 `infra_error`；返回值含镜像名、digest、架构。
 - [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): swebench 评分`。
 
 ### Task 11：任务集与金标准预检（验收 1，作者补 8）
@@ -272,7 +276,7 @@
 
 **Interfaces:**
 - `stratified_sample(rows: list[dict], n: int, seed: int) -> list[str]`：按 `repo` 分层，每个仓库至少 1 个；其余名额按仓库条数比例分配，余数按种子随机分；仓库内按种子随机抽；结果按 `instance_id` 排序。`n` 大于可选条数时抛错。
-- `precheck(inst, bundle) -> PrecheckResult(ok: bool, reasons: list[str], probe_blobs: list[str])`：三项检查，分别是金标准补丁 → `resolved`、空补丁 → `unresolved`、在该镜像里挂载运行包后 `/fp/node/bin/node --version` 成功；同时调用 `gold_probe_blobs` 记下探针。
+- `precheck(inst, bundle) -> PrecheckResult(ok: bool, reasons: list[str], probe_blobs: list[str])`：三项检查，分别是金标准补丁 → `resolved`、空补丁 → `unresolved`、在该镜像里挂载运行包后 `/fp/node/bin/node --version` 成功；调用 `grade` 时传入按本机架构选好的镜像；金标准评分与正式评分一样不加 `SYS_ADMIN`，定版任务集的每个实例金标准运行 FAIL_TO_PASS 必须全部通过，结果写进实现说明的偏差表，注明对照的是 swebench 5.0.2；因金标准失败被排除的候选逐条列出原因（作者 2026-11-26，T2-10 审查后）；同时调用 `gold_probe_blobs` 记下探针。
 - `build_taskset(name, version, rows, n, seed, bundle, out) -> None`：先抽 `n × 1.5` 个候选，逐个预检，再用同一种子从通过预检的候选里分层抽 `n` 个。写出的任务集文件包含：`{name, version, dataset, revision, seed, created, selection, precheck: {passed, excluded: [{id, reasons}]}, instance_ids, probe_blobs: {<instance_id>: [blob…]}}`。`taskset_sha256(path) -> str` 对文件内容做 sha256，记录与续跑核对都用它。任务集一旦提交就不再修改，有变更就发新版本。
 
 - [ ] **Step 1：写失败测试**：用 3 个仓库、条数 10/5/1 的假数据：`n=8` 时覆盖全部 3 个仓库；同一种子结果相同，不同种子结果不同；`n` 过大时抛错。`build_taskset` 中预检用假函数，让 2 个候选不通过：它们出现在 `excluded` 里，不出现在 `instance_ids` 里；每个入选实例在 `probe_blobs` 里都有非空列表。
@@ -297,7 +301,7 @@
   - `patch.diff`；
   - `record.json`。
 - `TaskRecord` 字段：
-  - 标识与版本：`instance_id`、`attempt`、`taskset_version`、`taskset_sha256`、`config_hash`、`bundle_version`、`image_digest`、`effective_base`；
+  - 标识与版本：`instance_id`、`attempt`、`taskset_version`、`taskset_sha256`、`config_hash`、`bundle_version`、`image_digest`、`effective_base`；评分的 `grade_image`、`grade_image_digest`、`grade_arch`（来自 `GradeResult`）（作者 2026-11-26，T2-10 审查后）；
   - 运行快照：`snapshot`，取自 `run.started`，没有就为 null；
   - 结果：`terminal_type`、`failure_type`、`failure_reason`；
   - 统计：`tool_calls`、`wall_s`；`requests`（`model.request.finished` 的条数）；`usage`（累加，含单列的 `reasoning`；任一请求的用量为 null 时，标 `usage_complete: false`）；`rate_limit_errors`（`errorMessage` 匹配 `/429|rate.?limit/i` 的请求数）；`patch_bytes`。
@@ -331,7 +335,7 @@
 - `estimate_cost(cfg, n_runs) -> float`（元）：按 `assumed_tokens_per_run` 计算，并在输出中注明这个假设的来源（`source` 字段）。
 - `actual_cost(records, cfg) -> float`：`input + cacheRead + cacheWrite` 按输入价计，不算缓存折扣，报告里注明；`output` 按输出价计，`reasoning` 已含在其中，不重复计；只要有用量未知的运行，就单独列出条数。
 - `aggregate(records, cfg) -> Summary`：
-  - 先按 D10 处理排除；
+  - 先按 D10 处理排除；任务集不是 `smoke-*` 时，出现 `grade_arch` 不是 amd64 的记录就判为 `invalid` 并以非零退出——正式评测只认 amd64，arm64 只用于冒烟（作者 2026-11-26，T2-10 审查后）；
   - 成功率：每次重复各算一个值，给出均值与样本标准差（ddof=1）；
   - 按题 bootstrap 95% 置信区间：先算每题在各次重复中的平均成功，再对题目重抽样 10000 次，种子固定；
   - 每次运行的 token、轮数、耗时：均值与中位数；
