@@ -30,22 +30,22 @@
 | D6 | 留出集暂缓（tasks.md T2 验收 1），T2 不建、不跑；本计划只在 Task 0 记录核实结果。 |
 | D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；采样参数 `temperature`、`top_p` 在两个模型的配置里显式写出，取各自模型卡里做 SWE 类评测所用的值（模型卡没给 SWE 专用值时，取模型卡对所用模式的推荐值，并注明），出处写在配置注释里，不依赖服务端默认值（作者 2026-11-25）；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
 | D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`&`、`$(`、反引号之后；引号里的分隔符不算命令位置：单引号里全部不算，双引号里 `;`、`|`、`&` 等不算、`$(` 与反引号本身仍算命令位置；只是不把分隔符当命令位置，引号里的内容照样参与匹配，如 `rm -rf "/"`；已知不拦：`sudo`/`env`/`time`/`nohup`/`xargs` 等前缀命令、`bash -c '…'`、子 shell `( … )`、命令组 `{ …; }`、绝对路径（`/usr/bin/curl`）、双引号里 `$(…)` 内部分隔符之后的命令（如 `"$(true; curl x)"`）——任务容器只接 internal 网络，清单只是临时的、T3 起被替换，多一条规则就多一分误拦，作者 2026-11-25）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
-| D9 | 本机用 `/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
+| D9 | 本机用 Python 3.13.18 建 venv：Mac 用 `/usr/local/bin/python3.13`（升级到 3.13.18）；没有 sudo 的 Linux/WSL 可以用 uv 取得 3.13.18 解释器，uv 只用于取得解释器，venv 和 `requirements.txt` 的用法不变；评测报告记录实际的 Python 版本（作者 2026-11-25，P1 修订；原文「`/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv」）；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
 | D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error` 与 `rate_limited`（429）最多重试 2 次，仍失败就从分母中排除并逐条列出；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 |
 
-### 平台变更 P1（2026-11-25 追加，待作者确认）：Task 6 起改在 Windows + WSL2 Ubuntu（x86_64）上开发
+### 平台变更 P1（2026-11-25 追加；协作者提议，作者 2026-11-25 修订后确认）：Task 6 起增加 Windows + WSL2 Ubuntu（x86_64）开发环境，Mac 仍为必需环境
 
-作者决定从 Task 6 起在 Windows 机器的 WSL2 Ubuntu 26.04（x86_64，Docker Desktop 29.9.3 WSL 后端）上继续；Windows 原生下 T1 的 POSIX 依赖（FIFO、进程组、软链接）使 17 个测试失败，不做 Windows 原生兼容。WSL 内已核实：`pnpm test` 531/531、`typecheck`、`build`、`check:pi` 通过，`eval/.venv/bin/pytest eval/tests -q` 81 passed，与 Task 5 记录一致。对后续小任务的影响：
+协作者从 Task 6 起在 Windows 机器的 WSL2 Ubuntu 26.04（x86_64，Docker Desktop 29.9.3 WSL 后端）上继续；Windows 原生下 T1 的 POSIX 依赖（FIFO、进程组、软链接）使 17 个测试失败，不做 Windows 原生兼容。WSL 内已核实：`pnpm test` 531/531、`typecheck`、`build`、`check:pi` 通过，`eval/.venv/bin/pytest eval/tests -q` 81 passed，与 Task 5 记录一致。对后续小任务的影响：
 
 | 原文 | 改为 |
 |---|---|
-| D9 `/usr/local/bin/python3.13 -m venv`，不装 uv | 本机无 sudo，用 uv 装的独立 CPython 3.13.18（`~/.local/bin/python3.13`）建 venv；uv 只用于取得解释器，venv 与 `requirements.txt` 用法不变 |
-| Task 6 Step 1「Task 0 拉到的那个 arm64 实例镜像」，`bundle-<本机架构>` | 同一实例的 x86_64 官方镜像（Task 0 Step 3 已验证 x86 镜像名可解析），`bundle-linux-x64`；`linux-arm64` 分支仍保留，本机不验证，注明「未执行」 |
-| Task 11 Step 4「从验证过 arm64 镜像的实例里选，在 Mac 上真实预检」 | 从 x86 镜像可用的实例里选，在本机（WSL x86）真实预检 |
-| Task 14「Mac 冒烟」 | 「本机冒烟」（WSL x86）；本机需另配 `.env`（`DASHSCOPE_API_KEY`），作者到 Task 14 前提供 |
+| D9 `/usr/local/bin/python3.13 -m venv`，不装 uv | 见 D9 新文：两边统一 3.13.18；Mac 用 `/usr/local/bin/python3.13`，WSL 无 sudo 时用 uv 取得解释器（如 `~/.local/bin/python3.13`） |
+| Task 6 Step 1「Task 0 拉到的那个 arm64 实例镜像」，`bundle-<本机架构>` | 两个架构都要能构建并通过测试：Mac 用 arm64 实例镜像、`bundle-linux-arm64`；WSL 用同一实例的 x86_64 官方镜像、`bundle-linux-x64`；测试按本机架构选（作者 2026-11-25：Mac 仍为必需环境） |
+| Task 11 Step 4「从验证过 arm64 镜像的实例里选，在 Mac 上真实预检」 | 原文不变（Mac 上真实预检）；WSL x86 上可另从 x86 镜像可用的实例里预检 |
+| Task 14「Mac 冒烟」 | 原文不变（Mac 冒烟，验收 9）；WSL x86 冒烟可选。协作者机器上用作者在百炼控制台单独创建的 key（带额度上限、可随时吊销），不用作者的主 key（作者 2026-11-25） |
 | Task 1 Step 5「macOS 上连跑 5 次」等已完成记录 | 不改，属历史记录 |
 
-本机与正式评测同为 x86_64，验收 9「Mac 上能跑少量冒烟任务」改由本机满足；Mac 不再作为必需环境，此处与 tasks.md T2 验收 9 字面不一致，收尾时在实现说明中注明，是否改 tasks.md 由作者定。
+验收 9「Mac 上能跑少量冒烟任务」不变：Mac 仍是必需环境，WSL2 x86 是第二个开发环境，两边都要能跑全量测试（作者 2026-11-25；原提议「Mac 不再作为必需环境」未采纳）。
 
 **需要作者准备**：x86 服务器到 Task 15 才租，租之前先报价。两个模型都用 `.env` 里的 `DASHSCOPE_API_KEY`，T2 不使用 `MOONSHOT_API_KEY`（ADR 017）。
 
