@@ -424,7 +424,7 @@ MVP 跑通后（T2-14），作者按「出基线最少需要什么」对挪后�
   - `--resume`：有 `done.json` 的被跳过、没有的被删掉重跑；`run.json` 的 `config_hash`、`taskset_sha256`、`VERSION` 或 `repeats` 任一不一致时拒绝；不带 `--resume` 且 `--out` 已存在时仍拒绝；
   - `kimi-k2.6.yaml` 能被 `load_config` 加载，`sampling` 显式写出。
 - [x] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 重复、汇总统计与极简续跑`。 — 2026-11-27（Mac arm64）：2f7ac67、c712a3c（返修 1）、2561fef（返修 2）；偏差经作者确认（实现说明偏差表）。控制会话复跑 `eval/.venv/bin/pytest eval/tests -q -rw` → 209 passed、无警告，`fp-run` 无残留。
-- [x] **Step 5：Kimi 冒烟**（真实模型）：报价经作者同意后，Mac 上用 `kimi-k2.6.yaml` 跑 smoke-v1 1 次；核对调用成功、`proxy.jsonl` 采样参数与配置一致、`usage_unknown_runs` 为 0、check-secrets 干净、无残留；按实测 ×2 校准 Kimi 的 `assumed_tokens_per_run`；提交 `docs(step02): Kimi 冒烟与花费校准`。 — 2026-11-27：作者同意报价 2.95 元；resolved 1/1，实际 1.0566 元，top_p=1 生效；校准为 290000 + 11000（约 2.18 元/次）。详见实现说明「T2-14b Step 5」。
+- [x] **Step 5：Kimi 冒烟**（真实模型）：报价经作者同意后，Mac 上用 `kimi-k2.6.yaml` 跑 smoke-v1 1 次；核对调用成功、`proxy.jsonl` 采样参数与配置一致、`usage_unknown_runs` 为 0、check-secrets 干净、无残留；按实测 ×2 校准 Kimi 的 `assumed_tokens_per_run`；提交 `docs(step02): Kimi 冒烟与花费校准`。 — 2026-11-27：作者同意报价 2.95 元；resolved 1/1，实际 1.0566 元，top_p=1 生效；校准为 290000 + 11000（约 2.18 元/次）。详见实现说明「T2-14b Step 5」。 返修 3（作者决定修两个 minor）：b5d8c89，续跑前按标签清理、排除清单带重复序号；复审 clean；`pytest eval/tests` 209 passed。
 
 ### Task 15：远程 x86 与任务集定版（验收 1、9）
 
@@ -432,10 +432,10 @@ MVP 跑通后（T2-14），作者按「出基线最少需要什么」对挪后�
   - 金标准预检的时长：45 个候选（方案 B，作者 2026-11-27；原 60）；
   - 开发集基线共 **120 次运行**（Qwen 30 题 × 2 次 = 60，Kimi 30 题 × 2 次 = 60；方案 B，原 200 次）：token 花费按两组各自校准后的值 × 运行次数计；
   - 预计时长 = 120 × 冒烟实测的单次平均时长（agent + 截断 + 评分），串行、不并发，另加 45 个候选的金标准预检时长；
-  - 服务器规格与价格：只需 CPU，建议 8 vCPU / 32 GB / 300 GB 盘（方案 B：不并发；原 16 vCPU / 64 GB / 500 GB）；按小时价格乘上面的预计时长；
+  - 服务器规格与价格：只需 CPU，建议 8 vCPU / 32 GB / 300 GB 盘（方案 B：不并发；原 16 vCPU / 64 GB / 500 GB）；按小时价格乘上面的预计时长；**2026-11-27 改（作者）**：租阿里云**香港**区域按量付费（内地访问 Docker Hub 与 Hugging Face 不稳定），x86_64，8 vCPU / 16 GB / 300 GB，预检时用 `docker stats` 记内存峰值，超过 12 GB 再升配；用完释放实例与云盘。下单前作者在官网计算器核价。
   - ~~每次运行的 `--budget`~~（方案 B 不做运行中预算，删去）；Docker Hub 匿名拉取限额（约每 IP 每 6 小时 100 次）先试拉，被限时请作者在服务器上登录。
 - [ ] **Step 2：服务器准备**（作者决定）：
-  - 克隆本仓库的 `step-02-eval` 分支（推送到 GitHub 需作者同意；也可以用 `git bundle` 经 scp 传过去）；
+  - 克隆本仓库的 `step-02-eval` 分支（推送到 GitHub 需作者同意；也可以用 `git bundle` 经 scp 传过去）；（2026-11-27：用 `git bundle` 经 scp 传，不推送。）
   - 安装 docker、node 24、pnpm；运行 `scripts/build-eval-bundle.sh linux-x64`；建 Python venv；
   - `.env` 经 scp 传上去，并 `chmod 600`；
   - 所有评测在 tmux 里运行；结果用 `rsync -a` 拉回本机 `eval/runs/`；
@@ -445,8 +445,8 @@ MVP 跑通后（T2-14），作者按「出基线最少需要什么」对挪后�
 ### Task 16：开发集基线与报告（验收 6，作者补 4）
 
 - [ ] **Step 1：Qwen 组**：报价经作者同意后，在服务器上跑 `dev-v1` 30 题 × 2 次（`eval/configs/qwen3.6.yaml`，`--repeats 2`；方案 B，原 40 × 3、设 `--budget`）。
-- [ ] **Step 2：对账**（作者补 2，必须在 Kimi 组之前）：作者在百炼控制台查 Qwen 组期间的实际账单，与 `actual_cost` 对比，差异与原因（缓存折扣、推理 token 计价等）写进报告；差异超过 10% 时先修正计费口径，再给 Kimi 组报价。
-- [ ] **Step 3：Kimi 组**：报价经作者同意后，跑 `dev-v1` 30 题 × 2 次（`eval/configs/kimi-k2.6.yaml`，`--repeats 2`；方案 B），跑完同样对账。
+- [ ] **Step 2：对账**（作者补 2，必须在 Kimi 组之前）：作者在百炼控制台查 Qwen 组期间的实际账单，与 `actual_cost` 对比，差异与原因（缓存折扣、推理 token 计价等）写进报告；差异超过 10% 时先修正计费口径，再给 Kimi 组报价。（2026-11-27 作者：只跑 Qwen，本步改为 Qwen 组跑完后看一次账单，不再是 Kimi 前的关卡。）
+- [ ] **Step 3：Kimi 组**：报价经作者同意后，跑 `dev-v1` 30 题 × 2 次（`eval/configs/kimi-k2.6.yaml`，`--repeats 2`；方案 B），跑完同样对账。（**2026-11-27 作者：推迟，T2 不跑**，见 tasks.md T2 验收 6。）
 - [ ] **Step 4：写报告** `docs/evals/<日期>-T2-baseline.md`（模版 `docs/templates/eval.md`），内容包括：
   - 两组的成功率（均值、样本标准差、bootstrap 区间）、token、轮数、耗时、失败类型（含 `rate_limited`）、排除清单、评测状态（完整 / 无效；方案 B 无「未完成」）、花费与对账结果；
   - 工具调用出错率：只计调用层面的错误，即参数校验失败、未知工具、edit 找不到原文；bash 非零退出和策略拦截各自单列；
