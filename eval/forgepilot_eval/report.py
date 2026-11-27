@@ -91,8 +91,8 @@ def aggregate(reps: list[list[TaskRecord]], cfg: EvalConfig, taskset_name: str, 
                     "stdev": stdev(known) if len(known) > 1 else None},  # 样本标准差（ddof=1）
         "bootstrap_ci95": bootstrap_ci95(reps, cfg),
         "excluded_fraction": frac,
-        "excluded": [{"instance_id": r.instance_id, "failure_type": outcome(r), "failure_reason": r.failure_reason}
-                     for r in excluded],
+        "excluded": [{"instance_id": r.instance_id, "repeat": k, "failure_type": outcome(r), "failure_reason": r.failure_reason}
+                     for k, rep in enumerate(reps, 1) for r in rep if outcome(r) in sc["retry_then_exclude"]],
         "failure_types": dict(Counter(outcome(r) for r in finals)),
         "per_run": {  # 只算进分母的运行
             "tokens": _stats([tokens(r.usage) for r in measured]),
@@ -153,7 +153,8 @@ def render_md(s: dict) -> str:
         "",
         "## 无法测量（从分母排除）",
         "",
-        *([f"- {e['instance_id']}：{e['failure_type']}，{e['failure_reason']}" for e in s["excluded"]] or ["无"]),
+        *([f"- {e['instance_id']}（重复 {e['repeat']}）：{e['failure_type']}，{e['failure_reason']}" for e in s["excluded"]]
+          or ["无"]),
         "",
     ]
     return "\n".join(lines)

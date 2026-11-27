@@ -147,6 +147,8 @@ def run_eval(a: argparse.Namespace) -> int:
 
     rows = load_rows(ts)
     run = out.name
+    if out.exists():  # 只有核对过 run.json 的续跑走到这里：上一段被强杀可能留下同名代理容器，按运行名清掉
+        cleanup_run(run)
     out.mkdir(parents=True, exist_ok=True)
     (out / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     error: BaseException | None = None

@@ -19,7 +19,7 @@ from forgepilot_eval import sandbox
 from forgepilot_eval.config import load_config
 from forgepilot_eval.grade import GradeResult
 from forgepilot_eval.repo_prep import BaseMismatch
-from forgepilot_eval.report import actual_cost, aggregate, bootstrap_ci95, estimate_cost
+from forgepilot_eval.report import actual_cost, aggregate, bootstrap_ci95, estimate_cost, render_md
 from forgepilot_eval.run_task import TaskRecord
 from forgepilot_eval.sandbox import DockerError
 from test_run_task import fake_js, sh  # noqa: F401 — fake_js 是 fixture
@@ -58,8 +58,11 @@ def test_d10_failures_in_denominator_and_excluded_listed():
               rec("d", ft="infra_error", failure_reason="HistoryLeak: x")]
     s = aggregate([finals], cfg, "smoke", finals)
     assert s["measured"] == 3 and s["resolved"] == 1
+    assert "d（重复 1）：infra_error" in render_md({**s, "taskset": {"name": "smoke", "version": 1, "sha256": "x"},
+                                               "model": "m", "config_hash": "h", "platform": "p",
+                                               "estimate": {"yuan": 0, "source": "s"}})
     assert s["success_rate"] == pytest.approx(1 / 3)
-    assert s["excluded"] == [{"instance_id": "d", "failure_type": "infra_error", "failure_reason": "HistoryLeak: x"}]
+    assert s["excluded"] == [{"instance_id": "d", "repeat": 1, "failure_type": "infra_error", "failure_reason": "HistoryLeak: x"}]
     assert s["failure_types"] == {"resolved": 1, "patch_apply_failed": 1, "empty_patch": 1, "infra_error": 1}
     assert s["status"] == "invalid"  # 1/4 超过 5%
 
@@ -129,6 +132,7 @@ def test_bootstrap_skips_task_never_measurable():
     reps = [[rec("a", grade="resolved"), rec("b", ft="infra_error")] for _ in range(2)]
     s = aggregate(reps, cfg, "smoke", reps[0] + reps[1])
     assert s["bootstrap_ci95"] == [1.0, 1.0] and s["excluded_fraction"] == 0.5
+    assert [(e["instance_id"], e["repeat"]) for e in s["excluded"]] == [("b", 1), ("b", 2)]  # 排除清单能定位到重复
     assert aggregate([[rec("b", ft="infra_error")]], cfg, "smoke", [])["bootstrap_ci95"] is None
 
 
@@ -148,17 +152,22 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda p: dataclasses.replace(load_config(p), bundle=bundle))
     envf = tmp_path / ".env"
     envf.write_text(f"OTHER=1\nDASHSCOPE_API_KEY={KEY}\n")
-    calls = {"run": [], "grade": [], "proxy": [], "cleanup": [], "sleep": []}
+    calls = {"run": [], "grade": [], "proxy": [], "cleanup": [], "sleep": [], "seq": []}  # seq：代理与清理的先后
     class FakeProxy:
         def logs(self):
             return [{"route": "qwen", "fields": ["model"], "sampling": {"temperature": 1.0, "top_p": 0.95}, "status": 200}]
 
     def start_proxy(run, routes, e):
         calls["proxy"].append((run, routes, e))
+        calls["seq"].append(("proxy", run))
         return FakeProxy()
 
+    def cleanup_run(run):
+        calls["cleanup"].append(run)
+        calls["seq"].append(("cleanup", run))
+
     monkeypatch.setattr(cli, "start_proxy", start_proxy)
-    monkeypatch.setattr(cli, "cleanup_run", calls["cleanup"].append)
+    monkeypatch.setattr(cli, "cleanup_run", cleanup_run)
     monkeypatch.setattr(cli.time, "sleep", calls["sleep"].append)
     monkeypatch.setattr(cli, "load_rows", lambda ts: {i: {"instance_id": i, "row": True} for i in ts["instance_ids"]})
 
@@ -339,9 +348,12 @@ def test_resume_skips_done_and_reruns_unfinished(env, capsys):
     (unfinished / "done.json").unlink()
     (unfinished / "stray.txt").write_text("half-written")
     capsys.readouterr()
-    del calls["run"][:]
+    assert calls["seq"] == [("proxy", "t13-run"), ("cleanup", "t13-run")]  # 新跑：开跑前不清理
+    del calls["run"][:], calls["seq"][:]
     code, out, calls = env(scripts, args=["--repeats", "2", "--resume"])
     assert code == 0
+    # 续跑：上一段被强杀可能留下同名代理容器，起代理前按运行名清理一次
+    assert calls["seq"] == [("cleanup", "t13-run"), ("proxy", "t13-run"), ("cleanup", "t13-run")]
     assert [(c[0], c[5]) for c in calls["run"]] == [("b__b-2", out / "rep-2")]
     assert "1 次运行" in capsys.readouterr().out  # 预计花费只算剩下的
     assert not (unfinished / "stray.txt").exists() and (unfinished / "done.json").exists()
