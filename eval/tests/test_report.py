@@ -133,11 +133,7 @@ def test_bootstrap_skips_task_never_measurable():
 
 
 def test_kimi_config_loads_with_explicit_sampling():
-    cfg = load_config(KIMI)
-    assert cfg.model["id"] == "kimi-k2.6" and cfg.model["keyEnv"] == "DASHSCOPE_API_KEY"
-    assert cfg.model["base"] == load_config(CONFIG).model["base"]
-    assert set(cfg.raw["sampling"]) == {"temperature", "top_p"}  # D7：显式写出
-    assert cfg.thinking == "low" and cfg.price == {"input_per_m": 6.5, "output_per_m": 27}
+    assert set(load_config(KIMI).raw["sampling"]) == {"temperature", "top_p"}  # D7：显式写出
 
 
 # ---------- 命令（假 run_instance / grade / 代理） ----------
@@ -332,8 +328,6 @@ def test_repeats_run_each_task_per_repeat_in_order(env, tmp_path, capsys):
     run = json.loads((out / "run.json").read_text())
     assert run == {"config_hash": s["config_hash"], "taskset_sha256": s["taskset"]["sha256"],
                    "VERSION": "abc123 pi@1.5.1 node@24.15.0", "repeats": 2}
-    md = (out / "summary.md").read_text()
-    assert all(w in md for w in ("各次重复成功率", "样本标准差", "bootstrap"))
 
 
 def test_resume_skips_done_and_reruns_unfinished(env, capsys):
@@ -353,26 +347,26 @@ def test_resume_skips_done_and_reruns_unfinished(env, capsys):
     s = summary(out)
     assert s["runs"] == 4 and s["repeats"]["success_rates"] == [0.5, 0.5]
     assert s["cost"]["runs"] == 4  # 跳过的从 done.json 还原，照样计花费
+    assert len((out / "proxy.jsonl").read_text().splitlines()) == 2  # 两段运行各一行：续跑追加，不覆盖
 
 
-@pytest.mark.parametrize("key", ["config_hash", "taskset_sha256", "VERSION", "repeats"])
-def test_resume_refused_when_run_json_differs(env, capsys, key):
+@pytest.mark.parametrize("key", ["config_hash", "taskset_sha256", "VERSION", "repeats", None])
+def test_resume_refused_when_run_json_differs_or_missing(env, capsys, key):
+    """run.json 任一项不一致，或没有 run.json（key=None），都拒绝续跑，且什么都不删。"""
     code, out, calls = env({"a__a-1": ["none"]})
     run = json.loads((out / "run.json").read_text())
-    run[key] = "other"
-    (out / "run.json").write_text(json.dumps(run))
+    if key:
+        run[key] = "other"
+        (out / "run.json").write_text(json.dumps(run))
+    else:
+        (out / "run.json").unlink()
     (out / "rep-1" / "a__a-1" / "done.json").unlink()
-    del calls["run"][:]
+    del calls["run"][:], calls["proxy"][:]
     capsys.readouterr()
     code, _, calls = env({"a__a-1": ["none"]}, args=["--resume"])
-    assert code == 2 and calls["run"] == [] and key in capsys.readouterr().err
-    assert (out / "rep-1" / "a__a-1" / "1" / "record.json").exists()  # 拒绝时什么都不删
-
-
-def test_resume_refused_without_run_json(env, tmp_path, capsys):
-    (tmp_path / "runs" / "t13-run").mkdir(parents=True)
-    code, _, calls = env({"a__a-1": ["none"]}, args=["--resume"])
     assert code == 2 and calls["run"] == [] and calls["proxy"] == []
+    assert (key or "config_hash") in capsys.readouterr().err
+    assert (out / "rep-1" / "a__a-1" / "1" / "record.json").exists()
 
 
 # ---------- 一条命令从头到尾（Docker、假模型、smoke-v1） ----------

@@ -2,7 +2,6 @@
 
 结果（outcome）：待评分的运行取评分结果（resolved / unresolved / patch_apply_failed / infra_error），
 其余取运行阶段的 failure_type。`scoring.retry_then_exclude` 里的结果是「无法测量」：从分母排除并逐条列出。
-重复：每次重复各算一个成功率，给均值与样本标准差；按题 bootstrap 给 95% 区间。
 """
 
 from __future__ import annotations

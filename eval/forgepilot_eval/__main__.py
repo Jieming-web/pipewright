@@ -2,9 +2,7 @@
 
     PYTHONPATH=eval eval/.venv/bin/python -m forgepilot_eval run --config <yaml> --taskset <json> --out eval/runs/<名字> [--repeats N] [--resume] [--yes] [--env-file <.env>]
 
-按「重复 1 全部题 → 重复 2 全部题」串行，每次重复写到 <out>/rep-<k>/，逐个实例「运行 → 评分」，完成后写 done.json；
---resume 核对 <out>/run.json 后跳过有 done.json 的（重复，题），删掉没有的目录重跑（Task 14b）。
-infra_error 与 rate_limited 按 D10 重试（rate_limited 先退避），确定性的基础设施错误不重试，评分阶段的 infra_error 只重新评分；
+逐个实例「运行 → 评分」；infra_error 与 rate_limited 按 D10 重试（rate_limited 先退避），确定性的基础设施错误不重试，评分阶段的 infra_error 只重新评分；
 写 summary.json / summary.md；无论怎样结束都先存代理日志（proxy.jsonl）、用 check-secrets 扫描输出目录，再按标签清理。
 退出码：0 = 评测完整且扫描干净；1 = 无效、扫描发现问题或取消；2 = 开跑前检查不通过。
 """
@@ -188,8 +186,9 @@ def run_eval(a: argparse.Namespace) -> int:
     finally:
         # 收尾顺序：存代理日志 → 扫描（含异常结束）→ 清理；前两步不抛异常
         if proxy is not None:
-            try:  # 每行只有路由、字段名、采样参数与状态码；供 T2-14 核对 temperature/top_p（作者 2026-11-26）
-                (out / "proxy.jsonl").write_text("".join(json.dumps(x) + "\n" for x in proxy.logs()), encoding="utf-8")
+            try:  # 每行只有路由、字段名、采样参数与状态码；供 T2-14 核对 temperature/top_p（作者 2026-11-26）；续跑追加
+                with (out / "proxy.jsonl").open("a", encoding="utf-8") as f:
+                    f.write("".join(json.dumps(x) + "\n" for x in proxy.logs()))
             except Exception as pe:
                 print(f"代理日志没存下：{type(pe).__name__}: {pe}", file=sys.stderr)
         clean = check_secrets(out, key_env, key)
