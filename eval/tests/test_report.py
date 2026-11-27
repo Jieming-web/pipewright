@@ -328,6 +328,8 @@ def test_repeats_run_each_task_per_repeat_in_order(env, tmp_path, capsys):
     run = json.loads((out / "run.json").read_text())
     assert run == {"config_hash": s["config_hash"], "taskset_sha256": s["taskset"]["sha256"],
                    "VERSION": "abc123 pi@1.5.1 node@24.15.0", "repeats": 2}
+    md = (out / "summary.md").read_text()
+    assert all(w in md for w in ("各次重复成功率", "样本标准差", "bootstrap"))
 
 
 def test_resume_skips_done_and_reruns_unfinished(env, capsys):
