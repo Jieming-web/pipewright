@@ -599,3 +599,12 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | 不做：`--workers` 并发；运行中预算累计与取消（`budget_cancelled`、「未运行」「未完成」，D10 改）；`reconcile_proxy` 与 `proxy-fields.json`；启动时清扫遗留资源；GitHub Actions x86 预检；删除 `probe_blobs` | 控制会话 | 串行即可跑完；花费靠报价、按组运行与人工对账控制；采样参数核对已有 `proxy.jsonl`；`finally` 已清理；预检改在服务器上直接跑 | 同上 | 作者 2026-11-27（本会话，「没问题，按这个改计划」） |
 | 新增 Task 14b：`--repeats`、均值与样本标准差、按题 bootstrap、极简续跑（`run.json` 核对 + `done.json` 跳过）、`kimi-k2.6.yaml` 与 Mac 上 Kimi 冒烟 | 控制会话 | 验收 2 需要重复与波动；手动补跑要合并两个输出目录、更易出错，极简续跑约十几行；Kimi 有下线风险，尽早确认可用 | 同上 | 作者 2026-11-27（本会话） |
 | Task 15 服务器规格降为 8 vCPU / 32 GB / 300 GB（原 16 / 64 / 500） | 控制会话 | 不并发；45 个镜像各 3–4 GB | 同上 | 作者 2026-11-27（本会话） |
+
+### 与计划的偏差（续，2026-11-27 追加：T2-14b）
+
+| 偏差 | 提议人 | 理由 | 证据 | 确认人 |
+|---|---|---|---|---|
+| `--resume` 且 `--out` 不存在时按新跑处理；`--out` 存在但没有 `run.json` 时拒绝续跑 | T2-14b 实现者 | 前者无可续之物；后者无法核对配置一致性 | task-14b-report.md；参数化用例 | 作者 2026-11-27（本会话，「偏差都确认」） |
+| Kimi K2.6 采样取 temperature=1.0、top_p=1.0（不是「Model Usage」推荐的 top_p 0.95，也不同于百炼默认） | T2-14b 实现者 | D7：模型卡里 SWE 类评测所用的值优先 | https://huggingface.co/moonshotai/Kimi-K2.6「Evaluation Results」脚注 1："Unless otherwise specified, all Kimi K2.6 experiments were conducted with temperature = 1.0, top-p = 1.0"；脚注 4 SWE-Bench 部分未另给；审查员抓取核对属实 | D7 规则内；作者 2026-11-27 知悉并确认 |
+| 写法细节：`aggregate` 第一个参数改为按重复分组（唯一调用方已同步）；开跑前也检查运行包有 `VERSION`；summary.md「共 X 次运行（题 × 重复）」；Kimi 配置 provider 沿用探测时的 `qwen-api`、route 取名 `kimi` | T2-14b 实现者 | 实现 `run.json` 与重复所需；标签不影响行为 | task-14b-report.md | 作者 2026-11-27（本会话，「偏差都确认」） |
+| 修 b60f0cf 遗留：校准花费后 `test_estimate_cost`、`test_estimate_printed_and_declined` 失败（控制会话当时只跑了 `-k config`），改为当前校准值 | T2-14b 实现者 | 规范正确、测试未跟进（workflow 3.3） | task-14b-report.md | 不需确认（workflow 3.3） |

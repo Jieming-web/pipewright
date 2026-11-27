@@ -417,13 +417,13 @@ MVP 跑通后（T2-14），作者按「出基线最少需要什么」对挪后�
 - `aggregate`：D10 排除照旧，排除比例按全部运行算；每次重复各算一个成功率，给均值与样本标准差（ddof=1，N=1 时为空）；按题 bootstrap 95% 区间：每题取其可测重复的平均成功（一次都不可测的题不参与），对题重抽样 10000 次，种子固定；状态只有 `complete` / `invalid`。`summary.md` 加这三项。
 - `kimi-k2.6.yaml`：`base`、`keyEnv` 同 Qwen（百炼）；思考级别 `low`；`sampling` 取 Kimi K2.6 模型卡的 SWE 评测值，没有就取所用模式的推荐值并注明（D7），出处写在注释里；价格 6.5 / 27（实现说明 0.6）；`assumed_tokens_per_run` 先沿用 Qwen 的校准值并在 `source` 注明，冒烟后同样按实测 ×2 校准；`compat`、`pi` 按 T2-0 第 19 项百炼 `kimi-k2.6` 探测结果填写（实现说明 0.6）。
 
-- [ ] **Step 1：写失败测试**：
+- [x] **Step 1：写失败测试**：
   - 2 次重复成功率 [0.5, 0.25] 时均值 0.375、样本标准差约 0.1768；N=1 时标准差为空；
   - bootstrap：全对时区间 [1, 1]；同一种子结果相同；某题两次都 `infra_error` 被排除时不参与；
   - `--repeats 2` 时假的 `run_one` 被调用 题数×2 次，目录为 `rep-1`、`rep-2`；
   - `--resume`：有 `done.json` 的被跳过、没有的被删掉重跑；`run.json` 的 `config_hash`、`taskset_sha256`、`VERSION` 或 `repeats` 任一不一致时拒绝；不带 `--resume` 且 `--out` 已存在时仍拒绝；
   - `kimi-k2.6.yaml` 能被 `load_config` 加载，`sampling` 显式写出。
-- [ ] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 重复、汇总统计与极简续跑`。
+- [x] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 重复、汇总统计与极简续跑`。 — 2026-11-27（Mac arm64）：2f7ac67、c712a3c（返修 1）、2561fef（返修 2）；偏差经作者确认（实现说明偏差表）。控制会话复跑 `eval/.venv/bin/pytest eval/tests -q -rw` → 209 passed、无警告，`fp-run` 无残留。
 - [ ] **Step 5：Kimi 冒烟**（真实模型）：报价经作者同意后，Mac 上用 `kimi-k2.6.yaml` 跑 smoke-v1 1 次；核对调用成功、`proxy.jsonl` 采样参数与配置一致、`usage_unknown_runs` 为 0、check-secrets 干净、无残留；按实测 ×2 校准 Kimi 的 `assumed_tokens_per_run`；提交 `docs(step02): Kimi 冒烟与花费校准`。
 
 ### Task 15：远程 x86 与任务集定版（验收 1、9）
