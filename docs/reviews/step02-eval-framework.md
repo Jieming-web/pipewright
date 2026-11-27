@@ -633,3 +633,15 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 |---|---|---|---|---|
 | T2 基线只跑 Qwen，Kimi K2.6 组推迟（tasks.md T2 验收 6 同步改） | 控制会话提议推迟，作者决定 | Kimi 约占剩余跑题时间六成、花费七成；面试结论只需要主模型基线 | `scripts/process-cost.py` 测量与本会话估算 | 作者 2026-11-27（本会话，「那就只跑 Qwen」） |
 | 服务器改为阿里云香港按量付费，8 vCPU / 16 GB / 300 GB（原 32 GB）；代码用 git bundle 传 | 控制会话 | 内地访问 Docker Hub 与 Hugging Face 不稳定；串行运行估计内存峰值不超过 6 GB（未实测，预检时记录）；不推送 | Mac 实测 Docker 磁盘只剩 16 GiB，放不下约 52–78 GB 镜像，所以不走 Mac | 作者 2026-11-27（本会话，「租香港的服务器」） |
+
+### T2-15：香港 x86 服务器准备与冒烟（2026-11-27 追加）
+
+服务器：阿里云香港按量 `ecs.e-c1m2.2xlarge`（8 vCPU / 16 GiB / 300 GB ESSD），Ubuntu 24.04.5，1.92 元/时；安全组 22 端口只放行作者出口 IP；root + 密钥登录，密码登录关闭。环境：docker 29.10.1（amd64）、node 24.15.0（sha256 与运行包脚本一致）、pnpm 10.34.9、Python 3.12.3 venv（swebench 5.0.2）。代码用 `git bundle` 传 `46a383c`，未推送；x64 运行包 VERSION `46a383c`。`.env` 只传 `DASHSCOPE_API_KEY` 一行（600）。
+
+| 核对项 | 结果 |
+|---|---|
+| 机器验收 | `pytest eval/tests` 209 passed（含 x86 假模型端到端）；`pnpm test` 538/542，3 个因主机缺 rg（装 ripgrep 后重跑通过），1 个 check-secrets「读不了的文件」因 root 不受 `chmod 0` 限制（环境所致，Mac 通过） |
+| x86 冒烟 `smoke-x86-2026-11-27`（验收 9） | complete；resolved；评分 `grade_arch` amd64，镜像 `swebench/sweb.eval.x86_64.astropy_1776_astropy-12907@sha256:e0829630…`（与 smoke-v1 记录一致）；补丁同 Mac |
+| token / 花费 | 输入 392538、输出 6169；29 次请求、28 次工具调用；实际 0.7732 元（报价 0.86） |
+| 用时（`process-cost.py phases`） | 准备 3.7 秒、agent 79.4 秒、评分 58.9 秒，合计 142 秒 |
+| 采样 / 安全 / 残留 | 29 条均 temperature=1、top_p=0.95；check-secrets ok；`fp-run` 容器 0、网络 0 |

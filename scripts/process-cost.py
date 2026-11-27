@@ -148,7 +148,8 @@ def phases(a) -> None:
             t_graded = reports[-1].stat().st_mtime if reports else t_patch
             agent = json.loads(rec_path.read_text(encoding="utf-8"))["wall_s"]
             p = {
-                "setup_s": t_models - run.stat().st_birthtime,  # 代理启动等（数据集下载在建目录之前，不在内）
+                # 代理启动等（数据集下载在建目录之前，不在内）；Linux 没有创建时间，记 0
+                "setup_s": t_models - getattr(run.stat(), "st_birthtime", t_models),
                 "prep_s": ts(started) - t_models,  # 起容器 + 有效基准 + 截断与自检 + runner 启动
                 "agent_s": agent,
                 "extract_s": t_patch - ts(ev[-1]["at"]),  # 取补丁 + 删容器
