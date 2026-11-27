@@ -424,7 +424,7 @@ MVP 跑通后（T2-14），作者按「出基线最少需要什么」对挪后�
   - `--resume`：有 `done.json` 的被跳过、没有的被删掉重跑；`run.json` 的 `config_hash`、`taskset_sha256`、`VERSION` 或 `repeats` 任一不一致时拒绝；不带 `--resume` 且 `--out` 已存在时仍拒绝；
   - `kimi-k2.6.yaml` 能被 `load_config` 加载，`sampling` 显式写出。
 - [x] **Step 2：运行确认失败**；**Step 3：实现**；**Step 4：提交** `feat(step02): 重复、汇总统计与极简续跑`。 — 2026-11-27（Mac arm64）：2f7ac67、c712a3c（返修 1）、2561fef（返修 2）；偏差经作者确认（实现说明偏差表）。控制会话复跑 `eval/.venv/bin/pytest eval/tests -q -rw` → 209 passed、无警告，`fp-run` 无残留。
-- [ ] **Step 5：Kimi 冒烟**（真实模型）：报价经作者同意后，Mac 上用 `kimi-k2.6.yaml` 跑 smoke-v1 1 次；核对调用成功、`proxy.jsonl` 采样参数与配置一致、`usage_unknown_runs` 为 0、check-secrets 干净、无残留；按实测 ×2 校准 Kimi 的 `assumed_tokens_per_run`；提交 `docs(step02): Kimi 冒烟与花费校准`。
+- [x] **Step 5：Kimi 冒烟**（真实模型）：报价经作者同意后，Mac 上用 `kimi-k2.6.yaml` 跑 smoke-v1 1 次；核对调用成功、`proxy.jsonl` 采样参数与配置一致、`usage_unknown_runs` 为 0、check-secrets 干净、无残留；按实测 ×2 校准 Kimi 的 `assumed_tokens_per_run`；提交 `docs(step02): Kimi 冒烟与花费校准`。 — 2026-11-27：作者同意报价 2.95 元；resolved 1/1，实际 1.0566 元，top_p=1 生效；校准为 290000 + 11000（约 2.18 元/次）。详见实现说明「T2-14b Step 5」。
 
 ### Task 15：远程 x86 与任务集定版（验收 1、9）
 

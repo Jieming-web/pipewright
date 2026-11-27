@@ -44,10 +44,10 @@ prompt_file: ../prompts/swe-v1.txt  # 相对本文件
 
 # 元/百万 token，百炼北京；缓存价未列，按输入价计（实现说明 0.6）
 price: {input_per_m: 6.5, output_per_m: 27}
-assumed_tokens_per_run:  # Kimi 冒烟后按实测 ×2 重新校准
-  input: 400000
-  output: 13000
-  source: 暂用 Qwen 的 smoke-2026-11-26 实测 ×2 值（qwen3.6.yaml），待 Kimi 冒烟校准
+assumed_tokens_per_run:  # input 含 cacheRead（缓存按输入价计，见 price 注释）
+  input: 290000
+  output: 11000
+  source: kimi-smoke-2026-11-27 实测 ×2（单样本：15465 输入 + 126208 cacheRead + 5026 输出，14 轮）
 
 # D10 计分口径，开跑前固定
 scoring:

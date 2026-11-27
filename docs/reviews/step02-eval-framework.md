@@ -608,3 +608,21 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | Kimi K2.6 采样取 temperature=1.0、top_p=1.0（不是「Model Usage」推荐的 top_p 0.95，也不同于百炼默认） | T2-14b 实现者 | D7：模型卡里 SWE 类评测所用的值优先 | https://huggingface.co/moonshotai/Kimi-K2.6「Evaluation Results」脚注 1："Unless otherwise specified, all Kimi K2.6 experiments were conducted with temperature = 1.0, top-p = 1.0"；脚注 4 SWE-Bench 部分未另给；审查员抓取核对属实 | D7 规则内；作者 2026-11-27 知悉并确认 |
 | 写法细节：`aggregate` 第一个参数改为按重复分组（唯一调用方已同步）；开跑前也检查运行包有 `VERSION`；summary.md「共 X 次运行（题 × 重复）」；Kimi 配置 provider 沿用探测时的 `qwen-api`、route 取名 `kimi` | T2-14b 实现者 | 实现 `run.json` 与重复所需；标签不影响行为 | task-14b-report.md | 作者 2026-11-27（本会话，「偏差都确认」） |
 | 修 b60f0cf 遗留：校准花费后 `test_estimate_cost`、`test_estimate_printed_and_declined` 失败（控制会话当时只跑了 `-k config`），改为当前校准值 | T2-14b 实现者 | 规范正确、测试未跟进（workflow 3.3） | task-14b-report.md | 不需确认（workflow 3.3） |
+
+### T2-14b Step 5：Kimi 冒烟（2026-11-27 追加）
+
+作者同意报价 2.95 元后，Mac 上运行 `PYTHONPATH=eval eval/.venv/bin/python -m forgepilot_eval run --config eval/configs/kimi-k2.6.yaml --taskset eval/tasksets/smoke-v1.json --out eval/runs/kimi-smoke-2026-11-27 --env-file <主仓库>/.env`，退出 0。
+
+| 核对项 | 结果 | 证据 |
+|---|---|---|
+| 百炼 `kimi-k2.6` 可用 | 14 次请求全部 200，路由 `kimi` | `proxy.jsonl` |
+| 结果 | complete；resolved 1/1；补丁同样改 `= right`，另加了一个回归测试 | `summary.md`、`patch.diff` |
+| token / 轮数 / 耗时 | 输入 15465 + cacheRead 126208、输出 5026（含 reasoning 3428）；14 次请求、13 次工具调用；agent 107.4 秒 | `record.json` |
+| 实际花费 | 1.0566 元（报价 2.95 元）；手算 (15465+126208)×6.5 + 5026×27，除以 100 万，一致；`usage_unknown_runs` 0 | `summary.json` |
+| 采样参数 | 14 条均为 temperature=1、top_p=1，与配置一致 | `proxy.jsonl` |
+| snapshot | pi 1.5.1；qwen-api / kimi-k2.6 | `record.json` |
+| 新目录结构 | `run.json`、`rep-1/<实例>/done.json` 都在 | 运行目录 |
+| check-secrets / 残留 | ok；`fp-run` 容器 0、网络 0 | 运行输出、docker |
+
+- 校准（追加）：按 Step 5「实测 ×2」，`assumed_tokens_per_run` 写 290000 输入（含 cacheRead）+ 11000 输出，单次报价约 2.18 元。
+- 观察（追加）：Kimi 输入有 89% 是缓存命中。现行口径按输入价计，如果百炼对缓存打折，实际账单会低于 `actual_cost`。Task 16 Step 2 对账时一并核对。
