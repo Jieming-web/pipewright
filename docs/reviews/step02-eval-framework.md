@@ -655,3 +655,16 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | 每道题开跑前检查代理容器仍在运行，不在就中止（可修好后续跑） | 整体审查 I1 | 代理中途挂掉时后续运行会快速失败、留在分母、写 done.json 后续跑也跳过 | final-review.md | 作者 2026-11-27（本会话） |
 | 限流判断正则改为只匹配独立的 429（原 `429\|rate.?limit` 会匹配 264292 之类数字，把真实失败改记 rate_limited 后排除，抬高成功率） | 整体审查 M2 | 规范正确、实现有误（workflow 3.3）；控制会话实测误匹配 | final-review.md | 不需确认（workflow 3.3），作者同意基线前修 |
 | 这批修复的流程：一个实现者一次修完 → 全部机器验收 → 一次限定范围的复审，不单独做 ponytail-review | 控制会话 | 试用精简流程 | 本会话 | 作者 2026-11-27（本会话） |
+
+### dev-v1 定版（2026-11-27 追加，T2-15 Step 3，验收 1）
+
+在香港 x86 服务器上执行 `build_taskset("dev", 1, <Verified 500 行>, 30, 20261125, bundle-linux-x64, eval/tasksets/dev-v1.json)`（代码 `46a383c`）。第一次因 Docker Hub 匿名拉取限流（429），17 个候选无法测量、只有 27 个通过而中止；作者在服务器上 `docker login`（个人只读 token，作者亲手输入）后同种子重跑，用时 2989 秒。
+
+| 项 | 结果 |
+|---|---|
+| 开发集规模 | **30 题**（验收 1 的 30–50 之内），候选 45 |
+| 预检 | 44 通过；排除 `psf__requests-1921`（金标准补丁打上后仍 unresolved） |
+| 仓库分布 | django 8；astropy、xarray、pytest、sympy 各 3；matplotlib、seaborn、scikit-learn、sphinx 各 2；flask、pylint 各 1（共 11 个仓库） |
+| 镜像 | 30 题都记录 x86 `name@digest` |
+| 文件 sha256 | `e9c3137d9918687ebc6553b9efbf576ed19198f9ea2393443c959b040c63e002` |
+| 截断检查（整体审查 I3） | 30 个镜像各跑一遍 `resolve_effective_base` + `truncate_history`（含自检与金标准探针），全部通过，每题 1–7 秒 |
