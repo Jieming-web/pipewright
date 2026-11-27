@@ -54,14 +54,21 @@ def read_env_key(path: Path, name: str) -> str | None:
     return None
 
 
-def run_one(inst: dict, cfg, run: str, out: Path) -> list[TaskRecord]:
-    """一个实例的全部尝试（最后一条是最终结果）。run_instance 交出 infra_error 有两种方式：返回带 infra_error 的
+def require_proxy(proxy) -> None:
+    """代理挂了，之后的运行都会很快失败：中止，不写这道题的 done.json，留给续跑（作者 2026-11-27）。"""
+    if not proxy.running():
+        raise DockerError(f"模型代理容器 {proxy.name} 不在运行，已中止；修好后用 --resume 续跑")
+
+
+def run_one(inst: dict, cfg, run: str, out: Path, proxy) -> list[TaskRecord]:
+    """一个实例的全部尝试（最后一条是最终结果）；每次尝试前都查代理仍在运行。run_instance 交出 infra_error 有两种方式：返回带 infra_error 的
     record，或写好 record.json 后抛异常——两种都接住；只有 run_instance 写 record 之前的异常才直接抛出。
     评分阶段的 infra_error 只用同一份补丁重新评分，不重跑 agent（作者 2026-11-26）。"""
     recs: list[TaskRecord] = []
     for attempt in range(1, cfg.scoring["max_retries"] + 2):
         if recs and outcome(recs[-1]) == "rate_limited":
             time.sleep(RATE_LIMIT_BACKOFF_S)
+        require_proxy(proxy)
         d = out / inst["instance_id"] / str(attempt)
         deterministic = False
         try:
@@ -163,15 +170,14 @@ def run_eval(a: argparse.Namespace) -> int:
                 if (d / "done.json").exists():
                     recs = [TaskRecord(**x) for x in json.loads((d / "done.json").read_text(encoding="utf-8"))]
                 else:
-                    if not proxy.running():  # 代理挂了，之后每道题都会很快失败；不写 done.json，留给续跑
-                        raise DockerError(f"模型代理容器 {proxy.name} 不在运行，已中止；修好后用 --resume 续跑")
                     if d.resolve().parent != rep.resolve():  # 只许删 <out>/rep-<k>/<instance_id>/
                         raise ValueError(f"实例目录不在 {rep} 下：{d}")
                     if d.exists():
                         shutil.rmtree(d)
                     inst = {**rows[iid], "image": ts["images"][iid][plat], "probe_blobs": ts["probe_blobs"][iid],
                             "taskset_sha256": sha}
-                    recs = run_one(inst, cfg, run, rep)
+                    recs = run_one(inst, cfg, run, rep, proxy)
+                    require_proxy(proxy)  # 最后一次尝试期间代理挂了的话，结果不可信，不写 done.json
                     d.mkdir(parents=True, exist_ok=True)
                     (d / "done.json").write_text(json.dumps([asdict(r) for r in recs], indent=2, ensure_ascii=False),
                                                  encoding="utf-8")

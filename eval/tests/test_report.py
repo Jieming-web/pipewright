@@ -332,13 +332,31 @@ def test_secrets_scanned_on_abnormal_end(env, capfd):
 def test_proxy_down_stops_before_next_task(env, tmp_path):
     """每道题开跑前查代理容器：不在运行就中止（非零退出），这道题不写 done.json，留给 --resume（I1）。"""
     with pytest.raises(DockerError, match="--resume"):
-        env({"a__a-1": ["none"], "b__b-2": ["none"]}, alive=[True, False])
+        env({"a__a-1": ["none"], "b__b-2": ["none"]}, alive=[True, True, False])  # a：尝试前、写 done 前；b：尝试前
     out, calls = tmp_path / "runs" / "t13-run", env.calls
-    assert calls["checks"] == 2 and [c[0] for c in calls["run"]] == ["a__a-1"]
+    assert calls["checks"] == 3 and [c[0] for c in calls["run"]] == ["a__a-1"]
     assert (out / "rep-1" / "a__a-1" / "done.json").exists()
     assert not (out / "rep-1" / "b__b-2").exists()
     assert calls["cleanup"] == ["t13-run"] and (out / "proxy.jsonl").exists()  # 照常存日志、清理
     assert not (out / "summary.json").exists()
+
+
+def test_proxy_down_between_attempts_no_done(env, tmp_path):
+    """D10 重试前也查代理：第 1 次尝试后代理挂了 → 不重试、不写 done.json，第 1 次尝试留在盘上，非零退出。"""
+    with pytest.raises(DockerError, match="--resume"):
+        env({"a__a-1": ["infra_error", "none"]}, alive=[True, False])
+    d = tmp_path / "runs" / "t13-run" / "rep-1" / "a__a-1"
+    assert [c[:2] for c in env.calls["run"]] == [("a__a-1", 1)]
+    assert (d / "1" / "record.json").exists() and not (d / "done.json").exists()
+
+
+def test_proxy_down_after_last_attempt_no_done(env, tmp_path):
+    """最后一次尝试（含评分）之后、写 done.json 之前再查一次：代理挂了就不写 done.json。"""
+    with pytest.raises(DockerError, match="--resume"):
+        env({"a__a-1": ["none"]}, alive=[True, False])
+    d = tmp_path / "runs" / "t13-run" / "rep-1" / "a__a-1"
+    assert len(env.calls["run"]) == 1 and len(env.calls["grade"]) == 1
+    assert (d / "1" / "record.json").exists() and not (d / "done.json").exists()
 
 
 # ---------- 重复与极简续跑（T2-14b） ----------
