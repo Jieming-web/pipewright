@@ -18,6 +18,7 @@ import pytest
 from conftest import REPO
 from forgepilot_eval import sandbox
 from forgepilot_eval.config import config_hash, load_config
+from forgepilot_eval.engine_client import RunResult
 from forgepilot_eval.policy import Policy, PolicyConfig
 from forgepilot_eval.repo_prep import BaseMismatch
 from forgepilot_eval import run_task as run_task_mod
@@ -116,6 +117,33 @@ def test_config_hash_follows_prompt_content(tmp_path):
     assert a != b
 
 
+
+# run.failed 时最后一次请求的 errorMessage → failure_type。样例取自 pi 1.5.1 经真实代理的实际输出
+# （下方 docker 用例：假模型返回 5xx、代理 502、端口不通、代理名字解析不了）。
+@pytest.mark.parametrize("message, expected", [
+    ('500: {"message":"upstream boom"}', "infra_error"),
+    ('503: {"message":"upstream boom"}', "infra_error"),
+    ('502: {"message":"upstream unreachable"}', "infra_error"),  # 代理连不上上游
+    ("502 <html>Bad Gateway</html>", "infra_error"),  # 非 JSON 响应体时 openai SDK 的格式
+    ("503 status code (no body)", "infra_error"),
+    ("Connection error.: connect ECONNREFUSED 172.19.0.2:8081", "infra_error"),
+    ("Connection error.: getaddrinfo EAI_AGAIN fp-no-such-proxy", "infra_error"),
+    ("Connection error.", "infra_error"),
+    ('429: {"message":"rate limit"}', "rate_limited"),
+    ("429 Too Many Requests", "rate_limited"),
+    ('400: {"message":"Rate limit exceeded for this key"}', "rate_limited"),
+    ('400: {"message":"invalid request: 264292 tokens"}', "run_failed"),  # M2：数字里的 429 不算
+    ('400: {"message":"context length 5000 exceeds 4096"}', "run_failed"),  # 数字里的 500 不算
+    ('401: {"message":"invalid api key"}', "run_failed"),
+    ("terminated: other side closed (UND_ERR_SOCKET)", "run_failed"),  # 不在作者给的三类里
+    ("Provider finish_reason: network_error", "run_failed"),
+    (None, "run_failed"),
+])
+def test_classify_run_failed_by_last_error(message, expected):
+    res = RunResult({"type": "run.failed", "reason": message or "model error"}, None, False)
+    policy = Policy(PolicyConfig(["bash"], [], 10))
+    assert run_task_mod._classify(res, policy, message)[0] == expected
+
 # ---------- 单任务运行（Docker、假模型） ----------
 
 @pytest.fixture(scope="module")
@@ -210,7 +238,20 @@ def test_settled_run_writes_patch_and_record(stack):
         assert record[k] is None  # 评分由 T2-13 填
     types = [e["type"] for e in events(d)]
     assert types[0] == "run.started" and types[-1] == "run.settled"
-    assert (d / "raw.jsonl").stat().st_size > 0
+    assert (d / "fp-out" / "raw.jsonl").stat().st_size > 0  # runner 写的文件在挂载子目录里
+    assert (d / "fp-out" / "models.json").is_file()
+    assert sorted(p.name for p in d.iterdir()) == ["events.jsonl", "fp-out", "patch.diff", "record.json"]
+
+
+def test_symlink_in_mount_not_followed_by_host_writes(stack, tmp_path):
+    """容器在 /fp-out 放指向挂载外的符号链接：宿主机写 patch.diff、record.json 不跟随它（I2）。"""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("original")
+    rec, d, _ = stack(tool(f"ln -s {victim} /fp-out/patch.diff; ln -s {victim} /fp-out/record.json"))
+    assert rec.failure_type == "empty_patch", rec.failure_reason
+    assert victim.read_text() == "original"
+    assert not (d / "patch.diff").is_symlink() and not (d / "record.json").is_symlink()
+    assert (d / "fp-out" / "patch.diff").is_symlink()  # 链接确实建成了，只是落在挂载里
 
 
 def test_dangerous_command_blocked(stack):
@@ -255,6 +296,44 @@ def test_rate_limited(stack):
     assert len(reqs) > 1  # pi 重试过
     assert events(d)[-1]["type"] == "run.failed"
     assert rec.usage_complete is True  # 出错请求的用量为 null，不算未知
+
+
+def last_error(d: Path) -> str | None:
+    return [e for e in events(d) if e["type"] == "model.request.finished"][-1].get("errorMessage")
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_upstream_5xx_is_infra_error(stack, status):
+    rec, d, reqs = stack([{"kind": "error", "status": status, "body": {"error": {"message": "upstream boom"}}}] * 6)
+    assert events(d)[-1]["type"] == "run.failed"
+    assert rec.failure_type == "infra_error", (rec.failure_type, last_error(d))
+    assert len(reqs) > 1  # pi 重试过
+
+
+def test_proxy_502_upstream_unreachable_is_infra_error(stack, monkeypatch):
+    real = proxy_routes
+    monkeypatch.setitem(globals(), "proxy_routes",
+                        lambda cfg: {k: {**v, "base": "http://fp-no-such-upstream:9/v1"} for k, v in real(cfg).items()})
+    rec, d, reqs = stack(tool("true"))
+    assert reqs == []
+    assert rec.failure_type == "infra_error", (rec.failure_type, last_error(d))
+
+
+@pytest.mark.parametrize("attr,value", [("PROXY_PORT", 8081), ("PROXY_ALIAS", "fp-no-such-proxy")])
+def test_proxy_not_connectable_is_infra_error(stack, monkeypatch, attr, value):
+    """连不上代理：端口不通（连接被拒）、代理容器不在（名字解析不了）。"""
+    monkeypatch.setattr(run_task_mod, attr, value)
+    rec, d, reqs = stack(tool("true"))
+    assert reqs == []
+    assert rec.failure_type == "infra_error", (rec.failure_type, last_error(d))
+
+
+def test_client_error_stays_run_failed(stack):
+    """模型服务以 4xx 拒绝请求（不是服务出错）：仍是 run_failed；错误信息里的 264292 不算 429。"""
+    rec, d, _ = stack([{"kind": "error", "status": 400,
+                        "body": {"error": {"message": "invalid request: 264292 tokens"}}}] * 6)
+    assert events(d)[-1]["type"] == "run.failed"
+    assert rec.failure_type == "run_failed", (rec.failure_type, last_error(d))
 
 
 def test_wrong_bundle_is_infra_error(stack, tmp_path):

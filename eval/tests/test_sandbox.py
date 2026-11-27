@@ -265,6 +265,15 @@ def test_cleanup_run_container_rm_failure_still_removes_networks(fake_docker, mo
     assert "network rm fake-id" in calls()
 
 
+def test_proxy_running_reflects_container_state(run_name, fake_upstream):
+    proxy = start_proxy(run_name, {"fake": {"base": fake_upstream, "keyEnv": "K", "model": "m"}}, {"K": "v"})
+    assert proxy.running() is True
+    sh("docker", "kill", proxy.name, check=True)  # 模拟代理进程被杀
+    assert proxy.running() is False
+    sh("docker", "rm", "-f", proxy.name, check=True)  # 容器已不存在
+    assert proxy.running() is False
+
+
 def test_cleanup_run_removes_everything(run_name, fake_upstream, bundle, tmp_path):
     ensure_network(run_name)
     start_proxy(run_name, {"fake": {"base": fake_upstream, "keyEnv": "K", "model": "m"}}, {"K": "v"})

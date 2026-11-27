@@ -152,8 +152,14 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda p: dataclasses.replace(load_config(p), bundle=bundle))
     envf = tmp_path / ".env"
     envf.write_text(f"OTHER=1\nDASHSCOPE_API_KEY={KEY}\n")
-    calls = {"run": [], "grade": [], "proxy": [], "cleanup": [], "sleep": [], "seq": []}  # seq：代理与清理的先后
+    calls = {"run": [], "grade": [], "proxy": [], "cleanup": [], "sleep": [], "seq": [], "checks": 0, "alive": []}  # seq：代理与清理的先后
     class FakeProxy:
+        name = "fp-proxy-fake"
+
+        def running(self):  # 每道题开跑前查一次；alive 用完后一直在运行
+            calls["checks"] += 1
+            return calls["alive"].pop(0) if calls["alive"] else True
+
         def logs(self):
             return [{"route": "qwen", "fields": ["model"], "sampling": {"temperature": 1.0, "top_p": 0.95}, "status": 200}]
 
@@ -171,7 +177,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.time, "sleep", calls["sleep"].append)
     monkeypatch.setattr(cli, "load_rows", lambda ts: {i: {"instance_id": i, "row": True} for i in ts["instance_ids"]})
 
-    def go(scripts, grades=None, args=(), out_name="t13-run"):
+    def go(scripts, grades=None, args=(), out_name="t13-run", alive=()):
+        calls["alive"][:] = alive
         ids = list(scripts)
         ts = tmp_path / "ts.json"
         ts.write_text(json.dumps({"name": "smoke", "version": 1, "dataset": "d", "revision": "r", "instance_ids": ids,
@@ -212,6 +219,7 @@ def env(tmp_path, monkeypatch):
                          *[a for a in args if a != "--no-yes"]])
         return code, out, calls
 
+    go.calls = calls
     return go
 
 
@@ -319,6 +327,18 @@ def test_secrets_scanned_on_abnormal_end(env, capfd):
     with pytest.raises(ValueError, match="boom"):
         env({"a__a-1": ["leak"], "b__b-2": ["bug"]})
     assert "DASHSCOPE_API_KEY 的值出现在" in capfd.readouterr().err
+
+
+def test_proxy_down_stops_before_next_task(env, tmp_path):
+    """每道题开跑前查代理容器：不在运行就中止（非零退出），这道题不写 done.json，留给 --resume（I1）。"""
+    with pytest.raises(DockerError, match="--resume"):
+        env({"a__a-1": ["none"], "b__b-2": ["none"]}, alive=[True, False])
+    out, calls = tmp_path / "runs" / "t13-run", env.calls
+    assert calls["checks"] == 2 and [c[0] for c in calls["run"]] == ["a__a-1"]
+    assert (out / "rep-1" / "a__a-1" / "done.json").exists()
+    assert not (out / "rep-1" / "b__b-2").exists()
+    assert calls["cleanup"] == ["t13-run"] and (out / "proxy.jsonl").exists()  # 照常存日志、清理
+    assert not (out / "summary.json").exists()
 
 
 # ---------- 重复与极简续跑（T2-14b） ----------

@@ -76,6 +76,10 @@ def _force_remove(name: str) -> None:
 class ProxyHandle:
     name: str
 
+    def running(self) -> bool:
+        """代理容器是否仍在运行（容器不存在也算不在）。"""
+        return _docker("inspect", "-f", "{{.State.Running}}", self.name, check=False).stdout.strip() == "true"
+
     def logs(self) -> list[dict]:
         """代理 stdout 的请求日志行（每行一个 JSON 对象）。"""
         out = _docker("logs", self.name).stdout

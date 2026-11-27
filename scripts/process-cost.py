@@ -143,7 +143,7 @@ def phases(a) -> None:
             ev = [json.loads(x) for x in (d / "events.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
             started = next(e["at"] for e in ev if e["type"] == "run.started")
             reports = sorted(d.glob("grade/*/report.json"))
-            t_models = (d / "models.json").stat().st_mtime  # 写完 models.json 后才起容器
+            t_models = (d / "fp-out" / "models.json").stat().st_mtime  # 写完 models.json 后才起容器
             t_patch = (d / "patch.diff").stat().st_mtime  # 取补丁并删容器之后写
             t_graded = reports[-1].stat().st_mtime if reports else t_patch
             agent = json.loads(rec_path.read_text(encoding="utf-8"))["wall_s"]

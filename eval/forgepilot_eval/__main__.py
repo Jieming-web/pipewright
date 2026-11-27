@@ -25,7 +25,7 @@ from .grade import grade
 from .repo_prep import BaseMismatch, DirtyWorktree, HistoryLeak
 from .report import aggregate, estimate_cost, outcome, render_md
 from .run_task import TaskRecord, proxy_routes, run_instance
-from .sandbox import cleanup_run, start_proxy
+from .sandbox import DockerError, cleanup_run, start_proxy
 from .taskset import local_platform, taskset_sha256
 
 REPO = Path(__file__).resolve().parents[2]
@@ -163,6 +163,8 @@ def run_eval(a: argparse.Namespace) -> int:
                 if (d / "done.json").exists():
                     recs = [TaskRecord(**x) for x in json.loads((d / "done.json").read_text(encoding="utf-8"))]
                 else:
+                    if not proxy.running():  # 代理挂了，之后每道题都会很快失败；不写 done.json，留给续跑
+                        raise DockerError(f"模型代理容器 {proxy.name} 不在运行，已中止；修好后用 --resume 续跑")
                     if d.resolve().parent != rep.resolve():  # 只许删 <out>/rep-<k>/<instance_id>/
                         raise ValueError(f"实例目录不在 {rep} 下：{d}")
                     if d.exists():

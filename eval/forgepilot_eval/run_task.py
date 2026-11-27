@@ -19,7 +19,10 @@ from .repo_prep import extract_patch, resolve_effective_base, truncate_history
 from .sandbox import PROXY_ALIAS, PROXY_PORT, Sandbox
 
 REPO_DIR = "/testbed"
-RATE_LIMIT = re.compile(r"429|rate.?limit", re.I)
+RATE_LIMIT = re.compile(r"\b429\b|rate.?limit", re.I)  # 独立的 429，不匹配 264292 这类数字
+# 模型服务出错（上游 5xx、代理 502、连不上代理）：pi 1.5.1 的 errorMessage 以「5xx: 」「5xx 」开头，或以 openai SDK 的
+# "Connection error." 开头（作者 2026-11-27 定为 infra_error；样例见 test_classify_run_failed_by_last_error）
+MODEL_SERVICE_ERROR = re.compile(r"(?:5\d\d\b|Connection error\.)")
 USAGE_KEYS = ("input", "output", "cacheRead", "cacheWrite", "reasoning")
 
 
@@ -71,11 +74,14 @@ def models_json(cfg: EvalConfig) -> dict:
 
 def run_instance(inst: dict, cfg: EvalConfig, run: str, out_dir: Path, attempt: int) -> TaskRecord:
     """inst 需含 instance_id、base_commit、problem_statement、image（按本机平台选好的 name@digest）、
-    probe_blobs（任务集里的值）、taskset_sha256。写出 out_dir/<instance_id>/<attempt>/ 下的 events.jsonl、
-    raw.jsonl（runner 写）、patch.diff、record.json。任何异常都先写 record.json（infra_error 加原因）再抛出。"""
+    probe_blobs（任务集里的值）、taskset_sha256。写出 out_dir/<instance_id>/<attempt>/ 下的 events.jsonl、patch.diff、
+    record.json。容器只挂其中的 fp-out/（models.json 在起容器前写好，runner 写 raw.jsonl 与 sessions/）；宿主机自己的
+    文件留在挂载外，容器在挂载里放的符号链接碰不到它们。任何异常都先写 record.json（infra_error 加原因）再抛出。"""
     iid = inst["instance_id"]
     d = Path(out_dir) / iid / str(attempt)
     d.mkdir(parents=True)  # 不覆盖已有的运行
+    mount = d / "fp-out"
+    mount.mkdir()
     rec = TaskRecord(iid, config_hash(cfg), inst["taskset_sha256"])
     policy = Policy(PolicyConfig(cfg.tools, cfg.danger_patterns, cfg.max_tool_calls))
     last_error: list[str | None] = [None]  # 最后一次请求的 errorMessage
@@ -91,12 +97,12 @@ def run_instance(inst: dict, cfg: EvalConfig, run: str, out_dir: Path, attempt: 
 
     with open(d / "events.jsonl", "w", encoding="utf-8") as events:
         try:
-            (d / "models.json").write_text(json.dumps(models_json(cfg)), encoding="utf-8")
+            (mount / "models.json").write_text(json.dumps(models_json(cfg)), encoding="utf-8")
             prompt = cfg.prompt_file.read_text(encoding="utf-8").replace("{problem_statement}", inst["problem_statement"])
             start = {"type": "start_task", "requestId": "py-start", "sessionId": f"{iid}-{attempt}", "prompt": prompt,
                      "model": {"provider": cfg.model["provider"], "id": cfg.model["id"]},
                      "contextFiles": [], "interceptMode": "callback"}
-            with Sandbox(run, inst["image"], cfg.bundle, d) as sb:
+            with Sandbox(run, inst["image"], cfg.bundle, mount) as sb:
                 eff = resolve_effective_base(sb, REPO_DIR, inst["base_commit"])
                 truncate_history(sb, REPO_DIR, eff, inst["probe_blobs"])
                 cmd = sb.entry_cmd(["--models", "/fp-out/models.json", "--workdir", REPO_DIR,
@@ -137,6 +143,8 @@ def _classify(res, policy: Policy, last_error: str | None) -> tuple[str, str | N
     if t["type"] == "run.failed":
         if last_error and RATE_LIMIT.search(last_error):
             return "rate_limited", t.get("reason")
+        if last_error and MODEL_SERVICE_ERROR.match(last_error):
+            return "infra_error", t.get("reason")
         return "run_failed", t.get("reason")
     if t["type"] == "run.cancelled":
         return "run_failed", "run cancelled without a cancel request"
