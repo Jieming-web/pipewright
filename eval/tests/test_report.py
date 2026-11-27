@@ -20,7 +20,7 @@ from forgepilot_eval.config import load_config
 from forgepilot_eval.grade import GradeResult
 from forgepilot_eval.repo_prep import BaseMismatch
 from forgepilot_eval.report import actual_cost, aggregate, bootstrap_ci95, estimate_cost, render_md
-from forgepilot_eval.run_task import TaskRecord
+from forgepilot_eval.run_task import ProviderAccessError, TaskRecord
 from forgepilot_eval.sandbox import DockerError
 from test_run_task import fake_js, sh  # noqa: F401 — fake_js 是 fixture
 
@@ -196,7 +196,8 @@ def env(tmp_path, monkeypatch):
             d.mkdir(parents=True)
             r = TaskRecord(iid, "h", inst["taskset_sha256"], failure_type="none" if kind == "leak" else kind,
                            usage={"input": 100, "output": 10, "cacheRead": 0, "cacheWrite": 0, "reasoning": 0}, requests=2)
-            err = {"raise": DockerError("docker run failed"), "mismatch": BaseMismatch("base_commit is not HEAD")}.get(kind)
+            err = {"raise": DockerError("docker run failed"), "mismatch": BaseMismatch("base_commit is not HEAD"),
+                   "denied": ProviderAccessError("403: quota exhausted；修好后用 --resume 续跑")}.get(kind)
             if err:  # 同真实 run_instance：先写 infra_error 的 record 再抛
                 r.failure_type, r.failure_reason = "infra_error", f"{type(err).__name__}: {err}"
             (d / "patch.diff").write_text("diff --git a/x b/x\n" if kind == "none" else "")
@@ -357,6 +358,18 @@ def test_proxy_down_after_last_attempt_no_done(env, tmp_path):
     d = tmp_path / "runs" / "t13-run" / "rep-1" / "a__a-1"
     assert len(env.calls["run"]) == 1 and len(env.calls["grade"]) == 1
     assert (d / "1" / "record.json").exists() and not (d / "done.json").exists()
+
+
+def test_provider_access_denied_aborts_whole_eval(env, tmp_path, capfd):
+    """模型服务 401/403：不重试、不写 done.json、不跑后面的题；照常存代理日志、扫描、清理（作者 2026-11-28）。"""
+    with pytest.raises(ProviderAccessError, match="--resume"):
+        env({"a__a-1": ["denied", "none"], "b__b-2": ["none"]})
+    out, calls = tmp_path / "runs" / "t13-run", env.calls
+    assert [c[:2] for c in calls["run"]] == [("a__a-1", 1)] and calls["sleep"] == []
+    d = out / "rep-1" / "a__a-1"
+    assert (d / "1" / "record.json").exists() and not (d / "done.json").exists()
+    assert not (out / "summary.json").exists()
+    assert calls["cleanup"] == ["t13-run"] and (out / "proxy.jsonl").exists()
 
 
 # ---------- 重复与极简续跑（T2-14b） ----------

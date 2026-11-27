@@ -23,7 +23,12 @@ RATE_LIMIT = re.compile(r"\b429\b|rate.?limit", re.I)  # 独立的 429，不匹�
 # 模型服务出错（上游 5xx、代理 502、连不上代理）：pi 1.5.1 的 errorMessage 以「5xx: 」「5xx 」开头，或以 openai SDK 的
 # "Connection error." 开头（作者 2026-11-27 定为 infra_error；样例见 test_classify_run_failed_by_last_error）
 MODEL_SERVICE_ERROR = re.compile(r"(?:5\d\d\b|Connection error\.)")
+ACCESS_DENIED = re.compile(r"40[13]\b")  # 同一格式「<状态码>: <响应体>」，只看开头（作者 2026-11-28）
 USAGE_KEYS = ("input", "output", "cacheRead", "cacheWrite", "reasoning")
+
+
+class ProviderAccessError(RuntimeError):
+    """模型服务以 401/403 拒绝（鉴权失败、额度用完、无权限）：账号或配置问题，中止整次评测，不归入任何结果。"""
 
 
 @dataclass
@@ -141,6 +146,8 @@ def _classify(res, policy: Policy, last_error: str | None) -> tuple[str, str | N
         return "infra_error", res.failure
     t = res.terminal
     if t["type"] == "run.failed":
+        if last_error and ACCESS_DENIED.match(last_error):
+            raise ProviderAccessError(f"模型服务拒绝访问，账号或配置有问题，已中止整次评测；修好后用 --resume 续跑：{last_error}")
         if last_error and RATE_LIMIT.search(last_error):
             return "rate_limited", t.get("reason")
         if last_error and MODEL_SERVICE_ERROR.match(last_error):

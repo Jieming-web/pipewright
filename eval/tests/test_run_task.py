@@ -134,7 +134,9 @@ def test_config_hash_follows_prompt_content(tmp_path):
     ('400: {"message":"Rate limit exceeded for this key"}', "rate_limited"),
     ('400: {"message":"invalid request: 264292 tokens"}', "run_failed"),  # M2：数字里的 429 不算
     ('400: {"message":"context length 5000 exceeds 4096"}', "run_failed"),  # 数字里的 500 不算
-    ('401: {"message":"invalid api key"}', "run_failed"),
+    ('404: {"message":"model not found"}', "run_failed"),
+    ('413: {"message":"request entity too large"}', "run_failed"),
+    ('400: {"message":"upstream said 403 forbidden"}', "run_failed"),  # 403 不在开头不算
     ("terminated: other side closed (UND_ERR_SOCKET)", "run_failed"),  # 不在作者给的三类里
     ("Provider finish_reason: network_error", "run_failed"),
     (None, "run_failed"),
@@ -143,6 +145,18 @@ def test_classify_run_failed_by_last_error(message, expected):
     res = RunResult({"type": "run.failed", "reason": message or "model error"}, None, False)
     policy = Policy(PolicyConfig(["bash"], [], 10))
     assert run_task_mod._classify(res, policy, message)[0] == expected
+
+
+@pytest.mark.parametrize("message", [
+    '403: {"message":"Free quota exhausted. Please upgrade.","type":"AllocationQuota.FreeTierOnly","code":"AllocationQuota.FreeTierOnly"}',  # 基线首次开跑时百炼的实际返回（作者 2026-11-28）
+    '401: {"message":"Incorrect API key provided."}',
+    "403 Forbidden",
+])
+def test_classify_provider_access_denied_aborts(message):
+    """模型服务 401/403：账号或配置问题，抛 ProviderAccessError 中止整次评测，不归入任何 failure_type。"""
+    res = RunResult({"type": "run.failed", "reason": message}, None, False)
+    with pytest.raises(run_task_mod.ProviderAccessError, match="--resume"):
+        run_task_mod._classify(res, Policy(PolicyConfig(["bash"], [], 10)), message)
 
 # ---------- 单任务运行（Docker、假模型） ----------
 
@@ -326,6 +340,15 @@ def test_proxy_not_connectable_is_infra_error(stack, monkeypatch, attr, value):
     rec, d, reqs = stack(tool("true"))
     assert reqs == []
     assert rec.failure_type == "infra_error", (rec.failure_type, last_error(d))
+
+
+def test_provider_403_raises_and_keeps_record(stack):
+    body = {"error": {"message": "Free quota exhausted. Please upgrade.", "type": "AllocationQuota.FreeTierOnly"}}
+    err, d, reqs = stack([{"kind": "error", "status": 403, "body": body}] * 3)
+    assert isinstance(err, run_task_mod.ProviderAccessError), (err, last_error(d))
+    assert last_error(d).startswith("403: ") and "FreeTierOnly" in last_error(d)
+    record = json.loads((d / "record.json").read_text())
+    assert record["failure_type"] == "infra_error" and "ProviderAccessError" in record["failure_reason"]
 
 
 def test_client_error_stays_run_failed(stack):

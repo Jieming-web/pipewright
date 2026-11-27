@@ -24,7 +24,7 @@ from .config import config_hash, load_config
 from .grade import grade
 from .repo_prep import BaseMismatch, DirtyWorktree, HistoryLeak
 from .report import aggregate, estimate_cost, outcome, render_md
-from .run_task import TaskRecord, proxy_routes, run_instance
+from .run_task import ProviderAccessError, TaskRecord, proxy_routes, run_instance
 from .sandbox import DockerError, cleanup_run, start_proxy
 from .taskset import local_platform, taskset_sha256
 
@@ -74,7 +74,7 @@ def run_one(inst: dict, cfg, run: str, out: Path, proxy) -> list[TaskRecord]:
         try:
             rec = run_instance(inst, cfg, run, out, attempt)
         except Exception as e:
-            if not (d / "record.json").exists():
+            if isinstance(e, ProviderAccessError) or not (d / "record.json").exists():  # 401/403 不重试，中止整次评测
                 raise
             rec = TaskRecord(**json.loads((d / "record.json").read_text(encoding="utf-8")))
             deterministic = isinstance(e, DETERMINISTIC)
