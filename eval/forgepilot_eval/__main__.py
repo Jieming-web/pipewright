@@ -1,10 +1,11 @@
-"""一条命令跑完任务集（T2 计划 Task 13，MVP 精简版）：
+"""一条命令跑完任务集（T2 计划 Task 13 MVP 精简版、Task 14b）：
 
-    PYTHONPATH=eval eval/.venv/bin/python -m forgepilot_eval run --config <yaml> --taskset <json> --out eval/runs/<名字> [--yes] [--env-file <.env>]
+    PYTHONPATH=eval eval/.venv/bin/python -m forgepilot_eval run --config <yaml> --taskset <json> --out eval/runs/<名字> [--repeats N] [--resume] [--yes] [--env-file <.env>]
 
-按顺序逐个实例「运行 → 评分」；infra_error 与 rate_limited 按 D10 重试（rate_limited 先退避），确定性的基础设施
-错误不重试，评分阶段的 infra_error 只重新评分；写 summary.json / summary.md；无论怎样结束都先存代理日志（proxy.jsonl）、
-用 check-secrets 扫描输出目录，再按标签清理。
+按「重复 1 全部题 → 重复 2 全部题」串行，每次重复写到 <out>/rep-<k>/，逐个实例「运行 → 评分」，完成后写 done.json；
+--resume 核对 <out>/run.json 后跳过有 done.json 的（重复，题），删掉没有的目录重跑（Task 14b）。
+infra_error 与 rate_limited 按 D10 重试（rate_limited 先退避），确定性的基础设施错误不重试，评分阶段的 infra_error 只重新评分；
+写 summary.json / summary.md；无论怎样结束都先存代理日志（proxy.jsonl）、用 check-secrets 扫描输出目录，再按标签清理。
 退出码：0 = 评测完整且扫描干净；1 = 无效、扫描发现问题或取消；2 = 开跑前检查不通过。
 """
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -101,12 +103,15 @@ def check_secrets(out: Path, name: str, value: str) -> bool:
 
 def run_eval(a: argparse.Namespace) -> int:
     out = Path(a.out)
-    if out.exists():
-        print(f"输出目录已存在，拒绝运行：{out}", file=sys.stderr)
+    if out.exists() and not a.resume:
+        print(f"输出目录已存在，拒绝运行：{out}（续跑加 --resume）", file=sys.stderr)
+        return 2
+    if a.repeats < 1:
+        print("--repeats 至少为 1", file=sys.stderr)
         return 2
     cfg = load_config(a.config)
-    if not (cfg.bundle / "bin" / "fp-entry").is_file():
-        print(f"运行包里没有 bin/fp-entry：{cfg.bundle}；先运行 scripts/build-eval-bundle.sh {local_platform()}",
+    if not all((cfg.bundle / f).is_file() for f in ("bin/fp-entry", "VERSION")):
+        print(f"运行包里没有 bin/fp-entry 或 VERSION：{cfg.bundle}；先运行 scripts/build-eval-bundle.sh {local_platform()}",
               file=sys.stderr)
         return 2
     ts = json.loads(Path(a.taskset).read_text(encoding="utf-8"))
@@ -121,34 +126,60 @@ def run_eval(a: argparse.Namespace) -> int:
         print(f"{a.env_file} 里没有 {key_env}", file=sys.stderr)
         return 2
 
+    sha = taskset_sha256(a.taskset)
+    meta = {"config_hash": config_hash(cfg), "taskset_sha256": sha,
+            "VERSION": (cfg.bundle / "VERSION").read_text(encoding="utf-8").strip(), "repeats": a.repeats}
+    if out.exists():  # 只有带 --resume 才走到这里
+        old = json.loads((out / "run.json").read_text(encoding="utf-8")) if (out / "run.json").is_file() else {}
+        diff = [k for k in meta if old.get(k) != meta[k]]
+        if diff:
+            print(f"run.json 与本次不一致，拒绝续跑：{', '.join(diff)}", file=sys.stderr)
+            return 2
+
     n = len(ts["instance_ids"])
+    todo = sum(not (out / f"rep-{k}" / i / "done.json").exists()
+               for k in range(1, a.repeats + 1) for i in ts["instance_ids"])
     assumed = cfg.assumed_tokens_per_run
-    est = estimate_cost(cfg, n)
-    print(f"预计花费：{est:.2f} 元（{n} 次运行 × 每次 {assumed['input']} 输入 + {assumed['output']} 输出 token，"
-          f"重试另计；假设来源：{assumed['source']}）")
+    est = estimate_cost(cfg, todo)
+    print(f"预计花费：{est:.2f} 元（{todo} 次运行（{n} 题 × {a.repeats} 次重复，已完成的不算）× 每次 {assumed['input']} 输入 + "
+          f"{assumed['output']} 输出 token，重试另计；假设来源：{assumed['source']}）")
     if not a.yes and input("继续？[y/N] ").strip().lower() != "y":
         print("已取消")
         return 1
 
     rows = load_rows(ts)
-    sha = taskset_sha256(a.taskset)
     run = out.name
-    out.mkdir(parents=True)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     error: BaseException | None = None
     proxy = None
     try:
         proxy = start_proxy(run, proxy_routes(cfg), {key_env: key})
-        finals, attempts = [], []
-        for iid in ts["instance_ids"]:
-            inst = {**rows[iid], "image": ts["images"][iid][plat], "probe_blobs": ts["probe_blobs"][iid],
-                    "taskset_sha256": sha}
-            recs = run_one(inst, cfg, run, out)
-            attempts += recs
-            finals.append(recs[-1])
+        reps, attempts = [], []
+        for k in range(1, a.repeats + 1):
+            rep, finals = out / f"rep-{k}", []
+            for iid in ts["instance_ids"]:
+                d = rep / iid
+                if (d / "done.json").exists():
+                    recs = [TaskRecord(**x) for x in json.loads((d / "done.json").read_text(encoding="utf-8"))]
+                else:
+                    if d.resolve().parent != rep.resolve():  # 只许删 <out>/rep-<k>/<instance_id>/
+                        raise ValueError(f"实例目录不在 {rep} 下：{d}")
+                    if d.exists():
+                        shutil.rmtree(d)
+                    inst = {**rows[iid], "image": ts["images"][iid][plat], "probe_blobs": ts["probe_blobs"][iid],
+                            "taskset_sha256": sha}
+                    recs = run_one(inst, cfg, run, rep)
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / "done.json").write_text(json.dumps([asdict(r) for r in recs], indent=2, ensure_ascii=False),
+                                                 encoding="utf-8")
+                attempts += recs
+                finals.append(recs[-1])
+            reps.append(finals)
         s = {"taskset": {"name": ts["name"], "version": ts["version"], "sha256": sha},
-             "config_hash": config_hash(cfg), "model": cfg.model["id"], "platform": plat,
+             "config_hash": meta["config_hash"], "model": cfg.model["id"], "platform": plat,
              "estimate": {"yuan": est, "source": assumed["source"]},
-             **aggregate(finals, cfg, ts["name"], attempts)}
+             **aggregate(reps, cfg, ts["name"], attempts)}
         (out / "summary.json").write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")
         (out / "summary.md").write_text(render_md(s), encoding="utf-8")
     except BaseException as e:
@@ -182,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--config", required=True)
     r.add_argument("--taskset", required=True)
     r.add_argument("--out", required=True)
+    r.add_argument("--repeats", type=int, default=1, help="每道题跑几次（每次重复写到 <out>/rep-<k>/）")
+    r.add_argument("--resume", action="store_true", help="续跑已存在的 --out：核对 run.json，跳过有 done.json 的")
     r.add_argument("--yes", action="store_true", help="跳过花费确认")
     r.add_argument("--env-file", default=str(REPO / ".env"), help="API key 只从这里读（默认仓库根的 .env）")
     return run_eval(p.parse_args(argv))
