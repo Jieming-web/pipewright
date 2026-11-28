@@ -676,3 +676,152 @@ T2-0 的网络探测（0.5）用的是不带 digest 的 `node:24-slim`，当时�
 | 偏差 | 提议人 | 理由 | 证据 | 确认人 |
 |---|---|---|---|---|
 | 模型服务 401/403 时立即中止整次评测、非零退出、不写该题 done.json，可修好后续跑（design 3.11 已加一句） | 控制会话 | 账号级错误每题都会失败，原逻辑会把它记成 agent 失败、悄悄产出 0% 基线 | 本节 | 作者 2026-11-28（本会话，「改吧，先修 403 再开跑」） |
+
+### 基线第二次开跑与方案 C（2026-11-28 追加）
+
+02:33 在服务器重新开跑（代码 `9907ab6`，工具上限 100）。首题 `astropy__astropy-13579` 用了 93 次请求、90 次工具调用、714 秒，输入 7034357 + 输出 78061 token，13.50 元，resolved。按首题推算 60 次运行约 300–700 元、10–20 小时，远超报价 51.62 元的 2 倍与服务器时限；控制会话在首题写完 `done.json` 后 SIGTERM 停止（退出 143，清理与 check-secrets 正常）。原因：qwen3.6-35b-a3b 在百炼不支持缓存，pi 每轮重发整段历史，输入随轮数近似平方增长；冒烟题只有 18–29 轮，按它校准的报价严重偏低。首题累计输入：第 20 次 58 万、第 30 次 109 万、第 40 次 170 万、第 50 次 244 万。
+
+| 偏差 | 提议人 | 理由 | 证据 | 确认人 |
+|---|---|---|---|---|
+| 方案 C：工具调用上限 100 → 40（D7；`qwen3.6.yaml`、`kimi-k2.6.yaml`）；`assumed_tokens_per_run` 改为首题前 40 次请求累计（170 万输入 + 3.4 万输出，约 3.44 元/次，作单题上界），前 5 题后按实测重估 | 控制会话 | 把单题成本封顶到约四分之一；30 × 2 结构与验收 2 不变 | 本节 | 作者 2026-11-28（本会话，「那就选 C 吧」） |
+| 上限 100 下跑出的首题结果不并入基线：配置变了，`run.json` 的 config_hash 不同，续跑会被拒；目录改名 `dev-v1-qwen-cap100-aborted` 留作证据，基线用新目录 | 控制会话 | 口径必须一致 | 本节 | 随方案 C（作者 2026-11-28） |
+| 两个测试（`test_estimate_cost`、`test_estimate_printed_and_declined`）写死了正式配置的估算值，配置一改就失败（第二次出现），本次同步期望值 | 控制会话 | 规范正确、测试写法脆弱；提议之后改为用测试自己的配置 | 本节 | 待作者（提议） |
+
+
+## T2 收尾（2026-11-28 追加，收尾方案 C：先做不依赖基线的项）
+
+作者 2026-11-28 决定：先做不依赖基线的收尾项；撤回「工具上限 40」；整体审查剩下的两项推迟。基线跑完后再补验收 2、5、6 的证据、讲解自测，并请作者同意标 `[x]`。
+
+### 偏差（续）
+
+| 偏差 | 提议人 | 理由 | 证据 | 确认人 |
+|---|---|---|---|---|
+| 撤回方案 C（工具上限 40），恢复 100；`assumed_tokens_per_run` 回到 400000 + 13000 | 控制会话 | 方案 C 按 dev-v1 唯一的「1-4 hours」题推算，其余 29 题较短（按难度分布预测 30 × 1 约 11–141 元）；100 次上限已封顶单题约 11–16 元；40 会截断难题 | `scripts/context-replay.py --predict`；本节一致性检查 | 作者 2026-11-28（本会话，「同意撤回」） |
+| 13579 与三次冒烟的轨迹作为固定用例入库 `eval/traces/`（偏离「运行产物不进 git」） | 控制会话 | 让成本诊断与重放能只凭 git 复跑；工作区与服务器都不是持久存储 | `eval/traces/README.md`、各 `MANIFEST.md`（sha256）；check-secrets 干净 | 作者 2026-11-28（本会话，「同意，冒烟也一起收录」） |
+| 整体审查留下的两项（`engine-client.ts:50-51` 丢弃 ws 错误原因、`runner-launcher.ts:56-57` 在 exit 后读 stderr）推迟到 T2 之后 | 整体审查要求合并前修或经作者推迟 | 不影响评测结果 | `final-review.md` | 作者 2026-11-28（本会话，「第 5 步推迟」） |
+| proposal S8 注明 T2 的 Kimi 对照推迟（与 tasks.md 验收 6 一致） | 控制会话（一致性检查） | 上游需求与任务不一致 | 本节一致性检查 | 随作者 2026-11-27「只跑 Qwen」 |
+
+### 验收 1–10 核对（2026-11-28）
+
+| # | 状态 | 证据 |
+|---|---|---|
+| 1 | 满足 | `eval/tasksets/dev-v1.json`（30 题、11 个仓库、版本 1、sha256 e9c3137d…）；规模与预检见本文「dev-v1 定版」；留出集按规定推迟 |
+| 2 | **部分满足** | 一条命令 `python -m forgepilot_eval run …` 输出 summary（成功率均值、样本标准差、bootstrap 区间、token、轮数、耗时、失败类型）与每题完整轨迹；记录含运行快照、config_hash、任务集 sha、运行包 VERSION。**缺**：在 dev-v1 上实跑出的结果 |
+| 3 | 满足 | 「T2-14 补跑」：docker top 看到 agent 命令、宿主机 76 次采样无对应进程；容器内 curl 外网与宿主机失败；每题独立容器与仓库副本 |
+| 4 | 满足 | 配置 `danger_patterns`（D8）；`policy.py` 与测试；评测框架经 callback 做拦截决策 |
+| 5 | **部分满足** | 每次运行先打印预计花费；summary 记 `cost.actual_yuan`；冒烟与首题手算一致。**缺**：基线实际花费与百炼账单对账 |
+| 6 | **未满足** | 基线报告未写：dev-v1 上的 Qwen 基线两次开跑均中止（见「基线首次开跑 403」「基线第二次开跑与方案 C」） |
+| 7 | 满足 | `engine_client.py` 只经 stdio 桥协议；运行包只读挂载到任务容器 `/fp` |
+| 8 | 满足 | 每次运行 `truncate_history` + `verify_truncated`（含金标准 blob 探针）；dev-v1 30 个镜像截断检查全部通过 |
+| 9 | 满足 | `smoke-x86-2026-11-27`（香港 x86，amd64 评分，同一条命令）；Mac 冒烟 3 次 |
+| 10 | 满足 | `eval/configs/qwen3.6.yaml`；ADR 017 |
+
+### 收尾一致性检查（workflow 4.6，2026-11-28）
+
+| 层 | 核对项 | 结果 |
+|---|---|---|
+| 需求 → 任务 | proposal S8「T2 做 Kimi 对照」与 tasks.md 验收 6（Kimi 推迟） | 不一致，已在 S8 注明推迟 |
+| 设计 → 实现 | design 3.11 新增两句（模型服务出错算 infra_error；401/403 中止整次评测） | 一致：`run_task.py` 分类与 `ProviderAccessError`，有测试（9907ab6） |
+| 设计 → 实现 | 镜像按平台固定来源并锁定 digest | 一致：dev-v1 只记 x86 `name@digest` |
+| 设计 → 实际 | 远程运行（`.env` 600、tmux、rsync 拉回） | 一致；代码用 git bundle 而非 clone（未推送，偏差表已记） |
+| 计划 → 实现 | 「运行产物不进 git」 | 例外：`eval/traces/` 固定用例，已记偏差 |
+| 计划 → 实现 | D7 工具上限、`assumed_tokens_per_run` | 一致：配置与测试已还原为 100 与 400000 + 13000 |
+| 任务 → 验证 | 验收 2、5、6 | 待基线；跑 1 次还是 2 次（D5 写 2 次）待作者定 |
+| 契约 | `engine.md`、`agent-events.md` 自 T2-4 后未改 | 一致（基线前修复只动评测框架 Python 代码） |
+
+### 附录：执行账本转存（2026-11-28）
+
+执行账本（`.superpowers/`，不进 git）在收尾后会删除，按 workflow 3.4 把裁决、返修轮次与推迟的 minor 原样转存。整体审查对这些 minor 的分拣见 `final-review.md` 的结论：除已推迟的两项 TS 问题外，其余可保留；其中三项已在后续修复（代理跟随重定向、excluded 缺重复序号、续跑时代理容器重名）。
+
+**裁决（Ruling）**
+
+- Ruling: T2-12 实际依赖 T2-11（任务集 probe_blobs）——按表顺序执行本来就在 11 之后，不改计划文本——若错，只是依赖表少写一项，无执行影响。
+- Ruling: 不删 run3「input+cacheRead+output===totalTokens、reasoning≤output」断言 —— 作者第二轮意见（3）明确要求以 T1 第 3 次录制证明推理 token 已含在 output 内，它检验的是 pi/百炼计数口径而非转换器逻辑，正是其目的；加一行注释说明 —— 若错，代价只是多一条不覆盖转换器的断言。
+- Ruling: Minor 1（「监听前退出」用例桥不存在也通过）按审查准则「测试不断言任何东西」升为 Important 进返修 —— 准则明文 —— 若错只是多改两行断言。
+- Ruling: Minor 2（运行中 stdin EOF → 取消、工具不执行）进返修 —— brief 要求「stdin EOF 后以 runner 退出码退出」的测试，现有覆盖只是 idle 时顺带测到，而这是 Python 侧到期叫停依赖的语义 —— 若错只是多一条测试。
+- Ruling: Minor 3（换行路径 finish 调两次、退出码靠回调先后）进返修 —— 隐式竞态影响退出码正确性 —— 若错只是加一个只执行一次的标志。
+- Ruling: `rm -rf "/"` 必须拦 —— D8（b9983f8）正文已把它列为引号内容照样参与匹配的例子，属实现未达规范 —— 若错只是测试里的规则多允许一对引号。已 resume 实现者改 rm 规则。
+- Ruling: Nice 1（删元测试 every_d8_rule_has_a_hit_and_a_miss）、Nice 4（删重复 returncode 断言）不做 —— 二者直接服务作者的硬要求（双向测试、每条路径检查 returncode）—— 若错只是多几行测试。Nice 2/3/5 不做 —— 收益小、Nice 5 缩短 grace 可能引入时序抖动 —— 若错只是测试慢约 4 秒。Nice 6（shortcut 注释）进返修。
+- Ruling: Minor-1（缺 callId/confirmId 抛 KeyError）、Minor-2（异常路径无测试）、Minor-3（calls==2 时序依赖）随 Important-1 进返修 —— 1 与 brief 的协议错误处理一致、2 是作者「任何路径」要求、3 去掉隐性抖动 —— 若错只是多几行。
+- Ruling: ponytail 建议中 T7 32 MiB 上限保留（信任边界的输入限制）、T8 image_digest 不改 {{.Id}}（续跑核对要跨机器可比）、T9 update-ref 层保留并按 --no-deref 修、ORIG_HEAD/FETCH_HEAD 删除行保留并补测试 —— 均属安全/正确性 —— 若错只是多几行代码。采纳：删 T6 重复 ro 测试、T8 未用 stop()/ready_timeout_s/重复测试/抄写式断言。
+- Ruling: ponytail Nice 2（删 git apply --check --reverse）不做 —— 审查员确认与 swebench 5.0.2 官方一致 —— 若错只是多 4 行。Nice 1、3 采纳。Minor：SDK 客户端关闭、utf-8、异常路径清理测试采纳；CLI/SDK 守护进程不一致、swebench 标记跳过逻辑延后。
+- Ruling: urllib3.exceptions.HTTPError 归 infra_error（不放宽到 OSError）—— 计划已写「docker/容器本身出错归 infra_error」，exec_run_with_timeout 读原始流时守护进程重置抛的就是未包装的 urllib3 异常，属实现漏项（workflow 3.3 可自行修）—— 若错只是多一条异常类型。返修第 2 轮（resume）。
+- Ruling: Task 13 非 amd64 检查放在 D10 排除之后、infra_error 且 arch 为空不参与 —— 与作者规则一致的澄清 —— 若错只是 Task 13 一条用例。计划已追加。
+- Ruling: I1、M2、M3、M5、M6 进返修 —— 规范正确、实现有误或安全加固（workflow 3.3）—— 若错只是多几行。M4 与 ponytail Should 1 一并处理（删死代码与依赖 Epoch 的测试）。M7、M8 由控制会话在实现说明追加。ponytail Should 2、Nice 3、5 采纳，Nice 4 不做。
+- Ruling: M1 进返修（compat/pi 改必填）—— D7「显式写出、不依赖默认」同一原则，防止思考级别静默失效 —— 若错只是配置多两个必填键。ponytail Should 1、2，Nice 3（先实测）、4 采纳；Nice 5 不做。
+- Ruling: 第 2 轮的复审由控制会话直接核对 diff 代替派审查员 —— 改动只有一行条件与注释，与作者决定逐字一致，用例覆盖 aborted 与 error 两种 —— 若错只是少一次独立复审，T2 整体审查（Task 17）仍会覆盖。
+- Ruling: ponytail Should 1（删清理失败特殊处理）不做 —— 与作者 Task 13 第 7 步「原始异常时清理错误只附加不覆盖」冲突 —— 若错只是多 10 行。Nice 4（去中位数）不做 —— 计划原文要求均值与中位数。Nice 6（无本机平台镜像预检）保留 —— 否则跑完 agent 才在评分时出错，白花模型钱。Should 3（3 条重复测试）、Nice 5（RUN_NAME 正则）采纳。
+- Ruling: 异常结束时也扫描输出目录（check-secrets）进返修 —— 安全，Global Constraints「每次真实运行后扫描」—— 若错只是多一次扫描。资源警告用 -rw 定位并消除（测试输出应干净）。PYTHONPATH=eval 只改计划与 T2-14 命令文本。
+- Ruling: ponytail #1（删 rmtree 前的路径防护）不采纳 — 删除操作的安全防护不砍 — 若错只多 2 行。
+- Ruling: ponytail #11 撤回——恢复 summary.md 三项断言，run.json 全量比对也保留 — 两者都是 brief 要求的行为，省 2 行不值得丢覆盖 — 若错只多 2 行测试。
+- Ruling: 代理存活检查扩到每次重试前与写 done.json 前（代理不在就中止、不写 done.json）—— I1 的目的就是防中途挂掉后续跑救不回，brief 只写「开跑前」是我写漏 —— 若错只多几次 docker inspect。
+- Ruling: 流中途断开、请求超时仍记 run_failed —— design 3.11 只列 5xx/502/连接不上 —— 若错，少量运行留在分母、成功率略偏低，报告注明。
+
+**返修轮次**
+
+- T2-0：fix round 1/5（5 addressed, 0 open；commits 16cd8d6..5299cb2）。复审裁定 0.7 表为 20 项、通过 16（实现者对，前审查员误数）。
+- Task 2: fix round 1/5 (2 addressed, 1 open — Unicode 空白仍是字面字符，报告误称已转义；commits 403b595..78e6af3)。控制会话用 python ascii() 核实属实。
+- Task 2: fix round 2/5 (1 addressed, 0 open — Unicode 转义；commits 78e6af3..eafcea9)。复审（haiku）原样跑正则得 True 是其复制时字符范围被展宽，按码点检查为空；控制会话原样跑为 False。
+- Task 3: fix round 1/5 (4 addressed, 0 open — 映射表、StopReasonSchema 单一来源、测试去重；commits 9a0c26e..aefecb1)。控制会话复核 pnpm build + unit 通过。
+- Task 4: fix round 1/5 (6 addressed, 0 open — 137 范围、监听前退出精确断言、运行中 EOF、finish 一次、删无效断言、合并测试；commits eebbc26..4511531)。
+- Task 5: fix round 1/5 (5 addressed, 0 open — EOF 后不退出记 failure、缺 callId/confirmId 按协议错误、decide 异常测试、calls>=2、shortcut 注释；commits c24da09..efd5f33)。控制会话复跑 81 passed、无残留进程、pip freeze 与 requirements 一致。
+- T2-6~9 fix round 1/5（11 addressed, 0 open；commits 2e13ea3..10f7012）。复审（opus）：无新 Critical/Important；新增接口只影响写法；默认时限 600→60 秒为行为改变，需作者确认（cleanup_run 批量删除高负载时可能抛 DockerError 并跳过删网络）；Task 13 第 7 步只在 Ctrl-C/异常时 cleanup_run，正常结束会残留代理容器与网络——计划缺口，需作者确认；计划 Task 8 勾选记录已追加更正。
+- T2-6~9 fix round 2/5（1 addressed, 0 open — cleanup_run 300 秒且删容器失败仍删网络；commits 6ed4bdc..68ffd89）。复审（sonnet）无新 Critical/Important。
+- T2-10 fix round 1/5（6 addressed, 0 open；commits febcecb..8e64bd6）。复审（sonnet）无新 Critical/Important。
+- T2-10 fix round 2/5（1 addressed, 0 open — urllib3 HTTPError 归 infra_error；commits 8e64bd6..f71ff3b）。复审（sonnet）无新问题。
+- T2-11 fix round 1/5（10 addressed, 0 open；commits ea0717b..5414a5e）。复审（opus）无新 Critical/Important；workflow SHA 用 git ls-remote 核对与 tag 一致；_ensure_image 删除不影响行为（docker run 自动拉取、失败按 infra 重试）。
+- T2-12 fix round 1/5（6 addressed, 0 open；commits e98d2c1..a404d76）。复审（sonnet）无新 Critical/Important；建议 aborted 算用量未知（可能部分计费）——待作者；none 状态取补丁失败记 infra_error 合理，偏差表补半句。
+- T2-12 fix round 2/5（1 addressed, 0 open；commits f58f06d..45b985a）。
+- T2-13 fix round 1/5（6 addressed, 0 open；commits 3a3570a..2ef360f）。复审（sonnet）无新问题。运行包已重建（2ef360f，含 fp-env 修复）。控制会话在跑全量 -rw 作证据；T2-14 报价：单次 3.02 元（未校准假设 150 万输入 + 3 万输出），重试最坏约 9.07 元。
+- Task 14b: fix round 1/5 (4 addressed, 1 open — ponytail #11 删掉 summary.md 断言后「summary.md 加这三项」无用例; commits 2f7ac67..c712a3c)
+- Task 14b: fix round 2/5 (1 addressed, 0 open; commits c712a3c..2561fef)，复审 clean。控制会话全量 209 passed（6m38s）无警告，fp-run 无残留。
+- Task 14b: fix round 3/5 (2 addressed, 0 open — 续跑前 cleanup_run、excluded 带 repeat；commits 08c6412..b5d8c89)，复审 clean。
+
+**推迟的 minor**
+
+- Task 0: minor (deferred): 附录 A 另一次模型过滤表达式未附、0.6 缓存措辞偏推断。
+- Task 0: minor (deferred): 附录补注措辞绕口（"没有任何结论读取 responseRaw 之外的内容"）；0.9「reasoning 含在 output 内」略强于 0.6 的证据（T1 录制 totalTokens=input+output 另有支持）。
+- Task 1: minor (deferred): pi-engine.ts:133-134 注释「没打开成功」不准（打开刚成功即被取消时 fd 留到进程退出，行为无误）。
+- Task 1: minor (deferred): tests/helpers/fifo.ts:31-43、t1-real-run.test.ts:681-684 失败路径漏 fd（只影响已失败的测试）。
+- Task 1: minor (deferred): writerOpened 默认 8 s 超时，重负载下冷启动可能偶发超时，可放宽到约 20 s。
+- Task 1: minor (deferred): 契约措辞更正与 fix 提交 4c0ba73 合在一起（只改措辞），实现说明中注明。
+- Task 1: minor (deferred): 「打开成功后、会话创建前收到取消」无专门测试（走 §2.3 既有逻辑）。
+- Task 2: minor (deferred): 每个用例重复 realpathSync+动态 import，可提到 describe 外。
+- Task 2: minor (deferred): 写死 packages/engine-runner/node_modules 路径（失败会红，只是维护注意）。
+- Task 2: minor (deferred): Unicode 空格用例写成字面字符，建议改为   等转义，防编辑器/格式化悄悄替换使用例失效。
+- Task 2: minor (deferred): 测试注释补一句为何对照 resolveToCwd 而不是 resolveReadPath；@、Unicode 空格、file:// 分支没有各自的变异证据。
+- Task 2: minor (deferred): 普通空格 "a b.py" 由 "my file.py" 覆盖；三个 Unicode 用例合并为多字符串，失败时无法单独定位是哪种空白。
+- Task 3: minor (deferred): agent-events.md:60「任何 stopReason」应为五值之一、未知值丢弃。
+- Task 3: minor (deferred): engine.md:77 没有该事件的情况除强杀外还有清理超时后晚到的 aborted。
+- Task 3: minor (deferred): 「清理阶段丢弃其他进度事件」无测试锁住（建议慢流取消测试断言 text.delta 恰 1 条）。
+- Task 3: minor (deferred): pi-engine.test.ts:244-245 断言顺序颠倒（报错信息不直观）。
+- Task 4: minor (deferred): 退出码 2 有歧义（runner 参数错、桥 usage 错、帧含换行都是 2）。
+- Task 4: minor (deferred): 退出时只等 stdout 不等 stderr，macOS 上 stderr 理论可能截断。
+- Task 4: minor (deferred): readline 把裸 \r 当行尾，含裸 CR 的非 JSON 行会被拆帧（合法 JSON 不受影响）。
+- Task 4: minor (deferred): 契约「终止 runner 并以 2 退出」实为断开连接；可补「桥不转发信号，桥退出等同断线」。
+- Task 4: minor (deferred): ws.send 前 readyState 守卫可删（凭记忆，未核实 ws 行为）。
+- Task 4: minor (deferred): 参数解析 indexOf("--runner") 多余。
+- Task 4: minor (deferred): 监听前退出分支用永不 resolve 的 Promise 与 `as never` 绕类型，可让 quit 返回 never。
+- Task 4: minor (deferred): launch 返回的 err 无人使用。
+- Task 4: minor (deferred): 契约段含实现细节（spawnRunner、不带 Origin、非实时流），变更记录重复退出码约定。
+- Task 4: minor (deferred): 137 测试依赖 pgrep（node:24-slim 无 procps 会失败），可在测试注释写明。
+- Task 5: minor (deferred): 桥被 SIGKILL 后 runner 孙进程最多残留约 10 秒（test_engine_client.py:534-543，靠 idle-timeout 退出）。
+- Task 5: minor (deferred): fake-openai-cli --host 0.0.0.0 打印的 baseUrl 容器不可用（Task 8 处理）。
+- Task 6: minor (deferred): 篡改测试只改 node；conda 失败退出 3 无测试；pnpm build 静默；接口清单缺 bin/fp-env；「未执行」只在勾选记录。
+- Task 7: minor (deferred): 上游跨源重定向会被跟随（建议 fetch 加 redirect: "manual"）。
+- Task 8: minor (deferred): 「默认网络连不到代理」测试缺测试内正向对照；就绪等待最后一次调用可能只是报错文字不同。
+- Task 8: minor (deferred): network rm 仍 check=False，容器未删导致网络删不掉时不单独报错（计划未要求）。
+- Task 10: minor (deferred): CLI 与 SDK 可能连到不同 Docker 守护进程；swebench 标记无跳过逻辑。
+- Task 10: minor (deferred): 超时后 client.close() 使读流线程报错（线程内吞掉，无副作用）；out_dir 传 str 会 AttributeError（Task 12 传 Path）。
+- Task 11: minor (deferred): test_taskset.py 多一空行；git 本身出错时抛 RuntimeError 会中止 build_taskset（修复前已存在）。
+- Task 14b: minor (deferred): bootstrap 百分位下标不对称（250/9749），报告说法不符
+- Task 14b: minor (deferred): excluded 条目无 repeat 序号，多次重复时定位不到 rep 目录
+- Task 14b: minor (deferred): done.json 非原子写入
+- Task 14b: minor (deferred): 续跑时 estimate 只算剩余、actual 算全部，并列易误读
+- Task 14b: minor (deferred): 强杀后续跑会因 fp-proxy-<run> 重名起不来（需先按标签清理）
+- Task 14b: minor (deferred): run.json 不覆盖评测框架 Python 代码改动
+- Task 14b: minor (deferred): test_report.py:365-367 key=None（缺 run.json）时断言 stderr 含 "config_hash"，语义不清
+- Task 14b: minor (deferred): 续跑时 cleanup_run 在 try 之外，docker 报错直接抛出
+
+- 更正（追加）：收尾核对（阶段学习总结起草时）发现两处记录疏漏——计划 Task 14 Step 4 已提交（b60f0cf、fcf03d3）但漏勾，已补勾；Task 15 Step 2 要求的 smoke-v1 x86 金标准预检没有单独执行（x86 冒烟只证明命令可用），已在计划中更正，记为遗漏、未补跑。
+- 验证记录（追加）：收尾时机器验收 `pnpm test` 551 passed、typecheck/build 退出 0、check:pi 通过；全量 `pytest eval/tests -q -rw` 首跑 1 failed（`test_run_task.py:202` 起假模型容器的 `docker run` 失败），当时另一组带 Docker 的测试正在同时运行（`fp-run` 标签下 `t12-…` 容器「Up 2 seconds」）；单独重跑 244 passed、无残留。结论：两组 Docker 测试并发争用所致，非代码问题。

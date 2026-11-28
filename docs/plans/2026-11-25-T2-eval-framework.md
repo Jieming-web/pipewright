@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 执行方式遵守 `docs/workflow.md` 和作者指示，不因本行自行启动多 agent 编排。
 
-**Goal:** 一条命令在 Docker 中跑完一个版本化的 SWE-bench 任务集：Python 评测框架经统一引擎接口驱动容器内的 pi runner，在新容器中评分，输出成功率（均值、波动与置信区间）、token、轮数、耗时、失败类型、花费和完整轨迹；产出 Qwen3.6-35B-A3B 与 Kimi K2.6 的开发集基线报告。
+**Goal:** 一条命令在 Docker 中跑完一个版本化的 SWE-bench 任务集：Python 评测框架经统一引擎接口驱动容器内的 pi runner，在新容器中评分，输出成功率（均值、波动与置信区间）、token、轮数、耗时、失败类型、花费和完整轨迹；产出 Qwen3.6-35B-A3B 与 Kimi K2.6 的开发集基线报告。（2026-11-27 起 Kimi K2.6 组推迟，T2 只产出 Qwen 基线，见 tasks.md T2 验收 6。）
 
 **Architecture:** 每个任务、每次重复一个容器，镜像用 SWE-bench 官方实例镜像（Mac 冒烟用 arm64 镜像）。runner、Linux 版 node、rg、fd 和启动脚本打成运行包，只读挂载到容器 `/fp`。评测框架用 `docker exec -i` 运行启动脚本：脚本先激活 testbed 的 conda 环境，再启动 stdio 桥；桥启动 runner，并把 WebSocket 帧与 stdin/stdout 的 JSON 行互转，所以 runner 仍只监听容器内 127.0.0.1。任务容器只接 Docker internal 网络，模型请求经旁路的模型代理转发，API key 只在代理容器里。token 与轮数来自新增的「模型请求结束」协议事件。agent 结束后取出补丁，用 swebench 5.x 在新容器里评分。正式评测在 x86 服务器上克隆本仓库后运行同一条命令。
 
@@ -28,7 +28,7 @@
 | D4 | 用 swebench 5.x 与 `SWE-bench/SWE-bench_Verified` 数据集（自带 `image`、`eval_script` 等字段）。评分在新建的同镜像容器里进行：沿用 swebench 的补丁回退链，打补丁后跑测试，设测试超时。不信任 agent 容器里的任何结果。 |
 | D5 | 开发集 40 个。Qwen3.6-35B-A3B 每题重复 3 次；Kimi K2.6 重复 2 次（作者补 2：它只是对照；n=2 的样本标准差参考价值低，Kimi 的波动以按题 bootstrap 区间为准，报告注明两组重复次数不同）。成功率报告每次重复的均值与样本标准差（ddof=1），再加一个按题 bootstrap 的 95% 置信区间。不做主模型选型（ADR 017）；配对比较与「能分辨的最小差距」暂不实现。 **2026-11-27 改（作者，方案 B，见「MVP 之后的减重」）**：开发集改为 30 个；Qwen3.6-35B-A3B 与 Kimi K2.6 都每题重复 2 次，共 120 次；上文「40 个」「Qwen 每题 3 次」作废，两组重复次数相同，「两组重复次数不同」的说明不再适用。均值、样本标准差与按题 bootstrap 区间照旧。 |
 | D6 | 留出集暂缓（tasks.md T2 验收 1），T2 不建、不跑；本计划只在 Task 0 记录核实结果。 |
-| D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；采样参数 `temperature`、`top_p` 在两个模型的配置里显式写出，取各自模型卡里做 SWE 类评测所用的值（模型卡没给 SWE 专用值时，取模型卡对所用模式的推荐值，并注明），出处写在配置注释里，不依赖服务端默认值（作者 2026-11-25）；单任务 30 分钟墙钟上限、100 次工具调用上限。 |
+| D7 | 提示词只含 `problem_statement`；工具 `read,bash,edit,write,grep,find,ls`（运行包里带 rg 与 fd）；思考级别写在各模型的配置里，Qwen3.6-35B-A3B 与 Kimi K2.6 都为 `low`；采样参数 `temperature`、`top_p` 在两个模型的配置里显式写出，取各自模型卡里做 SWE 类评测所用的值（模型卡没给 SWE 专用值时，取模型卡对所用模式的推荐值，并注明），出处写在配置注释里，不依赖服务端默认值（作者 2026-11-25）；单任务 30 分钟墙钟上限、100 次工具调用上限。 **2026-11-28 改（作者，方案 C）**：工具调用上限 100 → 40（两份配置同改）；原因：模型无缓存、每轮重发整段历史，dev-v1 首题 93 次请求用了 703 万输入 token、13.5 元，100 次上限下 60 次运行推算 300–700 元、10–20 小时。代价：难题更容易以 `tool_budget` 失败，基线成功率偏低；口径固定后配对比较仍有效。 **2026-11-28 撤回（作者，「同意撤回」）**：上限恢复为 100。依据：方案 C 是按 dev-v1 唯一的「1-4 hours」题推算的，其余 29 题较短；100 次上限已把单题花费封顶在约 11–16 元；40 会截断难题、压低基线成功率。 |
 | D8 | 临时危险命令清单只匹配命令位置（行首，或 `;`、`&&`、`||`、`|`、`&`、`$(`、反引号之后；引号里的分隔符不算命令位置：单引号里全部不算，双引号里 `;`、`|`、`&` 等不算、`$(` 与反引号本身仍算命令位置；只是不把分隔符当命令位置，引号里的内容照样参与匹配，如 `rm -rf "/"`；已知不拦：`sudo`/`env`/`time`/`nohup`/`xargs` 等前缀命令、`bash -c '…'`、子 shell `( … )`、命令组 `{ …; }`、绝对路径（`/usr/bin/curl`）、双引号里 `$(…)` 内部分隔符之后的命令（如 `"$(true; curl x)"`）——任务容器只接 internal 网络，清单只是临时的、T3 起被替换，多一条规则就多一分误拦，作者 2026-11-25）：`rm -r…f /`、`git push`、`curl`、`wget`、`nc`、`ssh`、`scp`、`shutdown`、`reboot`、`mkfs`、`dd`、fork 炸弹。命中就拒绝；其余激活的工具放行；未激活的工具拒绝。清单写在评测配置里，T3 起由策略服务替换。 |
 | D9 | 本机用 Python 3.13（补丁版本不限）建 venv：Mac 用 `/usr/local/bin/python3.13`；没有 sudo 的 Linux/WSL 可以用 uv 取得 3.13 解释器，uv 只用于取得解释器，venv 和 `requirements.txt` 的用法不变；评测报告记录实际的 Python 版本（作者 2026-11-25，P1 修订；同日作者改为补丁版本不限——3.13.18 起 python.org 不再提供 macOS 安装包，且补丁版本差异不影响评测结果；原文「`/usr/local/bin/python3.13 -m venv eval/.venv`，不装 uv」）；服务器上用系统自带的 Python（≥3.10 即可）；依赖锁定确切版本，写在 `eval/requirements.txt`。 |
 | D10（作者补 5） | 计分口径写进配置，开跑前固定：`patch_apply_failed`、`empty_patch`、`run_failed`、`timeout`、`tool_budget` 都算失败，留在分母里；`infra_error`（定义见 design 3.11：不是由 agent 或补丁引起的失败，含任何阶段的 Docker/守护进程/容器故障；测试超时不算）与 `rate_limited`（429）最多重试 2 次，仍失败的记为「无法测量」，从分母中排除并逐条列出（T2 基线仍用本条；配对比较按 design 3.11「一格无法测量即不确定」，作者 2026-11-26）；排除的运行超过 5% 时，整次评测判为**无效**，命令以非零退出。预算触发时，被取消的运行记为 `budget_cancelled`，尚未开始的记为「未运行」，两者都从分母中排除并逐条列出，整次评测标为**未完成**（作者补 2）：命令同样以非零退出，但可以提高 `--budget` 后用 `--resume` 续跑；未完成与无效分开报告。 **2026-11-27 改（作者，方案 B）**：不做运行中的预算累计与取消，`budget_cancelled`、「未运行」与「未完成」状态不实现，状态只有 complete / invalid；花费靠开跑前报价、按组运行和 Kimi 组前的人工对账控制。中断后用极简续跑（Task 14b）。 |
@@ -404,7 +404,7 @@ MVP 跑通后（T2-14），作者按「出基线最少需要什么」对挪后�
   - `docker top` 里能看到 agent 的命令，而宿主机上没有对应的进程（验收 3；Docker Desktop 下命令跑在虚拟机里）；
   - `proxy-fields.json` 与配置一致，其中每个请求的 `temperature`、`top_p` 都等于配置里显式写的值（证明确实发出去了，而不是用了服务端默认值）；`check-secrets` 干净。
 - [x] **Step 3：校准**：用这次的每次运行 token（取 p90）更新两个配置文件的 `assumed_tokens_per_run`，`source` 写为 `smoke-<日期> p90`（作者补 4）。 — 2026-11-26：偏差（作者确认）：单样本，取实测 ×2 写 400000 + 13000（约 0.86 元/次），只改 `qwen3.6.yaml`；`pytest eval/tests -k config` 10 passed。
-- [ ] **Step 4：提交** `docs(step02): Mac 冒烟与花费校准`。
+- [x] **Step 4：提交** `docs(step02): Mac 冒烟与花费校准`。 — 2026-11-26：b60f0cf（校准）、fcf03d3（补跑核对）；2026-11-28 补勾（收尾核对时发现漏勾）。
 
 ### Task 14b：重复、汇总统计、极简续跑、Kimi 配置与冒烟（验收 2、5、6；作者 2026-11-27 方案 B）
 
@@ -428,23 +428,23 @@ MVP 跑通后（T2-14），作者按「出基线最少需要什么」对挪后�
 
 ### Task 15：远程 x86 与任务集定版（验收 1、9）
 
-- [ ] **Step 1：报价**：写给作者以下内容，**作者同意后才租**：
+- [x] **Step 1：报价**：写给作者以下内容，**作者同意后才租**： — 2026-11-27：作者看过方案 B 的报价后决定只跑 Qwen、租香港服务器；下单页实价 1.92 元/时（ecs.e-c1m2.2xlarge，8 vCPU / 16 GiB / 300 GB）；基线报价 51.62 元经作者同意。
   - 金标准预检的时长：45 个候选（方案 B，作者 2026-11-27；原 60）；
   - 开发集基线共 **120 次运行**（Qwen 30 题 × 2 次 = 60，Kimi 30 题 × 2 次 = 60；方案 B，原 200 次）：token 花费按两组各自校准后的值 × 运行次数计；
   - 预计时长 = 120 × 冒烟实测的单次平均时长（agent + 截断 + 评分），串行、不并发，另加 45 个候选的金标准预检时长；
   - 服务器规格与价格：只需 CPU，建议 8 vCPU / 32 GB / 300 GB 盘（方案 B：不并发；原 16 vCPU / 64 GB / 500 GB）；按小时价格乘上面的预计时长；**2026-11-27 改（作者）**：租阿里云**香港**区域按量付费（内地访问 Docker Hub 与 Hugging Face 不稳定），x86_64，8 vCPU / 16 GB / 300 GB，预检时用 `docker stats` 记内存峰值，超过 12 GB 再升配；用完释放实例与云盘。下单前作者在官网计算器核价。
   - ~~每次运行的 `--budget`~~（方案 B 不做运行中预算，删去）；Docker Hub 匿名拉取限额（约每 IP 每 6 小时 100 次）先试拉，被限时请作者在服务器上登录。
-- [ ] **Step 2：服务器准备**（作者决定）：
+- [x] **Step 2：服务器准备**（作者决定）： — 2026-11-27：git bundle 传代码（未推送）；docker 29.10.1、node 24.15.0（sha 校验）、pnpm 10.34.9、Python 3.12.3；x64 运行包；`.env` 只传 DASHSCOPE_API_KEY（600）；`pytest eval/tests` 209 passed；x86 冒烟 `smoke-x86-2026-11-27` resolved、amd64 评分、0.7732 元（验收 9）。Docker Hub 匿名限流后作者 docker login。2026-11-28 服务器已释放，数据拉回 `eval/runs/server-hk-2026-11-28/`。 **更正（2026-11-28 收尾核对）**：本步要求的「冷烟集 smoke-v1 的所有实例在 x86 上通过预检（金标准 → resolved、空补丁 → FAIL_TO_PASS 全失败）」没有单独执行；x86 冒烟只证明同一条命令在 x86 上可用（agent 补丁 resolved、amd64 评分），不等于金标准预检。dev-v1 的 45 个候选在 x86 上做过完整预检。未补跑，记为遗漏。
   - 克隆本仓库的 `step-02-eval` 分支（推送到 GitHub 需作者同意；也可以用 `git bundle` 经 scp 传过去）；（2026-11-27：用 `git bundle` 经 scp 传，不推送。）
   - 安装 docker、node 24、pnpm；运行 `scripts/build-eval-bundle.sh linux-x64`；建 Python venv；
   - `.env` 经 scp 传上去，并 `chmod 600`；
   - 所有评测在 tmux 里运行；结果用 `rsync -a` 拉回本机 `eval/runs/`；
   - 先跑 `smoke-v1` 的 x86 版本，确认同一条命令可用（验收 9）；开始正式评测之前，冷烟集的所有实例必须在 x86 上通过预检（Task 11 入选标准），Task 11 Step 4b 没覆盖的实例在这里补跑，不通过就发 smoke-v2（作者 2026-11-26）。方案 B 不用 GitHub Actions，冷烟集的 x86 预检全部在这里跑。
-- [ ] **Step 3：任务集定版**：在服务器上执行 `build_taskset`，生成 `dev-v1`（30 个，种子 20261125，候选 45；方案 B，原 40 / 60）。预检结果和金标准 blob 在这一步一起写进任务集文件（x86 上算出），不拆开。文件拉回本机提交；开发集规模写进实现说明（验收 1）。
+- [x] **Step 3：任务集定版**：在服务器上执行 `build_taskset`，生成 `dev-v1`（30 个，种子 20261125，候选 45；方案 B，原 40 / 60）。预检结果和金标准 blob 在这一步一起写进任务集文件（x86 上算出），不拆开。文件拉回本机提交；开发集规模写进实现说明（验收 1）。 — 2026-11-27：dev-v1 30 题（候选 45，44 通过，排除 psf__requests-1921），11 个仓库，sha256 e9c3137d…，提交 c1bf105；30 个镜像截断检查全部通过（整体审查 I3）。
 
 ### Task 16：开发集基线与报告（验收 6，作者补 4）
 
-- [ ] **Step 1：Qwen 组**：报价经作者同意后，在服务器上跑 `dev-v1` 30 题 × 2 次（`eval/configs/qwen3.6.yaml`，`--repeats 2`；方案 B，原 40 × 3、设 `--budget`）。
+- [ ] **Step 1：Qwen 组**：报价经作者同意后，在服务器上跑 `dev-v1` 30 题 × 2 次（`eval/configs/qwen3.6.yaml`，`--repeats 2`；方案 B，原 40 × 3、设 `--budget`）。 **（2026-11-28 未完成）**：两次开跑均中止——一次全部 403（百炼「仅用免费额度」），一次首题 astropy-13579 93 轮 13.50 元后按花费叫停；服务器已释放。跑 1 次还是 2 次、何时重跑待作者定；首题轨迹收为固定用例 `eval/traces/2026-11-28-astropy-13579-qwen3.6-cap100`。
 - [ ] **Step 2：对账**（作者补 2，必须在 Kimi 组之前）：作者在百炼控制台查 Qwen 组期间的实际账单，与 `actual_cost` 对比，差异与原因（缓存折扣、推理 token 计价等）写进报告；差异超过 10% 时先修正计费口径，再给 Kimi 组报价。（2026-11-27 作者：只跑 Qwen，本步改为 Qwen 组跑完后看一次账单，不再是 Kimi 前的关卡。）
 - [ ] **Step 3：Kimi 组**：报价经作者同意后，跑 `dev-v1` 30 题 × 2 次（`eval/configs/kimi-k2.6.yaml`，`--repeats 2`；方案 B），跑完同样对账。（**2026-11-27 作者：推迟，T2 不跑**，见 tasks.md T2 验收 6。）
 - [ ] **Step 4：写报告** `docs/evals/<日期>-T2-baseline.md`（模版 `docs/templates/eval.md`），内容包括：
