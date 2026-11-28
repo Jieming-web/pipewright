@@ -8,6 +8,7 @@
 输出：summary.md（全部结论数字）、tokens.csv、tokens.svg、steps.csv。
 """
 import argparse
+import gzip
 import json
 import math
 import re
@@ -153,10 +154,12 @@ def main() -> None:
     proxy = load_jsonl(run_dir / "proxy.jsonl") if (run_dir / "proxy.jsonl").exists() else []
     other_attempts = [p for p in run_dir.glob("rep-*/*/*/events.jsonl") if p != d / "events.jsonl"]
     other_reqs = sum(1 for p in other_attempts for e in load_jsonl(p) if e["type"] == "model.request.finished")
-    raw = d / "fp-out" / "raw.jsonl"
+    # 新布局在 fp-out/，旧布局在尝试目录；eval/traces 里的固定用例是 gzip 压缩的
+    raw = next((p for p in (d / "fp-out" / "raw.jsonl", d / "fp-out" / "raw.jsonl.gz", d / "raw.jsonl", d / "raw.jsonl.gz") if p.exists()), None)
     raw_types = Counter()
-    if raw.exists():
-        for line in raw.open(encoding="utf-8"):
+    if raw:
+        opener = gzip.open if raw.suffix == ".gz" else open
+        for line in opener(raw, "rt", encoding="utf-8"):
             try:
                 raw_types[json.loads(line).get("type", "?")] += 1
             except json.JSONDecodeError:

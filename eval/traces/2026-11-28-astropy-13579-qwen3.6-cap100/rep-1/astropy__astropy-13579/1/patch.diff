@@ -1,0 +1,165 @@
+diff --git a/astropy/wcs/wcsapi/wrappers/sliced_wcs.py b/astropy/wcs/wcsapi/wrappers/sliced_wcs.py
+index d7605b078..c146cbf17 100644
+--- a/astropy/wcs/wcsapi/wrappers/sliced_wcs.py
++++ b/astropy/wcs/wcsapi/wrappers/sliced_wcs.py
+@@ -242,6 +242,80 @@ class SlicedLowLevelWCS(BaseWCSWrapper):
+ 
+         return world_arrays
+ 
++    def _get_dropped_world_value(self, dropped_world_index):
++        """
++        Compute a sensible value for a dropped world dimension.
++
++        When there are PCiJ couplings between kept and dropped pixel/world
++        dimensions, using an arbitrary value can cause incorrect results.
++        We try CRVAL first (as this is the physically meaningful reference),
++        falling back to CRPIX-based computation, then finally to 1.0.
++
++        Parameters
++        ----------
++        dropped_world_index : int
++            Index of the world dimension to compute a value for.
++
++        Returns
++        -------
++        float
++            The world coordinate value for the dropped dimension.
++        """
++        # Helper to safely get crval from WCS object
++        def _get_crval():
++            crval_vals = None
++            if hasattr(self._wcs, 'crval'):
++                try:
++                    crval_vals = self._wcs.crval
++                except Exception:
++                    pass
++            elif hasattr(self._wcs, 'wcs') and hasattr(
++                    getattr(self._wcs, 'wcs', None), 'crval'
++            ):
++                try:
++                    crval_vals = self._wcs.wcs.crval
++                except Exception:
++                    pass
++            return crval_vals
++
++        # Helper to safely get crpix from WCS object
++        def _get_crpix():
++            crpix_vals = None
++            if hasattr(self._wcs, 'crpix'):
++                try:
++                    crpix_vals = self._wcs.crpix
++                except Exception:
++                    pass
++            elif hasattr(self._wcs, 'wcs') and hasattr(
++                    getattr(self._wcs, 'wcs', None), 'crpix'
++            ):
++                try:
++                    crpix_vals = self._wcs.wcs.crpix
++                except Exception:
++                    pass
++            return crpix_vals
++
++        # Try CRVAL first (most natural choice)
++        crval_vals = _get_crval()
++        if crval_vals is not None and dropped_world_index < len(crval_vals):
++            return crval_vals[dropped_world_index]
++
++        # Fallback: compute from pixel_to_world at CRPIX
++        try:
++            crpix_vals = _get_crpix()
++            if crpix_vals is not None:
++                pixel_arrays = list(crpix_vals)
++                world_all = self._wcs.pixel_to_world_values(*pixel_arrays)
++                if not isinstance(world_all, tuple) and self._wcs.world_n_dim == 1:
++                    world_all = (world_all,)
++                if dropped_world_index < len(world_all):
++                    return world_all[dropped_world_index]
++        except Exception:
++            pass
++
++        # Final fallback
++        return 1.0
++
+     def world_to_pixel_values(self, *world_arrays):
+         world_arrays = tuple(map(np.asanyarray, world_arrays))
+         world_arrays_new = []
+@@ -251,7 +325,14 @@ class SlicedLowLevelWCS(BaseWCSWrapper):
+                 iworld_curr += 1
+                 world_arrays_new.append(world_arrays[iworld_curr])
+             else:
+-                world_arrays_new.append(1.)
++                # For dropped world dimensions, use a reasonable default value.
++                # Using an arbitrary value like 1. can cause significant errors
++                # when there are PCiJ couplings between kept and dropped dimensions.
++                # We try CRVAL first (the physical reference value), then fall back
++                # to other approaches if needed.
++                world_arrays_new.append(
++                    self._get_dropped_world_value(iworld)
++                )
+ 
+         world_arrays_new = np.broadcast_arrays(*world_arrays_new)
+         pixel_arrays = list(self._wcs.world_to_pixel_values(*world_arrays_new))
+diff --git a/astropy/wcs/wcsapi/wrappers/tests/test_sliced_wcs.py b/astropy/wcs/wcsapi/wrappers/tests/test_sliced_wcs.py
+index a35411496..d169c73f5 100644
+--- a/astropy/wcs/wcsapi/wrappers/tests/test_sliced_wcs.py
++++ b/astropy/wcs/wcsapi/wrappers/tests/test_sliced_wcs.py
+@@ -899,3 +899,59 @@ def test_pixel_to_world_values_different_int_types():
+     for int_coord, np64_coord in zip(int_sliced.pixel_to_world_values(*pixel_arrays),
+                                      np64_sliced.pixel_to_world_values(*pixel_arrays)):
+         assert all(int_coord == np64_coord)
++
++
++# Test for PCiJ coupled axes - issue with world_to_pixel when slicing
++# https://github.com/astropy/astropy/issues/12379 (original issue from ndcube/sunpy)
++def test_world_to_pixel_with_pcij_coupling():
++    """Test that world_to_pixel works correctly with PCiJ couplings.
++
++    When there are PCiJ couplings between spatial and spectral dimensions,
++    dropping one dimension during slicing can affect the others through the
++    cross-terms. This test verifies that the sliced WCS handles this correctly.
++    """
++    # Create a WCS with PCiJ coupling between spatial and wavelength dimensions
++    wcs_header = {
++        'WCSAXES': 3,
++        'CRPIX1': 50.5,
++        'CRPIX2': 13.0,
++        'CRPIX3': 1.0,
++        # Coupled PC matrix: wavelength affects spatial dims via PCij terms
++        'PC1_1': 0.0,
++        'PC1_2': -1.0,
++        'PC1_3': 0.0,
++        'PC2_1': 1.0,
++        'PC2_2': 0.0,
++        'PC2_3': -1.0,
++        'CDELT1': 5,
++        'CDELT2': 5,
++        'CDELT3': 0.055,
++        'CUNIT1': 'deg',
++        'CUNIT2': 'deg',
++        'CUNIT3': 'Angstrom',
++        'CTYPE1': 'RA---TAN',
++        'CTYPE2': 'DEC--TAN',
++        'CTYPE3': 'WAVE',
++        'CRVAL1': 0.0,
++        'CRVAL2': 0.0,
++        'CRVAL3': 1.05,
++    }
++    fits_wcs = WCS(header=wcs_header)
++
++    # Test round-trip at various pixel coordinates
++    test_pixels = [(50.5, 13), (49.5, 12), (60, 20)]
++
++    for px, py in test_pixels:
++        # Get world coords from full WCS at wavelength slice 0
++        pz = 0
++        world_full = fits_wcs.pixel_to_world_values(px, py, pz)
++
++        # Create sliced WCS
++        sliced = SlicedLowLevelWCS(fits_wcs, pz)
++
++        # Convert back from world to pixel using both
++        back_sliced = sliced.world_to_pixel_values(world_full[0], world_full[1])
++
++        # Check if round-trip works
++        assert_allclose(back_sliced[0], px, rtol=1e-10)
++        assert_allclose(back_sliced[1], py, rtol=1e-10)

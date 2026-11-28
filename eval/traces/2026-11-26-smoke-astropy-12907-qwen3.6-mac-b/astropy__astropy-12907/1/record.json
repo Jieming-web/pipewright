@@ -1,0 +1,33 @@
+{
+  "instance_id": "astropy__astropy-12907",
+  "config_hash": "b20c5698d622136a0f2a92a1e6f842b07fda44e6e78a2c010144dadf31a7e94e",
+  "taskset_sha256": "7462bbd305be13ca354baaf65ab65bb95c9431ca7f0a6991155413ebc4336ecd",
+  "failure_type": "none",
+  "failure_reason": null,
+  "usage": {
+    "input": 378239,
+    "output": 7721,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 3309
+  },
+  "usage_complete": true,
+  "requests": 18,
+  "tool_calls": 18,
+  "wall_s": 82.806,
+  "snapshot": {
+    "engine": {
+      "name": "pi",
+      "version": "1.5.1"
+    },
+    "model": {
+      "provider": "qwen-api",
+      "id": "qwen3.6-35b-a3b"
+    },
+    "contextFiles": []
+  },
+  "grade_status": "resolved",
+  "grade_image": "swebench/sweb.eval.arm64.astropy_1776_astropy-12907@sha256:6373496b634a2e95077bfa3407ea8d334fd3520439832f003a0d631ab8a0d348",
+  "grade_image_digest": "swebench/sweb.eval.arm64.astropy_1776_astropy-12907@sha256:6373496b634a2e95077bfa3407ea8d334fd3520439832f003a0d631ab8a0d348",
+  "grade_arch": "arm64"
+}

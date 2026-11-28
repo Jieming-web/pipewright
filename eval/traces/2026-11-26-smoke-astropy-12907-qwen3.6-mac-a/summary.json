@@ -1,0 +1,46 @@
+{
+  "taskset": {
+    "name": "smoke",
+    "version": 1,
+    "sha256": "7462bbd305be13ca354baaf65ab65bb95c9431ca7f0a6991155413ebc4336ecd"
+  },
+  "config_hash": "b6b48eb970e315fe7386e74edd8e41487fdefd04049fc1ad7bf40d0e95894463",
+  "model": "qwen3.6-35b-a3b",
+  "platform": "linux-arm64",
+  "estimate": {
+    "yuan": 3.024,
+    "source": "未校准的保守估计（约 40 次请求、平均 3.7 万输入 token）；T2-14 冒烟后按 p90 校准"
+  },
+  "status": "complete",
+  "invalid_reasons": [],
+  "runs": 1,
+  "measured": 1,
+  "resolved": 1,
+  "success_rate": 1.0,
+  "excluded_fraction": 0.0,
+  "excluded": [],
+  "failure_types": {
+    "resolved": 1
+  },
+  "per_run": {
+    "tokens": {
+      "mean": 201017,
+      "median": 201017
+    },
+    "requests": {
+      "mean": 18,
+      "median": 18
+    },
+    "wall_s": {
+      "mean": 65.598,
+      "median": 65.598
+    }
+  },
+  "token_note": "每次运行 token = input + cacheRead + output（reasoning 已含在 output 里）",
+  "cost": {
+    "actual_yuan": 0.41978160000000003,
+    "runs": 1,
+    "usage_unknown_runs": 0,
+    "note": "input+cacheRead+cacheWrite 按输入价、output 按输出价（reasoning 已含在 output 里，不重复计）；缓存不打折"
+  }
+}
