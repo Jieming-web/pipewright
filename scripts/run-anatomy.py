@@ -18,7 +18,8 @@ PRICE = {"input": 1.8, "output": 10.8}  # 元/百万，qwen3.6-35b-a3b 百炼北
 # 百炼上下文缓存（https://help.aliyun.com/zh/model-studio/context-cache）：隐式缓存命中按输入单价 20%，
 # 显式缓存命中 10%、创建 125%。qwen3.6-35b-a3b 不支持缓存（实现说明 0.6），下面的缓存价只是假设对照。
 IMPLICIT, EXPLICIT_HIT, EXPLICIT_CREATE = 0.2, 0.1, 1.25
-TEST_RX = re.compile(r"\b(pytest|python3?\s+-m\s+pytest|python3?\s+-c|python3?\s+\S+\.py|tox)\b")
+PYTEST_RX = re.compile(r"\b(pytest|tox)\b")
+PROBE_RX = re.compile(r"\bpython3?\s+(-c\b|-\s|<<|\S+\.py\b)")
 READ_CMD_RX = re.compile(r"\b(cat|sed\s+-n|head|tail|grep|rg|less|nl|awk)\b")
 
 
@@ -58,8 +59,10 @@ def code_step(tool: str, inp: dict, gold: list[str]) -> str:
     touches_gold = any(g in blob or Path(g).name in blob for g in gold)
     if tool in ("edit", "write"):
         return "编辑"
-    if tool == "bash" and TEST_RX.search(inp.get("command") or ""):
-        return "测试"
+    if tool == "bash" and PYTEST_RX.search(inp.get("command") or ""):
+        return "测试"  # 真正跑测试套件
+    if tool == "bash" and PROBE_RX.search(inp.get("command") or ""):
+        return "探查"  # 临时写的 python -c / heredoc / 脚本，用来试探行为
     if touches_gold and (tool in ("read", "grep", "find") or (tool == "bash" and READ_CMD_RX.search(inp.get("command") or ""))):
         return "定位"
     return "探索"
@@ -108,7 +111,7 @@ def tail_section(started: list[dict], steps: list[dict], start: int, out: Path) 
     rows = []
     for k, (s, st) in enumerate(zip(started, steps), 1):
         dup, sim = None, 0.0
-        if st["label"] in ("测试", "编辑", "循环"):
+        if st["label"] in ("测试", "探查", "编辑", "循环"):
             for j in range(k - 1, 0, -1):  # 找最相似的更早同类步骤
                 if steps[j - 1]["tool"] != st["tool"]:
                     continue
@@ -122,10 +125,10 @@ def tail_section(started: list[dict], steps: list[dict], start: int, out: Path) 
         for r in tail:
             f.write(f'{r["step"]},{r["tool"]},{r["label"]},{r["isError"]},{r["out_chars"]},{r["dup_of"] or ""},{r["sim"]},"{r["summary"].replace(chr(34), chr(39))}"\n')
     near = [r for r in tail if r["dup_of"]]
-    tests = [r for r in tail if r["label"] in ("测试", "循环") and r["tool"] == "bash"]
+    tests = [r for r in tail if r["label"] in ("测试", "探查", "循环") and r["tool"] == "bash"]
     edits = [r for r in tail if r["tool"] in ("edit", "write")]
     return ["", f"## 6. 调试尾巴（第 {start}–{len(rows)} 步，逐步见 tail.csv）", "",
-            f"- 共 {len(tail)} 步：测试类 bash {len(tests)}、编辑 {len(edits)}（出错 {sum(1 for r in edits if r['isError'])}）、其他 {len(tail) - len(tests) - len(edits)}",
+            f"- 共 {len(tail)} 步：测试与探查 bash {len(tests)}（其中 pytest {sum(1 for r in tail if r['label'] == '测试')}）、编辑 {len(edits)}（出错 {sum(1 for r in edits if r['isError'])}）、其他 {len(tail) - len(tests) - len(edits)}",
             f"- 与更早同类步骤相似度 ≥ {SIM} 的步（近似重复）：{len(near)} 步",
             *[f"  - 第 {r['step']} 步 {r['tool']}（{r['label']}）≈ 第 {r['dup_of']} 步，相似度 {r['sim']}，输出 {r['out_chars']:,} 字符：`{r['summary'][:70]}`" for r in near],
             f"- 测试类 bash 的输出字符：合计 {sum(r['out_chars'] for r in tests):,}，出错 {sum(1 for r in tests if r['isError'])} 次"]
@@ -227,7 +230,7 @@ def main() -> None:
           f"- 若按隐式缓存价（命中 {IMPLICIT:.0%}）：{implicit_cost:.2f} 元；若按显式缓存（命中 {EXPLICIT_HIT:.0%}、创建 {EXPLICIT_CREATE:.0%}）：{explicit_cost:.2f} 元",
           "- 出处：https://help.aliyun.com/zh/model-studio/context-cache ；qwen3.6-35b-a3b 不支持缓存（实现说明 0.6，https://help.aliyun.com/zh/model-studio/qwen3-6-35b-a3b），以上缓存价仅为对照，本次 cacheRead 为 0",
           "", "## 4. 轨迹编码", "",
-          f"- 步骤标签：{dict(labels)}（规则：edit/write=编辑；bash 跑 pytest/python=测试；读写金标准文件=定位；与之前完全相同的工具+参数=循环；其余=探索）",
+          f"- 步骤标签：{dict(labels)}（规则：edit/write=编辑；bash 跑 pytest/tox=测试；bash 跑 python -c/heredoc/脚本=探查；读写金标准文件=定位；与之前完全相同的工具+参数=循环；其余=探索）",
           f"- 工具结果总字符 {out_chars_total:,}（约 {out_chars_total//4:,} token）",
           "- 输出最长的 10 次工具调用：", "",
           "| 步 | 工具 | 标签 | 字符数 | 摘要 |", "|---|---|---|---|---|",

@@ -107,6 +107,19 @@ def cost(inputs, outputs, extra, cached=False):
     return (tin * PRICE_IN + (sum(outputs) + sum(e[1] for e in extra)) * PRICE_OUT) / 1e6
 
 
+def decompose(d: Path, alpha: float) -> dict:
+    """累计输入按来源分解：第 j 轮追加的内容此后被重发 (n-1-j) 次。思考内容是否真被重发以请求体捕获测试为准。"""
+    reqs, ch = load(d); n = len(reqs)
+    w = [n - 1 - j for j in range(n)]
+    parts = {"系统提示+题目": reqs[0]["input"] * n,
+             "工具结果": sum(alpha * ch[j] * w[j] for j in range(n - 1)),
+             "文字+工具调用参数": sum((reqs[j]["output"] - reqs[j]["reasoning"]) * w[j] for j in range(n - 1)),
+             "思考内容": sum(reqs[j]["reasoning"] * w[j] for j in range(n - 1))}
+    tot = sum(r["input"] for r in reqs)
+    return {"run": d.parts[2], "turns": n, "total": tot, "cost": cost([r["input"] for r in reqs], [r["output"] for r in reqs], []),
+            **{k: v / tot for k, v in parts.items()}, "未解释": 1 - sum(parts.values()) / tot}
+
+
 def run_cost(n: int, base: float, g: float, out_per_turn: float) -> float:
     """每轮输入 ≈ base + g·(i-1) 时 n 轮的原价花费：总输入 = n·base + g·n(n-1)/2。"""
     return ((n * base + g * n * (n - 1) / 2) * PRICE_IN + n * out_per_turn * PRICE_OUT) / 1e6
@@ -193,6 +206,11 @@ def main() -> None:
           *[f"| {n} | {t:,} | {m:,} | {e} | {c:.2f} 元 | {'' if cc is None else f'{cc:.2f} 元'} |" for n, t, m, e, c, cc in res],
           "", "- 「只留最近 k 条」和压缩都会改写历史前缀，和前缀缓存冲突：每轮前缀都变，缓存命中率接近 0，所以这两类不算缓存价。",
           "- 曲线：`replay.svg`；逐轮：`replay.csv`"]
+    dec = [decompose(x, alpha) for x in [d] + [Path(p) for p in a.fit]]
+    keys = ["系统提示+题目", "工具结果", "文字+工具调用参数", "思考内容", "未解释"]
+    md += ["", "## 累计输入的来源分解（α 用全部运行合并拟合）", "",
+           "| 运行 | 轮数 | 累计输入 | 花费 | " + " | ".join(keys) + " |", "|---|---|---|---|" + "---|" * len(keys),
+           *[f"| {r['run']} | {r['turns']} | {r['total']:,} | {r['cost']:.2f} 元 | " + " | ".join(f"{r[k]:.0%}" for k in keys) + " |" for r in dec]]
     if a.predict:
         md += predict(Path(a.predict), [d] + [Path(x) for x in a.fit])
     (out / "replay.md").write_text("\n".join(md) + "\n", encoding="utf-8")
